@@ -1,0 +1,12 @@
+.player-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  padding: 2rem;
+  box-sizing: border-box;
+}
+
+.player-container h1 {
+  margin-bottom: 1rem;
+}

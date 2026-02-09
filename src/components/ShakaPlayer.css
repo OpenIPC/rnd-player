@@ -1,0 +1,295 @@
+/* ── Container ── */
+.vp-container {
+  position: relative;
+  background: #000;
+  overflow: hidden;
+  width: 100%;
+  max-width: 960px;
+  line-height: 0;
+}
+
+.vp-container video {
+  width: 100%;
+  display: block;
+}
+
+/* ── Controls overlay wrapper ── */
+.vp-controls-wrapper {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  z-index: 2;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  cursor: default;
+}
+
+.vp-controls-wrapper.vp-hidden {
+  opacity: 0;
+  pointer-events: none;
+  cursor: none;
+}
+
+/* Spacer — clicks pass through to the video element beneath */
+.vp-click-area {
+  flex: 1;
+  pointer-events: none;
+}
+
+/* ── Bottom gradient ── */
+.vp-gradient {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  pointer-events: none;
+}
+
+/* ── Bottom bar ── */
+.vp-bottom-bar {
+  position: relative;
+  padding: 0 12px 8px;
+}
+
+/* ── Progress bar row ── */
+.vp-progress-row {
+  position: relative;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.vp-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+  transition: height 0.15s ease;
+}
+
+.vp-progress-row:hover .vp-progress-track {
+  height: 6px;
+}
+
+.vp-progress-buffered {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 2px;
+}
+
+.vp-progress-played {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: #fff;
+  border-radius: 2px;
+}
+
+.vp-progress-input {
+  position: absolute;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* ── Controls row ── */
+.vp-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+}
+
+.vp-controls-left,
+.vp-controls-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Buttons ── */
+.vp-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1;
+  transition: background 0.15s ease;
+}
+
+.vp-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.vp-btn-label {
+  white-space: nowrap;
+}
+
+/* ── Time display ── */
+.vp-time {
+  padding: 0 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* ── Volume group ── */
+.vp-volume-group {
+  display: flex;
+  align-items: center;
+}
+
+.vp-volume-slider-wrap {
+  width: 0;
+  overflow: hidden;
+  transition: width 0.2s ease;
+}
+
+.vp-volume-group:hover .vp-volume-slider-wrap {
+  width: 80px;
+}
+
+.vp-volume-slider {
+  width: 72px;
+  height: 4px;
+  margin: 0 4px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 2px;
+  outline: none;
+}
+
+.vp-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+}
+
+.vp-volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  cursor: pointer;
+}
+
+.vp-volume-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+}
+
+.vp-volume-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ── Popups (Quality / Speed) ── */
+.vp-popup {
+  position: absolute;
+  bottom: 52px;
+  right: 12px;
+  background: rgba(20, 20, 20, 0.95);
+  border-radius: 8px;
+  padding: 6px 0;
+  min-width: 160px;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+}
+
+.vp-popup-header {
+  padding: 8px 14px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.vp-popup-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+  user-select: none;
+}
+
+.vp-popup-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.vp-popup-item.vp-active {
+  color: #2196f3;
+}
+
+.vp-popup-item.vp-active::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #2196f3;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Fullscreen ── */
+.vp-container:fullscreen {
+  max-width: none;
+}
+
+.vp-container:fullscreen video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.vp-container:-webkit-full-screen {
+  max-width: none;
+}
+
+.vp-container:-webkit-full-screen video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
