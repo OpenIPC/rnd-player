@@ -245,8 +245,18 @@ export default function StatsPanel({
       <div className="vp-stats-row">
         <span className="vp-stats-label">Mystery Text</span>
         <span className="vp-stats-value">
-          s:{data.streamBandwidth} t:{data.loadLatency} g:{data.gapsJumped}/
-          {data.stallsDetected} m:{data.manifestSizeBytes}
+          <span className="vp-stats-tip" data-tooltip="Stream bandwidth (bps)">
+            s:{data.streamBandwidth}
+          </span>{" "}
+          <span className="vp-stats-tip" data-tooltip="Load latency (sec)">
+            t:{data.loadLatency}
+          </span>{" "}
+          <span className="vp-stats-tip" data-tooltip="Gaps jumped / Stalls detected">
+            g:{data.gapsJumped}/{data.stallsDetected}
+          </span>{" "}
+          <span className="vp-stats-tip" data-tooltip="Manifest size (bytes)">
+            m:{data.manifestSizeBytes}
+          </span>
         </span>
       </div>
 

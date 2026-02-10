@@ -307,7 +307,6 @@
   font: 11px/1.6 monospace;
   color: #fff;
   max-width: 90%;
-  overflow: hidden;
 }
 
 .vp-stats-close {
@@ -341,8 +340,6 @@
 
 .vp-stats-value {
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .vp-stats-bar-row {
@@ -367,4 +364,33 @@
   white-space: nowrap;
   min-width: 80px;
   font-size: 11px;
+}
+
+/* ── Stats tooltips ── */
+.vp-stats-tip {
+  position: relative;
+  cursor: default;
+  border-bottom: 1px dotted rgba(255, 255, 255, 0.35);
+}
+
+.vp-stats-tip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 30, 30, 0.95);
+  color: #ddd;
+  font: 10px/1.4 monospace;
+  padding: 4px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 4;
+}
+
+.vp-stats-tip:hover::after {
+  opacity: 1;
 }
