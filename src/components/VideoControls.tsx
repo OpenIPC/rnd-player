@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import shaka from "shaka-player";
 import {
   PlayIcon,
@@ -9,7 +10,9 @@ import {
   SpeedIcon,
   FullscreenIcon,
   ExitFullscreenIcon,
+  InfoIcon,
 } from "./icons";
+import StatsPanel from "./StatsPanel";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -58,6 +61,7 @@ export default function VideoControls({
   const [popup, setPopup] = useState<"quality" | "speed" | null>(null);
   const [visible, setVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showStats, setShowStats] = useState(false);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -179,7 +183,7 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel")) return;
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
     };
@@ -333,6 +337,13 @@ export default function VideoControls({
           </div>
 
           <div className="vp-controls-right">
+            <button
+              className="vp-btn"
+              onClick={() => setShowStats((s) => !s)}
+            >
+              <InfoIcon />
+            </button>
+
             {qualities.length > 0 && (
               <button
                 className="vp-btn"
@@ -403,6 +414,17 @@ export default function VideoControls({
           ))}
         </div>
       )}
+
+      {/* Stats for nerds panel — portaled into containerEl so it stays visible when controls auto-hide */}
+      {showStats &&
+        createPortal(
+          <StatsPanel
+            player={player}
+            videoEl={videoEl}
+            onClose={() => setShowStats(false)}
+          />,
+          containerEl
+        )}
     </div>
   );
 }
