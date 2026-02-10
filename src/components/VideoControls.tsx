@@ -29,6 +29,7 @@ interface QualityOption {
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const HIDE_DELAY = 3000;
+const STORAGE_KEY = "vp_playback_state";
 
 export default function VideoControls({
   videoEl,
@@ -58,11 +59,68 @@ export default function VideoControls({
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
+  // ── Track last-known-good state for sleep/wake recovery ──
+  const lastTimeRef = useRef(videoEl.currentTime);
+  const wasPausedRef = useRef(videoEl.paused);
+  const guardUntilRef = useRef(0);
+
   // ── Video event listeners ──
   useEffect(() => {
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
-    const onTimeUpdate = () => setCurrentTime(videoEl.currentTime);
+    const isGuarding = () => Date.now() < guardUntilRef.current;
+
+    const saveState = (time: number, paused: boolean) => {
+      try {
+        sessionStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ time, paused })
+        );
+      } catch {
+        // sessionStorage may be unavailable (private browsing, quota, etc.)
+      }
+    };
+
+    let lastSaveMs = 0;
+
+    const onPlay = () => {
+      if (isGuarding() && wasPausedRef.current) {
+        // Unwanted play triggered by Shaka recovery after sleep — suppress it
+        videoEl.pause();
+        return;
+      }
+      wasPausedRef.current = false;
+      setPlaying(true);
+      saveState(videoEl.currentTime, false);
+    };
+    const onPause = () => {
+      if (!isGuarding()) {
+        wasPausedRef.current = true;
+      }
+      setPlaying(false);
+      saveState(videoEl.currentTime, true);
+    };
+    const onTimeUpdate = () => {
+      const now = videoEl.currentTime;
+      if (isGuarding()) {
+        // During guard window, if position jumped far from saved position
+        // (e.g. Shaka reloaded and reset to 0), re-seek to saved position
+        if (
+          lastTimeRef.current > 5 &&
+          Math.abs(now - lastTimeRef.current) > 5
+        ) {
+          videoEl.currentTime = lastTimeRef.current;
+          return;
+        }
+      }
+      lastTimeRef.current = now;
+      setCurrentTime(now);
+
+      // Throttled persist (~1 s)
+      const ts = Date.now();
+      if (ts - lastSaveMs >= 1000) {
+        lastSaveMs = ts;
+        saveState(now, videoEl.paused);
+      }
+    };
     const onDurationChange = () => setDuration(videoEl.duration || 0);
     const onVolumeChange = () => {
       setVolume(videoEl.volume);
@@ -140,6 +198,44 @@ export default function VideoControls({
     };
   }, [player, updateTracks]);
 
+  // ── Sleep/wake recovery ──
+  // Uses both visibilitychange and a timer-gap detector so we catch real
+  // system-sleep even when visibilitychange fires too early or not at all.
+  const GUARD_DURATION = 5_000; // ms – how long to intercept unwanted play/seek after wake
+
+  const startGuard = useCallback(() => {
+    guardUntilRef.current = Date.now() + GUARD_DURATION;
+    videoEl.currentTime = lastTimeRef.current;
+    if (wasPausedRef.current) {
+      videoEl.pause();
+    }
+  }, [videoEl]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        // Waking up — restore state and start guard window
+        startGuard();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [startGuard]);
+
+  // Timer-gap sleep detector: if a 1 s interval takes ≥ 4 s, the system slept
+  useEffect(() => {
+    let lastTick = Date.now();
+    const id = setInterval(() => {
+      const now = Date.now();
+      if (now - lastTick >= 4_000) {
+        startGuard();
+      }
+      lastTick = now;
+    }, 1_000);
+    return () => clearInterval(id);
+  }, [startGuard]);
+
   // ── Auto-hide controls ──
   const resetHideTimer = useCallback(() => {
     clearTimeout(hideTimerRef.current);
@@ -179,6 +275,7 @@ export default function VideoControls({
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
       if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel")) return;
+      guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
     };
@@ -214,6 +311,7 @@ export default function VideoControls({
 
   // ── Handlers ──
   const togglePlay = () => {
+    guardUntilRef.current = 0; // user intent — disable sleep/wake guard
     if (videoEl.paused) videoEl.play();
     else videoEl.pause();
   };

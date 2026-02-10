@@ -30,19 +30,48 @@ function ShakaPlayer({ src, autoPlay = false }: ShakaPlayerProps) {
     const video = videoRef.current!;
     const player = new shaka.Player();
     playerRef.current = player;
+    let destroyed = false;
 
     player.attach(video).then(() => {
+      if (destroyed) return;
+
       player.addEventListener("error", (event) => {
         const detail = (event as CustomEvent).detail;
         console.error("Shaka error:", detail);
       });
 
+      // Read persisted state before loading so we can pass startTime to Shaka
+      let savedState: { time: number; paused: boolean } | null = null;
+      try {
+        const raw = sessionStorage.getItem("vp_playback_state");
+        if (raw) {
+          savedState = JSON.parse(raw);
+        }
+      } catch {
+        // sessionStorage unavailable
+      }
+
+      const startTime =
+        savedState && savedState.time > 0 ? savedState.time : null;
+
       player
-        .load(src)
+        .load(src, startTime)
         .then(() => {
+          if (destroyed) return;
           setPlayerReady(true);
+
+          if (savedState) {
+            if (!savedState.paused) {
+              video.play().catch(() => {});
+            }
+          } else if (autoPlay) {
+            video.play().catch(() => {
+              // Browser may block autoplay without user interaction
+            });
+          }
         })
         .catch((error: unknown) => {
+          if (destroyed) return;
           if (error instanceof shaka.util.Error) {
             console.error(
               "Error loading manifest:",
@@ -54,15 +83,16 @@ function ShakaPlayer({ src, autoPlay = false }: ShakaPlayerProps) {
     });
 
     return () => {
+      destroyed = true;
       setPlayerReady(false);
       player.destroy();
       playerRef.current = null;
     };
-  }, [src]);
+  }, [src, autoPlay]);
 
   return (
     <div ref={containerRef} className="vp-container">
-      <video ref={videoRef} autoPlay={autoPlay} />
+      <video ref={videoRef} />
       {playerReady &&
         videoRef.current &&
         containerRef.current &&

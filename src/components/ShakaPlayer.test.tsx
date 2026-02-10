@@ -66,7 +66,8 @@ describe("ShakaPlayer", () => {
 
     await waitFor(() => {
       expect(mockPlayerInstance.load).toHaveBeenCalledWith(
-        "https://example.com/manifest.mpd"
+        "https://example.com/manifest.mpd",
+        null
       );
     });
   });
@@ -86,13 +87,23 @@ describe("ShakaPlayer", () => {
     expect(video).toBeInTheDocument();
   });
 
-  it("sets autoPlay attribute when prop is true", () => {
+  it("calls play() programmatically when autoPlay prop is true", async () => {
+    const playSpy = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+
     render(
       <ShakaPlayer src="https://example.com/manifest.mpd" autoPlay />
     );
 
-    const video = document.querySelector("video");
-    expect(video).toHaveAttribute("autoplay");
+    const video = document.querySelector("video")!;
+    expect(video).not.toHaveAttribute("autoplay");
+
+    await waitFor(() => {
+      expect(playSpy).toHaveBeenCalled();
+    });
+
+    playSpy.mockRestore();
   });
 
   it("destroys player on unmount", async () => {
