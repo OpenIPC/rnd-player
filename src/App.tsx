@@ -2,7 +2,7 @@ import ShakaPlayer from "./components/ShakaPlayer";
 import "./App.css";
 
 const DEMO_MANIFEST =
-  "https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd";
+  "https://www.bok.net/dash/tears_of_steel/cleartext/stream.mpd";
 
 function App() {
   return (
