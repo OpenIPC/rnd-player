@@ -1,15 +1,12 @@
 import { useEffect, useState, useRef } from "react";
 import shaka from "shaka-player";
+import { safeNum } from "../utils/safeNum";
+import { formatTrackRes } from "../utils/formatTrackRes";
 
 interface StatsPanelProps {
   player: shaka.Player;
   videoEl: HTMLVideoElement;
   onClose: () => void;
-}
-
-/** Guard against NaN/undefined — return 0 for display */
-function safeNum(n: number | undefined): number {
-  return n != null && !Number.isNaN(n) ? n : 0;
 }
 
 interface StatsData {
@@ -56,16 +53,6 @@ interface StatsData {
   liveLatency: number;
   // Row 13: Date
   date: string;
-}
-
-function formatTrackRes(
-  width: number | null,
-  height: number | null,
-  frameRate: number | null
-): string {
-  if (width == null || height == null) return "N/A";
-  const fps = frameRate ? `@${Math.round(frameRate)}` : "";
-  return `${width}×${height}${fps}`;
 }
 
 function StatsBar({
