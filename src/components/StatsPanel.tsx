@@ -7,12 +7,18 @@ interface StatsPanelProps {
   onClose: () => void;
 }
 
+/** Guard against NaN/undefined — return 0 for display */
+function safeNum(n: number | undefined): number {
+  return n != null && !Number.isNaN(n) ? n : 0;
+}
+
 interface StatsData {
   // Row 1: Manifest
   assetUri: string;
   manifestType: string;
   // Row 2: Viewport / Frames
   viewport: string;
+  intrinsicRes: string;
   droppedFrames: number;
   decodedFrames: number;
   // Row 3: Current / Optimal Res
@@ -33,6 +39,7 @@ interface StatsData {
   estimatedBandwidthKbps: number;
   // Row 8: Network Activity
   networkActivityKBps: number;
+  totalDownloadedMB: string;
   // Row 9: Buffer Health
   bufferHealthSec: number;
   // Row 10: Mystery Text
@@ -41,7 +48,13 @@ interface StatsData {
   gapsJumped: number;
   stallsDetected: number;
   manifestSizeBytes: number;
-  // Row 11: Date
+  // Row 11: Playback
+  playTime: number;
+  bufferingTime: number;
+  pauseTime: number;
+  // Row 12: Live Latency (conditional)
+  liveLatency: number;
+  // Row 13: Date
   date: string;
 }
 
@@ -103,6 +116,15 @@ export default function StatsPanel({
         prevBytes !== null ? stats.bytesDownloaded - prevBytes : 0;
       prevBytesRef.current = stats.bytesDownloaded;
 
+      // Frame stats: prefer browser PlaybackQuality API, fall back to Shaka
+      let decoded = safeNum(stats.decodedFrames);
+      let dropped = safeNum(stats.droppedFrames);
+      if (typeof videoEl.getVideoPlaybackQuality === "function") {
+        const q = videoEl.getVideoPlaybackQuality();
+        decoded = safeNum(q.totalVideoFrames);
+        dropped = safeNum(q.droppedVideoFrames);
+      }
+
       // Asset URI (truncated)
       const uri = player.getAssetUri() ?? "";
       const truncatedUri =
@@ -114,8 +136,11 @@ export default function StatsPanel({
         assetUri: truncatedUri,
         manifestType: player.getManifestType() ?? "",
         viewport: `${Math.round(videoEl.clientWidth * dpr)}×${Math.round(videoEl.clientHeight * dpr)}`,
-        droppedFrames: stats.droppedFrames,
-        decodedFrames: stats.decodedFrames,
+        intrinsicRes: videoEl.videoWidth && videoEl.videoHeight
+          ? `${videoEl.videoWidth}×${videoEl.videoHeight}`
+          : "",
+        droppedFrames: dropped,
+        decodedFrames: decoded,
         currentRes: active
           ? formatTrackRes(active.width, active.height, active.frameRate)
           : "N/A",
@@ -130,14 +155,19 @@ export default function StatsPanel({
         audioId: active?.audioId != null ? String(active.audioId) : "",
         colorGamut: active?.colorGamut ?? null,
         hdr: active?.hdr ?? null,
-        estimatedBandwidthKbps: Math.round(stats.estimatedBandwidth / 1000),
+        estimatedBandwidthKbps: Math.round(safeNum(stats.estimatedBandwidth) / 1000),
         networkActivityKBps: Math.round(networkDelta / 1024),
+        totalDownloadedMB: (safeNum(stats.bytesDownloaded) / (1024 * 1024)).toFixed(1),
         bufferHealthSec: Math.round(bufferHealth * 100) / 100,
-        streamBandwidth: stats.streamBandwidth,
-        loadLatency: Math.round(stats.loadLatency * 1000) / 1000,
-        gapsJumped: stats.gapsJumped,
-        stallsDetected: stats.stallsDetected,
-        manifestSizeBytes: stats.manifestSizeBytes,
+        streamBandwidth: safeNum(stats.streamBandwidth),
+        loadLatency: Math.round(safeNum(stats.loadLatency) * 1000) / 1000,
+        gapsJumped: safeNum(stats.gapsJumped),
+        stallsDetected: safeNum(stats.stallsDetected),
+        manifestSizeBytes: safeNum(stats.manifestSizeBytes),
+        playTime: Math.round(safeNum(stats.playTime)),
+        bufferingTime: Math.round(safeNum(stats.bufferingTime) * 10) / 10,
+        pauseTime: Math.round(safeNum(stats.pauseTime)),
+        liveLatency: Math.round(safeNum(stats.liveLatency) * 100) / 100,
         date: new Date().toString(),
       };
     }
@@ -175,7 +205,9 @@ export default function StatsPanel({
       <div className="vp-stats-row">
         <span className="vp-stats-label">Viewport / Frames</span>
         <span className="vp-stats-value">
-          {data.viewport} / {data.droppedFrames} dropped of {data.decodedFrames}
+          {data.viewport}
+          {data.intrinsicRes ? ` (${data.intrinsicRes})` : ""} /{" "}
+          {data.droppedFrames} dropped of {data.decodedFrames}
         </span>
       </div>
 
@@ -230,7 +262,7 @@ export default function StatsPanel({
         <span className="vp-stats-label">Network Activity</span>
         <StatsBar value={data.networkActivityKBps} max={2048} />
         <span className="vp-stats-bar-value">
-          {data.networkActivityKBps} KB/s
+          {data.networkActivityKBps} KB/s ({data.totalDownloadedMB} MB)
         </span>
       </div>
 
@@ -260,7 +292,23 @@ export default function StatsPanel({
         </span>
       </div>
 
-      {/* Row 11: Date */}
+      {/* Row 11: Playback */}
+      <div className="vp-stats-row">
+        <span className="vp-stats-label">Playback</span>
+        <span className="vp-stats-value">
+          {data.playTime}s playing / {data.bufferingTime}s buffering / {data.pauseTime}s paused
+        </span>
+      </div>
+
+      {/* Row 12: Live Latency (only for live streams) */}
+      {data.liveLatency > 0 && (
+        <div className="vp-stats-row">
+          <span className="vp-stats-label">Live Latency</span>
+          <span className="vp-stats-value">{data.liveLatency} s</span>
+        </div>
+      )}
+
+      {/* Row 13: Date */}
       <div className="vp-stats-row">
         <span className="vp-stats-label">Date</span>
         <span className="vp-stats-value">{data.date}</span>
