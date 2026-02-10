@@ -135,13 +135,16 @@ export default function VideoControls({
 
     const onTracksChanged = () => updateTracks();
     const onVariantChanged = () => updateTracks();
+    const onAdaptation = () => updateTracks();
 
     player.addEventListener("trackschanged", onTracksChanged);
     player.addEventListener("variantchanged", onVariantChanged);
+    player.addEventListener("adaptation", onAdaptation);
 
     return () => {
       player.removeEventListener("trackschanged", onTracksChanged);
       player.removeEventListener("variantchanged", onVariantChanged);
+      player.removeEventListener("adaptation", onAdaptation);
     };
   }, [player, updateTracks]);
 
