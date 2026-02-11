@@ -8,7 +8,7 @@ function App() {
   if (!src) {
     return (
       <div className="player-container">
-        <h1>Video Player</h1>
+        <h1>Vibe Player</h1>
         <form
           className="url-form"
           onSubmit={(e) => {
@@ -35,7 +35,7 @@ function App() {
 
   return (
     <div className="player-container">
-      <h1>Video Player</h1>
+      <h1>Vibe Player</h1>
       <ShakaPlayer src={src} autoPlay />
     </div>
   );
