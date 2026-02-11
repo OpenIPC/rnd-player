@@ -2,6 +2,8 @@
 
 A custom video player built with React, TypeScript, and [Shaka Player](https://github.com/shaka-project/shaka-player) for adaptive streaming (DASH/HLS).
 
+On first load the app prompts for a manifest URL — no hardcoded streams or keys are included.
+
 Replaces native browser video controls with a dark-themed custom overlay featuring:
 
 - **Quality switcher** — lists available renditions, supports manual selection and auto ABR
@@ -10,6 +12,8 @@ Replaces native browser video controls with a dark-themed custom overlay featuri
 - **Volume control** — mute toggle with hover-expanding slider
 - **Fullscreen** toggle
 - **Auto-hide** — controls fade out after 3 seconds of inactivity during playback
+- **ClearKey DRM** — auto-detects `cenc:default_KID` from the DASH manifest; prompts for a decryption key via a password-masked overlay when needed, or accepts a `clearKey` prop for programmatic use
+- **Error overlay** — displays user-friendly messages for DRM, network, decode, and other playback errors
 
 ## Getting Started
 
@@ -17,6 +21,8 @@ Replaces native browser video controls with a dark-themed custom overlay featuri
 npm install
 npm run dev
 ```
+
+Open the app, paste a DASH/HLS manifest URL, and click **Load**. If the stream is ClearKey-encrypted, you'll be prompted to enter the hex decryption key.
 
 ## Build
 

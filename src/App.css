@@ -10,3 +10,45 @@
 .player-container h1 {
   margin-bottom: 1rem;
 }
+
+/* ── URL entry form ── */
+.url-form {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 960px;
+}
+
+.url-input {
+  flex: 1;
+  padding: 10px 14px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.url-input:focus {
+  border-color: #2196f3;
+}
+
+.url-submit {
+  padding: 10px 24px;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.url-submit:hover {
+  background: #1e88e5;
+}

@@ -13,6 +13,101 @@
   display: block;
 }
 
+.vp-awaiting-key video {
+  aspect-ratio: 16 / 9;
+}
+
+/* ── Error overlay ── */
+.vp-error-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.vp-error-message {
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  text-align: center;
+  max-width: 400px;
+  padding: 16px 24px;
+  line-height: 1.5;
+}
+
+/* ── Key prompt overlay ── */
+.vp-key-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.vp-key-form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 400px;
+  padding: 24px 32px;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+.vp-key-title {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.vp-key-desc {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.vp-key-input {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: #fff;
+  font-family: monospace;
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.vp-key-input:focus {
+  border-color: #2196f3;
+}
+
+.vp-key-submit {
+  margin-top: 12px;
+  padding: 8px 32px;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.vp-key-submit:hover {
+  background: #1e88e5;
+}
+
 /* ── Controls overlay wrapper ── */
 .vp-controls-wrapper {
   position: absolute;
