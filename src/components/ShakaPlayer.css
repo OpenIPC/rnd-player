@@ -389,6 +389,32 @@
   object-fit: contain;
 }
 
+/* ── Context menu (right-click) ── */
+.vp-context-menu {
+  position: absolute;
+  z-index: 20;
+  background: rgba(20, 20, 20, 0.95);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 180px;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.vp-context-menu-item {
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+  user-select: none;
+}
+
+.vp-context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* ── Stats for nerds panel ── */
 .vp-stats-panel {
   position: absolute;

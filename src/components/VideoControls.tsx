@@ -10,7 +10,6 @@ import {
   SpeedIcon,
   FullscreenIcon,
   ExitFullscreenIcon,
-  InfoIcon,
 } from "./icons";
 import StatsPanel from "./StatsPanel";
 import { formatTime } from "../utils/formatTime";
@@ -55,6 +54,7 @@ export default function VideoControls({
   const [visible, setVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -274,7 +274,7 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
@@ -307,6 +307,23 @@ export default function VideoControls({
     };
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
+  }, [containerEl]);
+
+  // ── Context menu (right-click) ──
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const rect = containerEl.getBoundingClientRect();
+      setContextMenu({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    };
+    const dismissContextMenu = () => setContextMenu(null);
+
+    containerEl.addEventListener("contextmenu", onContextMenu);
+    document.addEventListener("click", dismissContextMenu);
+    return () => {
+      containerEl.removeEventListener("contextmenu", onContextMenu);
+      document.removeEventListener("click", dismissContextMenu);
+    };
   }, [containerEl]);
 
   // ── Handlers ──
@@ -430,13 +447,6 @@ export default function VideoControls({
           </div>
 
           <div className="vp-controls-right">
-            <button
-              className="vp-btn"
-              onClick={() => setShowStats((s) => !s)}
-            >
-              <InfoIcon />
-            </button>
-
             {qualities.length > 0 && (
               <button
                 className="vp-btn"
@@ -507,6 +517,27 @@ export default function VideoControls({
           ))}
         </div>
       )}
+
+      {/* Context menu (right-click) — portaled so it stays above controls */}
+      {contextMenu &&
+        createPortal(
+          <div
+            className="vp-context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className="vp-context-menu-item"
+              onClick={() => {
+                setShowStats((s) => !s);
+                setContextMenu(null);
+              }}
+            >
+              {showStats ? "Hide stats for nerds" : "Stats for nerds"}
+            </div>
+          </div>,
+          containerEl
+        )}
 
       {/* Stats for nerds panel — portaled into containerEl so it stays visible when controls auto-hide */}
       {showStats &&
