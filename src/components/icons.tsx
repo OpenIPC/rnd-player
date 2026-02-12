@@ -110,3 +110,12 @@ export function SubtitleIcon() {
     </svg>
   );
 }
+
+export function PipIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="2" y="3" width="16" height="12" rx="2" />
+      <rect x="10" y="8" width="7" height="5" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}

@@ -193,7 +193,7 @@ video::-webkit-media-text-track-container {
   top: 0;
   left: 0;
   height: 100%;
-  background: #fff;
+  background: rgb(71, 13, 179);
   border-radius: 2px;
 }
 
@@ -251,6 +251,18 @@ video::-webkit-media-text-track-container {
   background: rgba(255, 255, 255, 0.15);
 }
 
+.vp-btn-play {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgb(71, 13, 179);
+  padding: 0;
+}
+
+.vp-btn-play:hover {
+  background: rgb(85, 20, 210);
+}
+
 .vp-btn-label {
   white-space: nowrap;
 }
@@ -270,13 +282,8 @@ video::-webkit-media-text-track-container {
 }
 
 .vp-volume-slider-wrap {
-  width: 0;
-  overflow: hidden;
-  transition: width 0.2s ease;
-}
-
-.vp-volume-group:hover .vp-volume-slider-wrap {
   width: 80px;
+  overflow: hidden;
 }
 
 .vp-volume-slider {
@@ -320,15 +327,28 @@ video::-webkit-media-text-track-container {
   background: rgba(255, 255, 255, 0.3);
 }
 
-/* ── Popups (Quality / Speed) ── */
+.vp-volume-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(71, 13, 179);
+}
+
+/* ── Popup anchor (wraps button + popup) ── */
+.vp-popup-anchor {
+  position: relative;
+}
+
+/* ── Popups (Quality / Speed / Audio / Subtitles) ── */
 .vp-popup {
   position: absolute;
-  bottom: 52px;
-  right: 12px;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
   background: rgba(20, 20, 20, 0.95);
   border-radius: 8px;
   padding: 6px 0;
   min-width: 160px;
+  white-space: nowrap;
   color: #fff;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 13px;
@@ -359,7 +379,7 @@ video::-webkit-media-text-track-container {
 }
 
 .vp-popup-item.vp-active {
-  color: #2196f3;
+  color: rgb(71, 13, 179);
 }
 
 .vp-popup-item.vp-active::before {
@@ -368,7 +388,7 @@ video::-webkit-media-text-track-container {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #2196f3;
+  background: rgb(71, 13, 179);
   margin-right: 8px;
   flex-shrink: 0;
 }

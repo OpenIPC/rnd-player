@@ -12,6 +12,7 @@ import {
   ExitFullscreenIcon,
   AudioIcon,
   SubtitleIcon,
+  PipIcon,
 } from "./icons";
 import StatsPanel from "./StatsPanel";
 import { formatTime } from "../utils/formatTime";
@@ -45,7 +46,7 @@ interface TextOption {
 function langDisplayName(code: string, fallback: string): string {
   if (!code || code === "und") return fallback;
   try {
-    return new Intl.DisplayNames(["en"], { type: "language" }).of(code) || code;
+    return new Intl.DisplayNames([navigator.language], { type: "language" }).of(code) || code;
   } catch {
     return code;
   }
@@ -348,11 +349,13 @@ export default function VideoControls({
   useEffect(() => {
     if (popup === null) return;
     const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
       if (
         wrapperRef.current &&
         !wrapperRef.current
-          .querySelector(".vp-popup")
-          ?.contains(e.target as Node)
+          .querySelector(".vp-popup-anchor .vp-popup")
+          ?.contains(target) &&
+        !(e.target as HTMLElement).closest?.(".vp-popup-anchor")
       ) {
         setPopup(null);
       }
@@ -463,15 +466,25 @@ export default function VideoControls({
     }
   };
 
+  const togglePip = async () => {
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+    } else if (document.pictureInPictureEnabled) {
+      await videoEl.requestPictureInPicture();
+    }
+  };
+
   const qualityLabel = activeHeight ? `${activeHeight}p` : "";
   const speedLabel = playbackRate === 1 ? "1x" : `${playbackRate}x`;
   const activeAudio = audioTracks[activeAudioIndex];
-  const audioLabel = activeAudio?.language ? activeAudio.language.toUpperCase() : "";
+  const audioLabel = activeAudio
+    ? (activeAudio.label || langDisplayName(activeAudio.language, `Track ${activeAudio.index + 1}`))
+    : "";
   const activeTextTrack = textTracks.find((t) => t.id === activeTextId);
   const subtitleLabel =
     textVisible && activeTextTrack
-      ? activeTextTrack.language?.toUpperCase() || ""
-      : "";
+      ? (activeTextTrack.label || langDisplayName(activeTextTrack.language, ""))
+      : textTracks.length > 0 ? "Off" : "";
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
 
@@ -514,9 +527,145 @@ export default function VideoControls({
         {/* Controls row */}
         <div className="vp-controls-row">
           <div className="vp-controls-left">
-            <button className="vp-btn" onClick={togglePlay}>
+            <button className="vp-btn vp-btn-play" onClick={togglePlay}>
               {playing ? <PauseIcon /> : <PlayIcon />}
             </button>
+
+            <span className="vp-time">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+          </div>
+
+          <div className="vp-controls-right">
+            {qualities.length > 0 && (
+              <div className="vp-popup-anchor">
+                <button
+                  className="vp-btn"
+                  onClick={() =>
+                    setPopup((p) => (p === "quality" ? null : "quality"))
+                  }
+                >
+                  <MonitorIcon />
+                  <span className="vp-btn-label">{qualityLabel}</span>
+                </button>
+                {popup === "quality" && (
+                  <div className="vp-popup">
+                    <div className="vp-popup-header">Quality</div>
+                    <div
+                      className={`vp-popup-item${isAutoQuality ? " vp-active" : ""}`}
+                      onClick={() => selectQuality("auto")}
+                    >
+                      Auto{activeHeight ? ` (${activeHeight}p)` : ""}
+                    </div>
+                    {qualities.map((q) => (
+                      <div
+                        key={q.height}
+                        className={`vp-popup-item${
+                          !isAutoQuality && activeHeight === q.height ? " vp-active" : ""
+                        }`}
+                        onClick={() => selectQuality(q)}
+                      >
+                        {q.height}p
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="vp-popup-anchor">
+              <button
+                className="vp-btn"
+                onClick={() =>
+                  setPopup((p) => (p === "speed" ? null : "speed"))
+                }
+              >
+                <SpeedIcon />
+                <span className="vp-btn-label">{speedLabel}</span>
+              </button>
+              {popup === "speed" && (
+                <div className="vp-popup">
+                  <div className="vp-popup-header">Speed</div>
+                  {SPEED_OPTIONS.map((rate) => (
+                    <div
+                      key={rate}
+                      className={`vp-popup-item${
+                        playbackRate === rate ? " vp-active" : ""
+                      }`}
+                      onClick={() => selectSpeed(rate)}
+                    >
+                      {rate}x
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {audioTracks.length > 1 && (
+              <div className="vp-popup-anchor">
+                <button
+                  className="vp-btn"
+                  onClick={() =>
+                    setPopup((p) => (p === "audio" ? null : "audio"))
+                  }
+                >
+                  <AudioIcon />
+                  {audioLabel && <span className="vp-btn-label">{audioLabel}</span>}
+                </button>
+                {popup === "audio" && (
+                  <div className="vp-popup">
+                    <div className="vp-popup-header">Audio</div>
+                    {audioTracks.map((a) => (
+                      <div
+                        key={a.index}
+                        className={`vp-popup-item${
+                          activeAudioIndex === a.index ? " vp-active" : ""
+                        }`}
+                        onClick={() => selectAudio(a)}
+                      >
+                        {a.label || langDisplayName(a.language, `Track ${a.index + 1}`)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {textTracks.length > 0 && (
+              <div className="vp-popup-anchor">
+                <button
+                  className="vp-btn"
+                  onClick={() =>
+                    setPopup((p) => (p === "subtitles" ? null : "subtitles"))
+                  }
+                >
+                  <SubtitleIcon />
+                  {subtitleLabel && <span className="vp-btn-label">{subtitleLabel}</span>}
+                </button>
+                {popup === "subtitles" && (
+                  <div className="vp-popup">
+                    <div className="vp-popup-header">Subtitles</div>
+                    <div
+                      className={`vp-popup-item${!textVisible ? " vp-active" : ""}`}
+                      onClick={() => selectSubtitle("off")}
+                    >
+                      Off
+                    </div>
+                    {textTracks.map((t, i) => (
+                      <div
+                        key={t.id}
+                        className={`vp-popup-item${
+                          textVisible && activeTextId === t.id ? " vp-active" : ""
+                        }`}
+                        onClick={() => selectSubtitle(t)}
+                      >
+                        {t.label || langDisplayName(t.language, `Track ${i + 1}`)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="vp-volume-group">
               <button className="vp-btn" onClick={toggleMute}>
@@ -531,60 +680,13 @@ export default function VideoControls({
                   step={0.01}
                   value={muted ? 0 : volume}
                   onChange={handleVolumeChange}
+                  style={{ background: `linear-gradient(to right, rgb(71, 13, 179) ${(muted ? 0 : volume) * 100}%, rgba(255, 255, 255, 0.3) ${(muted ? 0 : volume) * 100}%)` }}
                 />
               </div>
             </div>
 
-            <span className="vp-time">
-              {formatTime(currentTime)} / {formatTime(duration)}
-            </span>
-          </div>
-
-          <div className="vp-controls-right">
-            {audioTracks.length > 1 && (
-              <button
-                className="vp-btn"
-                onClick={() =>
-                  setPopup((p) => (p === "audio" ? null : "audio"))
-                }
-              >
-                <AudioIcon />
-                {audioLabel && <span className="vp-btn-label">{audioLabel}</span>}
-              </button>
-            )}
-
-            {textTracks.length > 0 && (
-              <button
-                className="vp-btn"
-                onClick={() =>
-                  setPopup((p) => (p === "subtitles" ? null : "subtitles"))
-                }
-              >
-                <SubtitleIcon />
-                {subtitleLabel && <span className="vp-btn-label">{subtitleLabel}</span>}
-              </button>
-            )}
-
-            {qualities.length > 0 && (
-              <button
-                className="vp-btn"
-                onClick={() =>
-                  setPopup((p) => (p === "quality" ? null : "quality"))
-                }
-              >
-                <MonitorIcon />
-                <span className="vp-btn-label">{qualityLabel}</span>
-              </button>
-            )}
-
-            <button
-              className="vp-btn"
-              onClick={() =>
-                setPopup((p) => (p === "speed" ? null : "speed"))
-              }
-            >
-              <SpeedIcon />
-              <span className="vp-btn-label">{speedLabel}</span>
+            <button className="vp-btn" onClick={togglePip}>
+              <PipIcon />
             </button>
 
             <button className="vp-btn" onClick={toggleFullscreen}>
@@ -593,90 +695,6 @@ export default function VideoControls({
           </div>
         </div>
       </div>
-
-      {/* Quality popup */}
-      {popup === "quality" && (
-        <div className="vp-popup">
-          <div className="vp-popup-header">Quality</div>
-          <div
-            className={`vp-popup-item${isAutoQuality ? " vp-active" : ""}`}
-            onClick={() => selectQuality("auto")}
-          >
-            Auto{activeHeight ? ` (${activeHeight}p)` : ""}
-          </div>
-          {qualities.map((q) => (
-            <div
-              key={q.height}
-              className={`vp-popup-item${
-                !isAutoQuality && activeHeight === q.height ? " vp-active" : ""
-              }`}
-              onClick={() => selectQuality(q)}
-            >
-              {q.height}p
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Speed popup */}
-      {popup === "speed" && (
-        <div className="vp-popup">
-          <div className="vp-popup-header">Speed</div>
-          {SPEED_OPTIONS.map((rate) => (
-            <div
-              key={rate}
-              className={`vp-popup-item${
-                playbackRate === rate ? " vp-active" : ""
-              }`}
-              onClick={() => selectSpeed(rate)}
-            >
-              {rate}x
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Audio track popup */}
-      {popup === "audio" && (
-        <div className="vp-popup">
-          <div className="vp-popup-header">Audio</div>
-          {audioTracks.map((a) => (
-            <div
-              key={a.index}
-              className={`vp-popup-item${
-                activeAudioIndex === a.index ? " vp-active" : ""
-              }`}
-              onClick={() => selectAudio(a)}
-            >
-              {a.label || langDisplayName(a.language, `Track ${a.index + 1}`)}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Subtitle track popup */}
-      {popup === "subtitles" && (
-        <div className="vp-popup">
-          <div className="vp-popup-header">Subtitles</div>
-          <div
-            className={`vp-popup-item${!textVisible ? " vp-active" : ""}`}
-            onClick={() => selectSubtitle("off")}
-          >
-            Off
-          </div>
-          {textTracks.map((t, i) => (
-            <div
-              key={t.id}
-              className={`vp-popup-item${
-                textVisible && activeTextId === t.id ? " vp-active" : ""
-              }`}
-              onClick={() => selectSubtitle(t)}
-            >
-              {t.label || langDisplayName(t.language, `Track ${i + 1}`)}
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Context menu (right-click) — portaled so it stays above controls */}
       {contextMenu &&
