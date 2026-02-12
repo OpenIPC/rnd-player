@@ -13,16 +13,23 @@ export interface MockVariantTrack {
   audioId: number | null;
   colorGamut: string | null;
   hdr: string | null;
+  language: string;
+  label: string;
+  roles: string[];
 }
 
 export interface MockShakaPlayer {
   getVariantTracks: ReturnType<typeof vi.fn>;
+  getTextTracks: ReturnType<typeof vi.fn>;
   getStats: ReturnType<typeof vi.fn>;
   getBufferedInfo: ReturnType<typeof vi.fn>;
   getAssetUri: ReturnType<typeof vi.fn>;
   getManifestType: ReturnType<typeof vi.fn>;
   configure: ReturnType<typeof vi.fn>;
   selectVariantTrack: ReturnType<typeof vi.fn>;
+  getAudioTracks: ReturnType<typeof vi.fn>;
+  selectAudioTrack: ReturnType<typeof vi.fn>;
+  selectTextTrack: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
   load: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
@@ -48,6 +55,9 @@ export function createDefaultTrack(
     audioId: 1,
     colorGamut: null,
     hdr: null,
+    language: "en",
+    label: "English",
+    roles: [],
     ...overrides,
   };
 }
@@ -59,6 +69,7 @@ export function createMockShakaPlayer(
 
   const mock: MockShakaPlayer = {
     getVariantTracks: vi.fn(() => [createDefaultTrack()]),
+    getTextTracks: vi.fn(() => []),
     getStats: vi.fn(() => ({
       estimatedBandwidth: 5000000,
       streamBandwidth: 3000000,
@@ -81,6 +92,9 @@ export function createMockShakaPlayer(
     getManifestType: vi.fn(() => "DASH"),
     configure: vi.fn(),
     selectVariantTrack: vi.fn(),
+    getAudioTracks: vi.fn(() => []),
+    selectAudioTrack: vi.fn(),
+    selectTextTrack: vi.fn(),
     attach: vi.fn(() => Promise.resolve()),
     load: vi.fn(() => Promise.resolve()),
     destroy: vi.fn(() => Promise.resolve()),

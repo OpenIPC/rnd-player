@@ -93,3 +93,20 @@ export function ExitFullscreenIcon() {
     </svg>
   );
 }
+
+export function AudioIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={20} height={20} viewBox="0 0 24 24" fill="currentColor">
+      <path fillRule="evenodd" clipRule="evenodd" d="M8 6a4 4 0 1 1 8 0v6a4 4 0 0 1-8 0V6Zm4-2.5A2.5 2.5 0 0 0 9.5 6v6a2.5 2.5 0 0 0 5 0V6A2.5 2.5 0 0 0 12 3.5Zm.749 15.46.001.04v2.25a.75.75 0 0 1-1.5 0V19l.001-.04A7.001 7.001 0 0 1 5 12a.75.75 0 0 1 1.5 0 5.5 5.5 0 1 0 11 0 .75.75 0 0 1 1.5 0 7.001 7.001 0 0 1-6.251 6.96Z" />
+    </svg>
+  );
+}
+
+export function SubtitleIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={20} height={20} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M6.25 11.5h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5ZM15.75 11.5h2a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5ZM5.5 15.75a.75.75 0 0 1 .75-.75h2a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1-.75-.75ZM11.25 16.5h6.5a.75.75 0 0 0 0-1.5h-6.5a.75.75 0 0 0 0 1.5Z" />
+      <path fillRule="evenodd" clipRule="evenodd" d="M6.75 4A4.75 4.75 0 0 0 2 8.75v6.5A4.75 4.75 0 0 0 6.75 20h9.328a.25.25 0 0 1 .18.075l1.075 1.103c1.703 1.746 4.667.54 4.667-1.9V8.75A4.75 4.75 0 0 0 17.25 4H6.75ZM3.5 8.75A3.25 3.25 0 0 1 6.75 5.5h10.5a3.25 3.25 0 0 1 3.25 3.25v10.529c0 1.094-1.33 1.635-2.093.852l-1.076-1.103a1.75 1.75 0 0 0-1.253-.528H6.75a3.25 3.25 0 0 1-3.25-3.25v-6.5Z" />
+    </svg>
+  );
+}

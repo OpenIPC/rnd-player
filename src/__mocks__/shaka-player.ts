@@ -14,6 +14,11 @@ function MockPlayer() {
     getManifestType: vi.fn(() => ""),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
+    setVideoContainer: vi.fn(),
+    getAudioTracks: vi.fn(() => []),
+    getTextTracks: vi.fn(() => []),
+    selectAudioTrack: vi.fn(),
+    selectTextTrack: vi.fn(),
   };
 }
 
@@ -26,6 +31,12 @@ const shaka = {
   Player,
   polyfill: {
     installAll: vi.fn(),
+  },
+  text: {
+    TextEngine: {
+      registerParser: vi.fn(),
+    },
+    SrtTextParser: vi.fn(),
   },
   util: {
     Error: class ShakaError extends Error {

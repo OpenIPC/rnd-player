@@ -10,6 +10,8 @@ import {
   SpeedIcon,
   FullscreenIcon,
   ExitFullscreenIcon,
+  AudioIcon,
+  SubtitleIcon,
 } from "./icons";
 import StatsPanel from "./StatsPanel";
 import { formatTime } from "../utils/formatTime";
@@ -24,6 +26,29 @@ interface QualityOption {
   id: number;
   height: number;
   bandwidth: number;
+}
+
+interface AudioOption {
+  index: number;
+  language: string;
+  label: string;
+  roles: string[];
+}
+
+interface TextOption {
+  id: number;
+  language: string;
+  label: string;
+  kind: string;
+}
+
+function langDisplayName(code: string, fallback: string): string {
+  if (!code || code === "und") return fallback;
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" }).of(code) || code;
+  } catch {
+    return code;
+  }
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -48,9 +73,14 @@ export default function VideoControls({
   const [qualities, setQualities] = useState<QualityOption[]>([]);
   const [activeHeight, setActiveHeight] = useState<number | null>(null);
   const [isAutoQuality, setIsAutoQuality] = useState(true);
+  const [audioTracks, setAudioTracks] = useState<AudioOption[]>([]);
+  const [activeAudioIndex, setActiveAudioIndex] = useState(-1);
+  const [textTracks, setTextTracks] = useState<TextOption[]>([]);
+  const [activeTextId, setActiveTextId] = useState<number | null>(null);
+  const [textVisible, setTextVisible] = useState(false);
 
   // UI state
-  const [popup, setPopup] = useState<"quality" | "speed" | null>(null);
+  const [popup, setPopup] = useState<"quality" | "speed" | "audio" | "subtitles" | null>(null);
   const [visible, setVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
@@ -154,10 +184,11 @@ export default function VideoControls({
 
   // ── Shaka track management ──
   const updateTracks = useCallback(() => {
-    const tracks = player.getVariantTracks();
-    // Deduplicate by height, keeping highest bandwidth per height
+    const variantTracks = player.getVariantTracks();
+
+    // Quality – deduplicate by height, keeping highest bandwidth per height
     const byHeight = new Map<number, QualityOption>();
-    for (const t of tracks) {
+    for (const t of variantTracks) {
       if (t.height == null) continue;
       const existing = byHeight.get(t.height);
       if (!existing || t.bandwidth > existing.bandwidth) {
@@ -168,15 +199,43 @@ export default function VideoControls({
         });
       }
     }
-    const sorted = Array.from(byHeight.values()).sort(
-      (a, b) => b.height - a.height
+    setQualities(
+      Array.from(byHeight.values()).sort((a, b) => b.height - a.height)
     );
-    setQualities(sorted);
+    const activeVariant = variantTracks.find((t) => t.active);
+    if (activeVariant?.height != null) {
+      setActiveHeight(activeVariant.height);
+    }
 
-    // Find the active track's height
-    const active = tracks.find((t) => t.active);
-    if (active?.height != null) {
-      setActiveHeight(active.height);
+    // Audio tracks
+    const audios = player.getAudioTracks();
+    setAudioTracks(
+      audios.map((t, i) => ({
+        index: i,
+        language: t.language,
+        label: t.label || "",
+        roles: t.roles || [],
+      }))
+    );
+    const activeAudioIdx = audios.findIndex((t) => t.active);
+    if (activeAudioIdx >= 0) {
+      setActiveAudioIndex(activeAudioIdx);
+    }
+
+    // Text / subtitle tracks
+    const texts = player.getTextTracks();
+    setTextTracks(
+      texts.map((t) => ({
+        id: t.id,
+        language: t.language,
+        label: t.label || "",
+        kind: t.kind || "subtitle",
+      }))
+    );
+    const activeText = texts.find((t) => t.active);
+    setTextVisible(activeText != null);
+    if (activeText) {
+      setActiveTextId(activeText.id);
     }
   }, [player]);
 
@@ -190,11 +249,13 @@ export default function VideoControls({
     player.addEventListener("trackschanged", onTracksChanged);
     player.addEventListener("variantchanged", onVariantChanged);
     player.addEventListener("adaptation", onAdaptation);
+    player.addEventListener("textchanged", onTracksChanged);
 
     return () => {
       player.removeEventListener("trackschanged", onTracksChanged);
       player.removeEventListener("variantchanged", onVariantChanged);
       player.removeEventListener("adaptation", onAdaptation);
+      player.removeEventListener("textchanged", onTracksChanged);
     };
   }, [player, updateTracks]);
 
@@ -368,6 +429,32 @@ export default function VideoControls({
     setPopup(null);
   };
 
+  const selectAudio = (audio: AudioOption) => {
+    const tracks = player.getAudioTracks();
+    if (tracks[audio.index]) {
+      player.selectAudioTrack(tracks[audio.index]);
+    }
+    setActiveAudioIndex(audio.index);
+    setPopup(null);
+  };
+
+  const selectSubtitle = (text: TextOption | "off") => {
+    if (text === "off") {
+      player.selectTextTrack(null);
+      setTextVisible(false);
+      setActiveTextId(null);
+    } else {
+      const tracks = player.getTextTracks();
+      const track = tracks.find((t) => t.id === text.id);
+      if (track) {
+        player.selectTextTrack(track);
+        setTextVisible(true);
+        setActiveTextId(text.id);
+      }
+    }
+    setPopup(null);
+  };
+
   const toggleFullscreen = () => {
     if (document.fullscreenElement) {
       document.exitFullscreen();
@@ -378,6 +465,13 @@ export default function VideoControls({
 
   const qualityLabel = activeHeight ? `${activeHeight}p` : "";
   const speedLabel = playbackRate === 1 ? "1x" : `${playbackRate}x`;
+  const activeAudio = audioTracks[activeAudioIndex];
+  const audioLabel = activeAudio?.language ? activeAudio.language.toUpperCase() : "";
+  const activeTextTrack = textTracks.find((t) => t.id === activeTextId);
+  const subtitleLabel =
+    textVisible && activeTextTrack
+      ? activeTextTrack.language?.toUpperCase() || ""
+      : "";
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
 
@@ -447,6 +541,30 @@ export default function VideoControls({
           </div>
 
           <div className="vp-controls-right">
+            {audioTracks.length > 1 && (
+              <button
+                className="vp-btn"
+                onClick={() =>
+                  setPopup((p) => (p === "audio" ? null : "audio"))
+                }
+              >
+                <AudioIcon />
+                {audioLabel && <span className="vp-btn-label">{audioLabel}</span>}
+              </button>
+            )}
+
+            {textTracks.length > 0 && (
+              <button
+                className="vp-btn"
+                onClick={() =>
+                  setPopup((p) => (p === "subtitles" ? null : "subtitles"))
+                }
+              >
+                <SubtitleIcon />
+                {subtitleLabel && <span className="vp-btn-label">{subtitleLabel}</span>}
+              </button>
+            )}
+
             {qualities.length > 0 && (
               <button
                 className="vp-btn"
@@ -513,6 +631,48 @@ export default function VideoControls({
               onClick={() => selectSpeed(rate)}
             >
               {rate}x
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Audio track popup */}
+      {popup === "audio" && (
+        <div className="vp-popup">
+          <div className="vp-popup-header">Audio</div>
+          {audioTracks.map((a) => (
+            <div
+              key={a.index}
+              className={`vp-popup-item${
+                activeAudioIndex === a.index ? " vp-active" : ""
+              }`}
+              onClick={() => selectAudio(a)}
+            >
+              {a.label || langDisplayName(a.language, `Track ${a.index + 1}`)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Subtitle track popup */}
+      {popup === "subtitles" && (
+        <div className="vp-popup">
+          <div className="vp-popup-header">Subtitles</div>
+          <div
+            className={`vp-popup-item${!textVisible ? " vp-active" : ""}`}
+            onClick={() => selectSubtitle("off")}
+          >
+            Off
+          </div>
+          {textTracks.map((t, i) => (
+            <div
+              key={t.id}
+              className={`vp-popup-item${
+                textVisible && activeTextId === t.id ? " vp-active" : ""
+              }`}
+              onClick={() => selectSubtitle(t)}
+            >
+              {t.label || langDisplayName(t.language, `Track ${i + 1}`)}
             </div>
           ))}
         </div>

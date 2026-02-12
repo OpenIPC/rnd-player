@@ -108,6 +108,11 @@
   background: #1e88e5;
 }
 
+/* ── Native subtitle positioning ── */
+video::-webkit-media-text-track-container {
+  transform: translateY(-60px);
+}
+
 /* ── Controls overlay wrapper ── */
 .vp-controls-wrapper {
   position: absolute;

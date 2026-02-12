@@ -23,6 +23,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey }: ShakaPlayerProps) {
   useEffect(() => {
     if (!polyfillsInstalled) {
       shaka.polyfill.installAll();
+      shaka.text.TextEngine.registerParser(
+        "application/x-subrip",
+        () => new shaka.text.SrtTextParser(),
+      );
       polyfillsInstalled = true;
     }
 

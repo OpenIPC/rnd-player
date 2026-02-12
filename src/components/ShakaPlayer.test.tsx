@@ -24,6 +24,11 @@ describe("ShakaPlayer", () => {
     getAssetUri: ReturnType<typeof vi.fn>;
     getManifestType: ReturnType<typeof vi.fn>;
     configure: ReturnType<typeof vi.fn>;
+    setVideoContainer: ReturnType<typeof vi.fn>;
+    getAudioTracks: ReturnType<typeof vi.fn>;
+    getTextTracks: ReturnType<typeof vi.fn>;
+    selectAudioTrack: ReturnType<typeof vi.fn>;
+    selectTextTrack: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
@@ -42,6 +47,11 @@ describe("ShakaPlayer", () => {
       getAssetUri: vi.fn(() => ""),
       getManifestType: vi.fn(() => ""),
       configure: vi.fn(),
+      setVideoContainer: vi.fn(),
+      getAudioTracks: vi.fn(() => []),
+      getTextTracks: vi.fn(() => []),
+      selectAudioTrack: vi.fn(),
+      selectTextTrack: vi.fn(),
     };
 
     (shaka.Player as unknown as ReturnType<typeof vi.fn>).mockImplementation(
