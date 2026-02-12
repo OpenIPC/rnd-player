@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import type shaka from "shaka-player";
 import { useThumbnailGenerator } from "../hooks/useThumbnailGenerator";
 import { formatTime } from "../utils/formatTime";
@@ -37,17 +37,24 @@ export default function FilmstripTimeline({
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
 
-  const [currentTime, setCurrentTime] = useState(videoEl.currentTime);
   const duration = videoEl.duration || 0;
 
   const { thumbnails, progress, supported, encrypted, generating } =
     useThumbnailGenerator(player, videoEl, true);
 
+  // Keep latest values in refs so the rAF paint loop can read them
+  // without the useEffect needing to restart on every thumbnail/progress update.
+  const thumbnailsRef = useRef(thumbnails);
+  const progressRef = useRef(progress);
+  const generatingRef = useRef(generating);
+  thumbnailsRef.current = thumbnails;
+  progressRef.current = progress;
+  generatingRef.current = generating;
+
   // Track current time from video element
   useEffect(() => {
     const onTimeUpdate = () => {
       currentTimeRef.current = videoEl.currentTime;
-      setCurrentTime(videoEl.currentTime);
     };
     const onDurationChange = () => {
       durationRef.current = videoEl.duration || 0;
@@ -195,7 +202,7 @@ export default function FilmstripTimeline({
         const drawX = x - thumbW / 2;
         const drawY = THUMB_ROW_TOP + (THUMB_HEIGHT - THUMB_HEIGHT) / 2;
 
-        const bmp = thumbnails.get(ts);
+        const bmp = thumbnailsRef.current.get(ts);
         if (bmp) {
           ctx.drawImage(bmp, drawX, drawY, thumbW, THUMB_HEIGHT);
           // Border
@@ -233,8 +240,8 @@ export default function FilmstripTimeline({
       }
 
       // ── Progress bar at bottom ──
-      if (generating && progress.total > 0) {
-        const pct = progress.completed / progress.total;
+      if (generatingRef.current && progressRef.current.total > 0) {
+        const pct = progressRef.current.completed / progressRef.current.total;
         ctx.fillStyle = "rgba(255, 255, 255, 0.1)";
         ctx.fillRect(0, h - PROGRESS_BAR_HEIGHT, w, PROGRESS_BAR_HEIGHT);
         ctx.fillStyle = PLAYHEAD_COLOR;
@@ -250,7 +257,7 @@ export default function FilmstripTimeline({
       cancelAnimationFrame(rafRef.current);
       observer.disconnect();
     };
-  }, [thumbnails, generating, progress, clampScroll]);
+  }, [clampScroll]);
 
   // ── Pointer interactions for seeking ──
   const seekToX = useCallback(
@@ -376,9 +383,6 @@ export default function FilmstripTimeline({
       </div>
     );
   }
-
-  // Suppress unused variable warning — currentTime is read to trigger re-renders
-  void currentTime;
 
   return (
     <div
