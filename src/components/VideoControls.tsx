@@ -15,6 +15,7 @@ import {
   PipIcon,
 } from "./icons";
 import StatsPanel from "./StatsPanel";
+import AudioLevels from "./AudioLevels";
 import { formatTime } from "../utils/formatTime";
 
 interface VideoControlsProps {
@@ -85,6 +86,7 @@ export default function VideoControls({
   const [visible, setVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [showAudioLevels, setShowAudioLevels] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
@@ -336,7 +338,7 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
@@ -713,6 +715,15 @@ export default function VideoControls({
             >
               {showStats ? "Hide stats for nerds" : "Stats for nerds"}
             </div>
+            <div
+              className="vp-context-menu-item"
+              onClick={() => {
+                setShowAudioLevels((s) => !s);
+                setContextMenu(null);
+              }}
+            >
+              {showAudioLevels ? "Hide audio levels" : "Audio levels"}
+            </div>
           </div>,
           containerEl
         )}
@@ -727,6 +738,15 @@ export default function VideoControls({
           />,
           containerEl
         )}
+
+      {/* Audio level meters — portaled into containerEl so they stay visible when controls auto-hide */}
+      {showAudioLevels && (
+        <AudioLevels
+          videoEl={videoEl}
+          containerEl={containerEl}
+          onClose={() => setShowAudioLevels(false)}
+        />
+      )}
     </div>
   );
 }
