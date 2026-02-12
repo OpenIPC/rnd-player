@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
+import FilmstripTimeline from "./FilmstripTimeline";
 import "./ShakaPlayer.css";
 
 interface ShakaPlayerProps {
@@ -21,6 +22,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
+  const [showFilmstrip, setShowFilmstrip] = useState(false);
 
   useEffect(() => {
     if (!polyfillsInstalled) {
@@ -174,47 +176,61 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
 
   return (
     <div ref={containerRef} className={`vp-container${needsKey ? " vp-awaiting-key" : ""}`}>
-      <video ref={videoRef} />
-      {needsKey && (
-        <div className="vp-key-overlay">
-          <form
-            className="vp-key-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const value = new FormData(e.currentTarget).get("key") as string;
-              if (value?.trim()) handleKeySubmit(value.trim());
-            }}
-          >
-            <div className="vp-key-title">Encrypted content</div>
-            <div className="vp-key-desc">Enter decryption key to play</div>
-            <input
-              name="key"
-              className="vp-key-input"
-              type="password"
-              placeholder="Decryption key (hex)"
-              autoFocus
+      <div className="vp-video-area">
+        <video ref={videoRef} />
+        {needsKey && (
+          <div className="vp-key-overlay">
+            <form
+              className="vp-key-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const value = new FormData(e.currentTarget).get("key") as string;
+                if (value?.trim()) handleKeySubmit(value.trim());
+              }}
+            >
+              <div className="vp-key-title">Encrypted content</div>
+              <div className="vp-key-desc">Enter decryption key to play</div>
+              <input
+                name="key"
+                className="vp-key-input"
+                type="password"
+                placeholder="Decryption key (hex)"
+                autoFocus
+              />
+              <button type="submit" className="vp-key-submit">
+                Play
+              </button>
+            </form>
+          </div>
+        )}
+        {error && (
+          <div className="vp-error-overlay">
+            <div className="vp-error-message">{error}</div>
+          </div>
+        )}
+        {playerReady &&
+          videoRef.current &&
+          containerRef.current &&
+          playerRef.current && (
+            <VideoControls
+              videoEl={videoRef.current}
+              containerEl={containerRef.current}
+              player={playerRef.current}
+              src={src}
+              clearKey={activeKey}
+              showFilmstrip={showFilmstrip}
+              onToggleFilmstrip={() => setShowFilmstrip((s) => !s)}
             />
-            <button type="submit" className="vp-key-submit">
-              Play
-            </button>
-          </form>
-        </div>
-      )}
-      {error && (
-        <div className="vp-error-overlay">
-          <div className="vp-error-message">{error}</div>
-        </div>
-      )}
-      {playerReady &&
+          )}
+      </div>
+      {showFilmstrip &&
+        playerReady &&
         videoRef.current &&
-        containerRef.current &&
         playerRef.current && (
-          <VideoControls
+          <FilmstripTimeline
             videoEl={videoRef.current}
-            containerEl={containerRef.current}
             player={playerRef.current}
-            src={src}
-            clearKey={activeKey}
+            onClose={() => setShowFilmstrip(false)}
           />
         )}
     </div>

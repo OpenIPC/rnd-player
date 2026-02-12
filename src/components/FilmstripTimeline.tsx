@@ -1,0 +1,402 @@
+import { useEffect, useRef, useState, useCallback } from "react";
+import type shaka from "shaka-player";
+import { useThumbnailGenerator } from "../hooks/useThumbnailGenerator";
+import { formatTime } from "../utils/formatTime";
+
+interface FilmstripTimelineProps {
+  videoEl: HTMLVideoElement;
+  player: shaka.Player;
+  onClose: () => void;
+}
+
+const RULER_HEIGHT = 22;
+const THUMB_ROW_TOP = RULER_HEIGHT;
+const THUMB_HEIGHT = 80;
+const PROGRESS_BAR_HEIGHT = 4;
+const MIN_PX_PER_SEC = 4;
+const MAX_PX_PER_SEC = 100;
+const DEFAULT_PX_PER_SEC = 16;
+const THUMBNAIL_INTERVAL = 5;
+const THUMBNAIL_WIDTH = 160;
+const PLAYHEAD_COLOR = "rgb(71, 13, 179)";
+const FONT = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+
+export default function FilmstripTimeline({
+  videoEl,
+  player,
+  onClose,
+}: FilmstripTimelineProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef(0);
+  const scrollLeftRef = useRef(0);
+  const pxPerSecRef = useRef(DEFAULT_PX_PER_SEC);
+  const isDraggingRef = useRef(false);
+  const autoFollowRef = useRef(true);
+  const containerWidthRef = useRef(0);
+  const durationRef = useRef(0);
+  const currentTimeRef = useRef(0);
+
+  const [currentTime, setCurrentTime] = useState(videoEl.currentTime);
+  const duration = videoEl.duration || 0;
+
+  const { thumbnails, progress, supported, encrypted, generating } =
+    useThumbnailGenerator(player, videoEl, true);
+
+  // Track current time from video element
+  useEffect(() => {
+    const onTimeUpdate = () => {
+      currentTimeRef.current = videoEl.currentTime;
+      setCurrentTime(videoEl.currentTime);
+    };
+    const onDurationChange = () => {
+      durationRef.current = videoEl.duration || 0;
+    };
+    durationRef.current = videoEl.duration || 0;
+
+    videoEl.addEventListener("timeupdate", onTimeUpdate);
+    videoEl.addEventListener("durationchange", onDurationChange);
+    return () => {
+      videoEl.removeEventListener("timeupdate", onTimeUpdate);
+      videoEl.removeEventListener("durationchange", onDurationChange);
+    };
+  }, [videoEl]);
+
+  // Clamp scroll to valid range
+  const clampScroll = useCallback(
+    (scroll: number, viewWidth: number) => {
+      const totalWidth = durationRef.current * pxPerSecRef.current;
+      const max = Math.max(0, totalWidth - viewWidth);
+      return Math.max(0, Math.min(max, scroll));
+    },
+    [],
+  );
+
+  // Canvas rendering loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const wrapper = wrapperRef.current;
+    if (!canvas || !wrapper) return;
+
+    const ctx = canvas.getContext("2d")!;
+
+    const observer = new ResizeObserver(() => {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = wrapper.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      containerWidthRef.current = rect.width;
+    });
+    observer.observe(wrapper);
+
+    function paint() {
+      const rect = wrapper!.getBoundingClientRect();
+      const w = rect.width;
+      const h = rect.height;
+      const pxPerSec = pxPerSecRef.current;
+      const dur = durationRef.current;
+      const time = currentTimeRef.current;
+      const scrollLeft = scrollLeftRef.current;
+
+      ctx.clearRect(0, 0, w, h);
+
+      if (dur <= 0) {
+        rafRef.current = requestAnimationFrame(paint);
+        return;
+      }
+
+      // Auto-follow playhead
+      if (autoFollowRef.current && !isDraggingRef.current) {
+        const playheadX = time * pxPerSec - scrollLeft;
+        const margin = w * 0.15;
+        if (playheadX < margin || playheadX > w - margin) {
+          scrollLeftRef.current = clampScroll(time * pxPerSec - w / 2, w);
+        }
+      }
+
+      const sl = scrollLeftRef.current;
+
+      // Background
+      ctx.fillStyle = "#111";
+      ctx.fillRect(0, 0, w, h);
+
+      // ── Time ruler ──
+      ctx.fillStyle = "#1a1a1a";
+      ctx.fillRect(0, 0, w, RULER_HEIGHT);
+
+      // Compute tick interval based on zoom
+      const minTickPx = 60;
+      const rawInterval = minTickPx / pxPerSec;
+      const niceIntervals = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+      let tickInterval = niceIntervals[niceIntervals.length - 1];
+      for (const ni of niceIntervals) {
+        if (ni >= rawInterval) {
+          tickInterval = ni;
+          break;
+        }
+      }
+
+      const startTick = Math.floor(sl / pxPerSec / tickInterval) * tickInterval;
+      const endTick = Math.ceil((sl + w) / pxPerSec / tickInterval) * tickInterval;
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+      ctx.font = FONT;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+
+      for (let t = startTick; t <= endTick; t += tickInterval) {
+        if (t < 0) continue;
+        const x = t * pxPerSec - sl;
+        if (x < -50 || x > w + 50) continue;
+
+        // Major tick
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, RULER_HEIGHT - 6);
+        ctx.lineTo(x, RULER_HEIGHT);
+        ctx.stroke();
+
+        ctx.fillText(formatTime(t), x, RULER_HEIGHT - 7);
+
+        // Minor ticks (subdivide into 4)
+        const subInterval = tickInterval / 4;
+        for (let s = 1; s < 4; s++) {
+          const sx = (t + s * subInterval) * pxPerSec - sl;
+          if (sx < 0 || sx > w) continue;
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+          ctx.beginPath();
+          ctx.moveTo(sx, RULER_HEIGHT - 3);
+          ctx.lineTo(sx, RULER_HEIGHT);
+          ctx.stroke();
+        }
+      }
+
+      // ── Thumbnail row ──
+      const thumbAspect = THUMBNAIL_WIDTH / THUMB_HEIGHT;
+      const thumbW = THUMB_HEIGHT * thumbAspect;
+      const thumbSpacing = THUMBNAIL_INTERVAL * pxPerSec;
+
+      // Only draw visible thumbnails
+      const startIdx = Math.max(0, Math.floor(sl / thumbSpacing) - 1);
+      const endIdx = Math.min(
+        Math.ceil(dur / THUMBNAIL_INTERVAL),
+        Math.ceil((sl + w) / thumbSpacing) + 1,
+      );
+
+      for (let i = startIdx; i <= endIdx; i++) {
+        const ts = i * THUMBNAIL_INTERVAL;
+        const x = ts * pxPerSec - sl;
+
+        // Center thumbnail on its timestamp
+        const drawX = x - thumbW / 2;
+        const drawY = THUMB_ROW_TOP + (THUMB_HEIGHT - THUMB_HEIGHT) / 2;
+
+        const bmp = thumbnails.get(ts);
+        if (bmp) {
+          ctx.drawImage(bmp, drawX, drawY, thumbW, THUMB_HEIGHT);
+          // Border
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(drawX, drawY, thumbW, THUMB_HEIGHT);
+        } else {
+          // Placeholder
+          ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+          ctx.fillRect(drawX, drawY, thumbW, THUMB_HEIGHT);
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(drawX, drawY, thumbW, THUMB_HEIGHT);
+        }
+      }
+
+      // ── Playhead ──
+      const playheadX = time * pxPerSec - sl;
+      if (playheadX >= -2 && playheadX <= w + 2) {
+        ctx.strokeStyle = PLAYHEAD_COLOR;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(playheadX, 0);
+        ctx.lineTo(playheadX, h - PROGRESS_BAR_HEIGHT);
+        ctx.stroke();
+
+        // Playhead cap (triangle)
+        ctx.fillStyle = PLAYHEAD_COLOR;
+        ctx.beginPath();
+        ctx.moveTo(playheadX - 5, 0);
+        ctx.lineTo(playheadX + 5, 0);
+        ctx.lineTo(playheadX, 6);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // ── Progress bar at bottom ──
+      if (generating && progress.total > 0) {
+        const pct = progress.completed / progress.total;
+        ctx.fillStyle = "rgba(255, 255, 255, 0.1)";
+        ctx.fillRect(0, h - PROGRESS_BAR_HEIGHT, w, PROGRESS_BAR_HEIGHT);
+        ctx.fillStyle = PLAYHEAD_COLOR;
+        ctx.fillRect(0, h - PROGRESS_BAR_HEIGHT, w * pct, PROGRESS_BAR_HEIGHT);
+      }
+
+      rafRef.current = requestAnimationFrame(paint);
+    }
+
+    rafRef.current = requestAnimationFrame(paint);
+
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      observer.disconnect();
+    };
+  }, [thumbnails, generating, progress, clampScroll]);
+
+  // ── Pointer interactions for seeking ──
+  const seekToX = useCallback(
+    (clientX: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const time = (x + scrollLeftRef.current) / pxPerSecRef.current;
+      const dur = durationRef.current;
+      videoEl.currentTime = Math.max(0, Math.min(dur, time));
+    },
+    [videoEl],
+  );
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onPointerDown = (e: PointerEvent) => {
+      // Ignore right-click
+      if (e.button !== 0) return;
+      isDraggingRef.current = true;
+      autoFollowRef.current = false;
+      canvas.setPointerCapture(e.pointerId);
+      seekToX(e.clientX);
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDraggingRef.current) return;
+      seekToX(e.clientX);
+    };
+
+    const onPointerUp = () => {
+      isDraggingRef.current = false;
+      // Re-enable auto-follow after a short delay
+      setTimeout(() => {
+        autoFollowRef.current = true;
+      }, 2000);
+    };
+
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", onPointerUp);
+
+    return () => {
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [seekToX]);
+
+  // ── Wheel for scroll and zoom ──
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const w = containerWidthRef.current;
+
+      if (e.ctrlKey || e.metaKey) {
+        // Zoom
+        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const timeBefore = (mouseX + scrollLeftRef.current) / pxPerSecRef.current;
+
+        pxPerSecRef.current = Math.max(
+          MIN_PX_PER_SEC,
+          Math.min(MAX_PX_PER_SEC, pxPerSecRef.current * zoomFactor),
+        );
+
+        // Keep the time under the cursor in the same screen position
+        scrollLeftRef.current = clampScroll(
+          timeBefore * pxPerSecRef.current - mouseX,
+          w,
+        );
+        autoFollowRef.current = false;
+      } else {
+        // Horizontal scroll
+        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        scrollLeftRef.current = clampScroll(scrollLeftRef.current + delta, w);
+        autoFollowRef.current = false;
+      }
+    };
+
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, [clampScroll]);
+
+  // ── Fallback states ──
+  if (!supported) {
+    return (
+      <div
+        className="vp-filmstrip-panel"
+        onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.stopPropagation()}
+      >
+        <button className="vp-filmstrip-close" onClick={onClose}>
+          ×
+        </button>
+        <div className="vp-filmstrip-fallback">
+          Filmstrip timeline requires a browser with WebCodecs support
+        </div>
+      </div>
+    );
+  }
+
+  if (encrypted) {
+    return (
+      <div
+        className="vp-filmstrip-panel"
+        onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.stopPropagation()}
+      >
+        <button className="vp-filmstrip-close" onClick={onClose}>
+          ×
+        </button>
+        <div className="vp-filmstrip-fallback">
+          Filmstrip timeline unavailable for encrypted content
+        </div>
+      </div>
+    );
+  }
+
+  // Suppress unused variable warning — currentTime is read to trigger re-renders
+  void currentTime;
+
+  return (
+    <div
+      ref={wrapperRef}
+      className="vp-filmstrip-panel"
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
+    >
+      <button className="vp-filmstrip-close" onClick={onClose}>
+        ×
+      </button>
+      <canvas
+        ref={canvasRef}
+        style={{ width: "100%", height: "100%", display: "block" }}
+      />
+      {duration <= 0 && (
+        <div className="vp-filmstrip-fallback">Waiting for video duration...</div>
+      )}
+    </div>
+  );
+}

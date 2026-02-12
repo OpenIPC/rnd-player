@@ -16,6 +16,7 @@ import {
   CopyLinkIcon,
   StatsNerdIcon,
   AudioLevelsIcon,
+  FilmstripIcon,
 } from "./icons";
 import StatsPanel from "./StatsPanel";
 import AudioLevels from "./AudioLevels";
@@ -27,6 +28,8 @@ interface VideoControlsProps {
   player: shaka.Player;
   src: string;
   clearKey?: string;
+  showFilmstrip?: boolean;
+  onToggleFilmstrip?: () => void;
 }
 
 interface QualityOption {
@@ -68,6 +71,8 @@ export default function VideoControls({
   player,
   src,
   clearKey,
+  showFilmstrip,
+  onToggleFilmstrip,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -345,7 +350,7 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
@@ -773,6 +778,18 @@ export default function VideoControls({
               <AudioLevelsIcon />
               {showAudioLevels ? "Hide audio levels" : "Audio levels"}
             </div>
+            {onToggleFilmstrip && (
+              <div
+                className="vp-context-menu-item"
+                onClick={() => {
+                  onToggleFilmstrip();
+                  setContextMenu(null);
+                }}
+              >
+                <FilmstripIcon />
+                {showFilmstrip ? "Hide filmstrip" : "Filmstrip timeline"}
+              </div>
+            )}
           </div>,
           containerEl
         )}

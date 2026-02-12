@@ -13,6 +13,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "mp4box": "^2.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "shaka-player": "^5.0.1"

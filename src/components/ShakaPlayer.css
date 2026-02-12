@@ -1,6 +1,8 @@
 /* ── Container ── */
 .vp-container {
   position: relative;
+  display: flex;
+  flex-direction: column;
   background: #000;
   overflow: hidden;
   width: 100%;
@@ -8,7 +10,14 @@
   line-height: 0;
 }
 
-.vp-container video {
+/* ── Video area wrapper ── */
+.vp-video-area {
+  position: relative;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.vp-video-area video {
   width: 100%;
   display: block;
 }
@@ -404,7 +413,12 @@ video::-webkit-media-text-track-container {
   max-width: none;
 }
 
-.vp-container:fullscreen video {
+.vp-container:fullscreen .vp-video-area {
+  flex: 1;
+  min-height: 0;
+}
+
+.vp-container:fullscreen .vp-video-area video {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -414,7 +428,12 @@ video::-webkit-media-text-track-container {
   max-width: none;
 }
 
-.vp-container:-webkit-full-screen video {
+.vp-container:-webkit-full-screen .vp-video-area {
+  flex: 1;
+  min-height: 0;
+}
+
+.vp-container:-webkit-full-screen .vp-video-area video {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -618,4 +637,52 @@ video::-webkit-media-text-track-container {
 /* Shift stats panel right when audio levels are visible */
 .vp-container:has(.vp-audio-levels) .vp-stats-panel {
   left: 88px;
+}
+
+/* ── Filmstrip timeline panel ── */
+.vp-filmstrip-panel {
+  position: relative;
+  flex-shrink: 0;
+  height: 114px;
+  background: #111;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: crosshair;
+  line-height: normal;
+}
+
+.vp-filmstrip-close {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 2;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font: 13px monospace;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.vp-filmstrip-close:hover {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.vp-filmstrip-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+  padding: 16px;
+}
+
+/* Adjust audio levels bottom when filmstrip is visible */
+.vp-container:has(.vp-filmstrip-panel) .vp-audio-levels {
+  bottom: 162px;
 }

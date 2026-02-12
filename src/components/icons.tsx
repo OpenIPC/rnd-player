@@ -138,6 +138,20 @@ export function AudioLevelsIcon() {
   );
 }
 
+export function FilmstripIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="currentColor">
+      <rect x="1" y="4" width="18" height="12" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="3" y="6.5" width="4" height="3" rx="0.5" />
+      <rect x="8" y="6.5" width="4" height="3" rx="0.5" />
+      <rect x="13" y="6.5" width="4" height="3" rx="0.5" />
+      <rect x="3" y="10.5" width="4" height="3" rx="0.5" />
+      <rect x="8" y="10.5" width="4" height="3" rx="0.5" />
+      <rect x="13" y="10.5" width="4" height="3" rx="0.5" />
+    </svg>
+  );
+}
+
 export function PipIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
