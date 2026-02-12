@@ -715,7 +715,7 @@ export default function VideoControls({
                   step={0.01}
                   value={muted ? 0 : volume}
                   onChange={handleVolumeChange}
-                  style={{ background: `linear-gradient(to right, rgb(71, 13, 179) ${(muted ? 0 : volume) * 100}%, rgba(255, 255, 255, 0.3) ${(muted ? 0 : volume) * 100}%)` }}
+                  style={{ '--vp-vol': `${(muted ? 0 : volume) * 100}%` } as React.CSSProperties}
                 />
               </div>
             </div>
