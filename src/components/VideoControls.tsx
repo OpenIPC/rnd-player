@@ -13,6 +13,9 @@ import {
   AudioIcon,
   SubtitleIcon,
   PipIcon,
+  CopyLinkIcon,
+  StatsNerdIcon,
+  AudioLevelsIcon,
 } from "./icons";
 import StatsPanel from "./StatsPanel";
 import AudioLevels from "./AudioLevels";
@@ -22,6 +25,8 @@ interface VideoControlsProps {
   videoEl: HTMLVideoElement;
   containerEl: HTMLDivElement;
   player: shaka.Player;
+  src: string;
+  clearKey?: string;
 }
 
 interface QualityOption {
@@ -61,6 +66,8 @@ export default function VideoControls({
   videoEl,
   containerEl,
   player,
+  src,
+  clearKey,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -476,6 +483,32 @@ export default function VideoControls({
     }
   };
 
+  const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
+
+  const buildShareUrl = (withTime: boolean) => {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const params = new URLSearchParams();
+    params.set("v", src);
+    if (withTime) {
+      params.set("t", `${Math.floor(videoEl.currentTime)}s`);
+    }
+    if (clearKey) {
+      params.set("key", clearKey);
+    }
+    return `${base}?${params.toString()}`;
+  };
+
+  const copyVideoUrl = (withTime: boolean) => {
+    const url = buildShareUrl(withTime);
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedMsg(withTime ? "URL with time copied" : "URL copied");
+      clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopiedMsg(null), 2000);
+    });
+    setContextMenu(null);
+  };
+
   const qualityLabel = activeHeight ? `${activeHeight}p` : "";
   const speedLabel = playbackRate === 1 ? "1x" : `${playbackRate}x`;
   const activeAudio = audioTracks[activeAudioIndex];
@@ -708,11 +741,26 @@ export default function VideoControls({
           >
             <div
               className="vp-context-menu-item"
+              onClick={() => copyVideoUrl(false)}
+            >
+              <CopyLinkIcon />
+              Copy video URL
+            </div>
+            <div
+              className="vp-context-menu-item"
+              onClick={() => copyVideoUrl(true)}
+            >
+              <CopyLinkIcon />
+              Copy video URL at current time
+            </div>
+            <div
+              className="vp-context-menu-item"
               onClick={() => {
                 setShowStats((s) => !s);
                 setContextMenu(null);
               }}
             >
+              <StatsNerdIcon />
               {showStats ? "Hide stats for nerds" : "Stats for nerds"}
             </div>
             <div
@@ -722,9 +770,17 @@ export default function VideoControls({
                 setContextMenu(null);
               }}
             >
+              <AudioLevelsIcon />
               {showAudioLevels ? "Hide audio levels" : "Audio levels"}
             </div>
           </div>,
+          containerEl
+        )}
+
+      {/* Copied toast */}
+      {copiedMsg &&
+        createPortal(
+          <div className="vp-copied-toast">{copiedMsg}</div>,
           containerEl
         )}
 

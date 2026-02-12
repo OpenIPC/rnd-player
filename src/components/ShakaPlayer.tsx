@@ -7,11 +7,12 @@ interface ShakaPlayerProps {
   src: string;
   autoPlay?: boolean;
   clearKey?: string;
+  startTime?: number;
 }
 
 let polyfillsInstalled = false;
 
-function ShakaPlayer({ src, autoPlay = false, clearKey }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
@@ -19,6 +20,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey }: ShakaPlayerProps) {
   const [playerReady, setPlayerReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
+  const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
 
   useEffect(() => {
     if (!polyfillsInstalled) {
@@ -82,8 +84,12 @@ function ShakaPlayer({ src, autoPlay = false, clearKey }: ShakaPlayerProps) {
         // sessionStorage unavailable
       }
 
-      const startTime =
-        savedState && savedState.time > 0 ? savedState.time : null;
+      const loadStartTime =
+        startTime != null && startTime > 0
+          ? startTime
+          : savedState && savedState.time > 0
+            ? savedState.time
+            : null;
 
       // Fetch manifest and extract cenc:default_KID for ClearKey DRM
       const response = await fetch(src);
@@ -109,7 +115,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey }: ShakaPlayerProps) {
       }
 
       try {
-        await player.load(src, startTime);
+        await player.load(src, loadStartTime);
         if (destroyed) return;
         setPlayerReady(true);
 
@@ -140,10 +146,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey }: ShakaPlayerProps) {
       player.destroy();
       playerRef.current = null;
     };
-  }, [src, autoPlay, clearKey]);
+  }, [src, autoPlay, clearKey, startTime]);
 
   const handleKeySubmit = async (key: string) => {
     setNeedsKey(false);
+    setActiveKey(key);
 
     const player = playerRef.current;
     const kid = kidRef.current;
@@ -206,6 +213,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey }: ShakaPlayerProps) {
             videoEl={videoRef.current}
             containerEl={containerRef.current}
             player={playerRef.current}
+            src={src}
+            clearKey={activeKey}
           />
         )}
     </div>

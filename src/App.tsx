@@ -2,8 +2,29 @@ import { useState } from "react";
 import ShakaPlayer from "./components/ShakaPlayer";
 import "./App.css";
 
+function parseUrlParams(): {
+  src: string | null;
+  startTime: number | null;
+  clearKey: string | null;
+} {
+  const params = new URLSearchParams(window.location.search);
+  const v = params.get("v");
+  const t = params.get("t");
+  const key = params.get("key");
+
+  return {
+    src: v || null,
+    startTime: t ? parseFloat(t.replace(/s$/, "")) || null : null,
+    clearKey: key || null,
+  };
+}
+
+const initial = parseUrlParams();
+
 function App() {
-  const [src, setSrc] = useState<string | null>(null);
+  const [src, setSrc] = useState<string | null>(initial.src);
+  const [clearKey] = useState<string | null>(initial.clearKey);
+  const [startTime] = useState<number | null>(initial.startTime);
 
   if (!src) {
     return (
@@ -36,7 +57,12 @@ function App() {
   return (
     <div className="player-container">
       <h1>Vibe Player</h1>
-      <ShakaPlayer src={src} autoPlay />
+      <ShakaPlayer
+        src={src}
+        autoPlay
+        clearKey={clearKey ?? undefined}
+        startTime={startTime ?? undefined}
+      />
     </div>
   );
 }

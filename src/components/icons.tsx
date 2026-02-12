@@ -111,6 +111,33 @@ export function SubtitleIcon() {
   );
 }
 
+export function CopyLinkIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 36 36" fill="currentColor">
+      <path d="M5.85 18.0c0.0-2.56 2.08-4.65 4.65-4.65h6.0V10.5H10.5c-4.14 .0-7.5 3.36-7.5 7.5s3.36 7.5 7.5 7.5h6.0v-2.85H10.5c-2.56 .0-4.65-2.08-4.65-4.65zM12.0 19.5h12.0v-3.0H12.0v3.0zm13.5-9.0h-6.0v2.85h6.0c2.56 .0 4.65 2.08 4.65 4.65s-2.08 4.65-4.65 4.65h-6.0V25.5h6.0c4.14 .0 7.5-3.36 7.5-7.5s-3.36-7.5-7.5-7.5z" />
+    </svg>
+  );
+}
+
+export function StatsNerdIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 48 48" fill="currentColor">
+      <path d="M22 34h4V22h-4v12zm2-30C12.95 4 4 12.95 4 24s8.95 20 20 20 20-8.95 20-20S35.05 4 24 4zm0 36c-8.82 0-16-7.18-16-16S15.18 8 24 8s16 7.18 16 16-7.18 16-16 16zm-2-22h4v-4h-4v4z" />
+    </svg>
+  );
+}
+
+export function AudioLevelsIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="currentColor">
+      <rect x="2" y="10" width="2.5" height="7" rx="1" />
+      <rect x="6.5" y="6" width="2.5" height="11" rx="1" />
+      <rect x="11" y="3" width="2.5" height="14" rx="1" />
+      <rect x="15.5" y="8" width="2.5" height="9" rx="1" />
+    </svg>
+  );
+}
+
 export function PipIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
