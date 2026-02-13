@@ -69,10 +69,12 @@ export default function FilmstripTimeline({
     updateAspect();
 
     videoEl.addEventListener("timeupdate", onTimeUpdate);
+    videoEl.addEventListener("seeking", onTimeUpdate);
     videoEl.addEventListener("durationchange", onDurationChange);
     videoEl.addEventListener("loadedmetadata", updateAspect);
     return () => {
       videoEl.removeEventListener("timeupdate", onTimeUpdate);
+      videoEl.removeEventListener("seeking", onTimeUpdate);
       videoEl.removeEventListener("durationchange", onDurationChange);
       videoEl.removeEventListener("loadedmetadata", updateAspect);
     };
