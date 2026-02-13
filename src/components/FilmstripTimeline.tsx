@@ -36,6 +36,7 @@ export default function FilmstripTimeline({
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
+  const videoAspectRef = useRef(THUMBNAIL_WIDTH / THUMB_HEIGHT);
 
   const duration = videoEl.duration || 0;
 
@@ -51,8 +52,13 @@ export default function FilmstripTimeline({
   progressRef.current = progress;
   generatingRef.current = generating;
 
-  // Track current time from video element
+  // Track current time, duration, and video aspect ratio
   useEffect(() => {
+    const updateAspect = () => {
+      if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+        videoAspectRef.current = videoEl.videoWidth / videoEl.videoHeight;
+      }
+    };
     const onTimeUpdate = () => {
       currentTimeRef.current = videoEl.currentTime;
     };
@@ -60,12 +66,15 @@ export default function FilmstripTimeline({
       durationRef.current = videoEl.duration || 0;
     };
     durationRef.current = videoEl.duration || 0;
+    updateAspect();
 
     videoEl.addEventListener("timeupdate", onTimeUpdate);
     videoEl.addEventListener("durationchange", onDurationChange);
+    videoEl.addEventListener("loadedmetadata", updateAspect);
     return () => {
       videoEl.removeEventListener("timeupdate", onTimeUpdate);
       videoEl.removeEventListener("durationchange", onDurationChange);
+      videoEl.removeEventListener("loadedmetadata", updateAspect);
     };
   }, [videoEl]);
 
@@ -183,8 +192,7 @@ export default function FilmstripTimeline({
       }
 
       // ── Thumbnail row ──
-      const thumbAspect = THUMBNAIL_WIDTH / THUMB_HEIGHT;
-      const thumbW = THUMB_HEIGHT * thumbAspect;
+      const thumbW = THUMB_HEIGHT * videoAspectRef.current;
       const thumbSpacing = THUMBNAIL_INTERVAL * pxPerSec;
 
       // Only draw visible thumbnails
