@@ -8,7 +8,18 @@ function post(msg: WorkerResponse, transfer?: Transferable[]) {
   self.postMessage(msg, { transfer: transfer ?? [] });
 }
 
+// ── Module-level state ──
 let aborted = false;
+let segments: { url: string; startTime: number; endTime: number }[] = [];
+let initData: ArrayBuffer | null = null;
+let decoder: VideoDecoder | null = null;
+let offscreen: OffscreenCanvas | null = null;
+let offCtx: OffscreenCanvasRenderingContext2D | null = null;
+let currentSegStartTime = 0;
+const fulfilled = new Set<number>(); // timestamps we've already sent back
+let currentQueue: number[] = [];
+let queueVersion = 0;
+let processing = false;
 
 function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefined {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,27 +51,10 @@ async function fetchBuffer(url: string): Promise<ArrayBuffer> {
 }
 
 /**
- * Returns all segment indices sorted by proximity to priorityTime.
- */
-function sortSegmentsByPriority(
-  segments: { startTime: number; endTime: number }[],
-  priorityTime: number,
-): number[] {
-  return segments
-    .map((_, i) => i)
-    .sort((a, b) => {
-      const aMid = (segments[a].startTime + segments[a].endTime) / 2;
-      const bMid = (segments[b].startTime + segments[b].endTime) / 2;
-      return Math.abs(aMid - priorityTime) - Math.abs(bMid - priorityTime);
-    });
-}
-
-/**
- * Process a single media segment: create a fresh mp4box instance, feed the
- * cached init segment + the media segment, and return extracted sync samples.
+ * Extract sync samples from a media segment using the cached init segment.
  */
 function extractSamplesFromSegment(
-  initData: ArrayBuffer,
+  initBuf: ArrayBuffer,
   mediaData: ArrayBuffer,
 ): Promise<Sample[]> {
   return new Promise((resolve, reject) => {
@@ -86,17 +80,12 @@ function extractSamplesFromSegment(
     mp4.onError = (_mod: string, msg: string) => reject(new Error(msg));
 
     try {
-      // Feed init segment at offset 0
-      const initBuf = MP4BoxBuffer.fromArrayBuffer(initData.slice(0), 0);
-      const offset1 = mp4.appendBuffer(initBuf);
-
-      // Feed media segment right after
+      const initSlice = MP4BoxBuffer.fromArrayBuffer(initBuf.slice(0), 0);
+      const offset1 = mp4.appendBuffer(initSlice);
       const mediaBuf = MP4BoxBuffer.fromArrayBuffer(mediaData.slice(0), offset1);
       mp4.appendBuffer(mediaBuf);
       mp4.flush();
       mp4.stop();
-
-      // onSamples is synchronous during appendBuffer/flush, so samples are ready
       resolve(syncSamples);
     } catch (e) {
       reject(e);
@@ -104,35 +93,29 @@ function extractSamplesFromSegment(
   });
 }
 
-async function generate(req: Extract<WorkerRequest, { type: "generate" }>) {
-  const {
-    initSegmentUrl,
-    segments,
-    codec,
-    width,
-    height,
-    thumbnailWidth,
-    duration,
-    priorityTime,
-  } = req;
+/**
+ * Initialize: fetch init segment, extract codec description, configure decoder.
+ * Does NOT process any media segments.
+ */
+async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
+  const { initSegmentUrl, codec, width, height, thumbnailWidth } = req;
+  segments = req.segments;
 
-  console.log(DBG, "generate()", { codec, width, height, duration, priorityTime, totalSegments: segments.length });
+  console.log(DBG, "initialize()", { codec, width, height, totalSegments: segments.length });
 
-  // One thumbnail per segment, keyed by segment startTime
-  const total = segments.length;
-  let completed = 0;
-  const fulfilled = new Set<number>();
-
-  const orderedIndices = sortSegmentsByPriority(segments, priorityTime);
-  console.log(DBG, `processing ${total} segments (priority-sorted)`);
+  // Reset state
+  fulfilled.clear();
+  currentQueue = [];
+  queueVersion = 0;
+  processing = false;
 
   // Set up thumbnail rendering
   const thumbHeight = Math.round((thumbnailWidth / width) * height);
-  const offscreen = new OffscreenCanvas(thumbnailWidth, thumbHeight);
-  const offCtx = offscreen.getContext("2d")!;
+  offscreen = new OffscreenCanvas(thumbnailWidth, thumbHeight);
+  offCtx = offscreen.getContext("2d")!;
 
   // 1. Fetch init segment and extract codec description
-  const initData = await fetchBuffer(initSegmentUrl);
+  initData = await fetchBuffer(initSegmentUrl);
   if (aborted) return;
 
   let description: Uint8Array | undefined;
@@ -156,25 +139,20 @@ async function generate(req: Extract<WorkerRequest, { type: "generate" }>) {
     ...(description ? { description } : {}),
   };
 
-  // Track which segment's first keyframe we're currently decoding
-  let currentSegStartTime = 0;
-
-  const decoder = new VideoDecoder({
+  decoder = new VideoDecoder({
     output: (frame: VideoFrame) => {
       const targetTime = currentSegStartTime;
-      offCtx.drawImage(frame, 0, 0, thumbnailWidth, thumbHeight);
+      offCtx!.drawImage(frame, 0, 0, offscreen!.width, offscreen!.height);
       frame.close();
 
       if (!fulfilled.has(targetTime)) {
         fulfilled.add(targetTime);
-        createImageBitmap(offscreen).then((bitmap) => {
+        createImageBitmap(offscreen!).then((bitmap) => {
           if (aborted) {
             bitmap.close();
             return;
           }
           post({ type: "thumbnail", timestamp: targetTime, bitmap }, [bitmap]);
-          completed++;
-          post({ type: "progress", completed, total });
         });
       }
     },
@@ -186,74 +164,114 @@ async function generate(req: Extract<WorkerRequest, { type: "generate" }>) {
 
   try {
     decoder.configure(config);
-    console.log(DBG, "VideoDecoder configured");
+    console.log(DBG, "VideoDecoder configured, ready for queue updates");
+    post({ type: "ready" });
   } catch (e) {
     post({ type: "error", message: `Failed to configure decoder: ${e}` });
-    return;
   }
+}
 
-  // 3. Process each segment — decode only the first keyframe
+/**
+ * Process the current queue. Checks queueVersion after each async operation
+ * to bail if a newer queue has been submitted.
+ */
+async function processQueue(version: number) {
+  processing = true;
+
   try {
-    for (let i = 0; i < orderedIndices.length; i++) {
-      if (aborted) break;
-      const segIdx = orderedIndices[i];
-      const seg = segments[segIdx];
+    while (currentQueue.length > 0) {
+      if (aborted || version !== queueVersion) break;
 
+      const segIdx = currentQueue.shift()!;
+      if (segIdx < 0 || segIdx >= segments.length) continue;
+
+      const seg = segments[segIdx];
       if (fulfilled.has(seg.startTime)) continue;
 
       const mediaData = await fetchBuffer(seg.url);
-      if (aborted) break;
+      if (aborted || version !== queueVersion) break;
 
-      // Extract sync samples using a fresh mp4box per segment
-      const syncSamples = await extractSamplesFromSegment(initData, mediaData);
+      const syncSamples = await extractSamplesFromSegment(initData!, mediaData);
+      if (aborted || version !== queueVersion) break;
 
-      // Decode only the first keyframe (segment boundary I-frame)
-      if (syncSamples.length > 0) {
+      if (syncSamples.length > 0 && decoder) {
         const sample = syncSamples[0];
         currentSegStartTime = seg.startTime;
 
         decoder.decode(
           new EncodedVideoChunk({
             type: "key",
-            timestamp: sample.cts / sample.timescale * 1_000_000,
+            timestamp: (sample.cts / sample.timescale) * 1_000_000,
             data: sample.data!,
           }),
         );
 
-        // Flush to get the thumbnail immediately
         await decoder.flush();
-      }
-
-      if (i < 5 || i === orderedIndices.length - 1) {
-        console.log(DBG, `segment ${i + 1}/${orderedIndices.length} (t=${seg.startTime.toFixed(1)}-${seg.endTime.toFixed(1)}) fulfilled=${fulfilled.size}/${total}`);
+        if (aborted || version !== queueVersion) break;
       }
     }
   } catch (e) {
     if (!aborted) {
-      console.error(DBG, "error:", e);
+      console.error(DBG, "processQueue error:", e);
       post({ type: "error", message: `${e}` });
     }
-  } finally {
-    try { decoder.close(); } catch { /* */ }
   }
 
-  if (!aborted) {
-    console.log(DBG, `DONE. ${fulfilled.size}/${total} thumbnails`);
-    post({ type: "done" });
+  if (version === queueVersion) {
+    processing = false;
+  } else if (!aborted) {
+    // A newer queue was submitted while we were processing — restart with it
+    const newVersion = queueVersion;
+    processQueue(newVersion).catch((err) => {
+      if (!aborted) {
+        console.error(DBG, "processQueue uncaught:", err);
+        post({ type: "error", message: `${err}` });
+      }
+    });
   }
 }
 
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data;
+
   if (msg.type === "abort") {
     aborted = true;
+    if (decoder) {
+      try { decoder.close(); } catch { /* */ }
+      decoder = null;
+    }
     return;
   }
+
   if (msg.type === "generate") {
     aborted = false;
-    generate(msg).catch((err) => {
+    initialize(msg).catch((err) => {
       console.error(DBG, "uncaught:", err);
       post({ type: "error", message: `${err}` });
     });
+    return;
+  }
+
+  if (msg.type === "updateQueue") {
+    if (!initData || !decoder) {
+      // Not yet initialized, ignore
+      return;
+    }
+
+    currentQueue = [...msg.segmentIndices];
+    queueVersion++;
+    const version = queueVersion;
+
+    console.log(DBG, `updateQueue v${version}: ${currentQueue.length} segments, priority=${msg.priorityTime.toFixed(1)}`);
+
+    if (!processing) {
+      processQueue(version).catch((err) => {
+        if (!aborted) {
+          console.error(DBG, "processQueue uncaught:", err);
+          post({ type: "error", message: `${err}` });
+        }
+      });
+    }
+    // If already processing, the version check will cause it to pick up the new queue
   }
 };

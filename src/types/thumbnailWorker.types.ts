@@ -8,14 +8,12 @@ export type WorkerRequest =
       width: number;
       height: number;
       thumbnailWidth: number;
-      duration: number;
-      priorityTime: number;
     }
+  | { type: "updateQueue"; segmentIndices: number[]; priorityTime: number }
   | { type: "abort" };
 
 /** Messages from thumbnail worker to main thread */
 export type WorkerResponse =
   | { type: "thumbnail"; timestamp: number; bitmap: ImageBitmap }
-  | { type: "progress"; completed: number; total: number }
   | { type: "error"; message: string }
-  | { type: "done" };
+  | { type: "ready" };

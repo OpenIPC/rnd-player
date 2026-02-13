@@ -11,7 +11,6 @@ interface FilmstripTimelineProps {
 
 const RULER_HEIGHT = 22;
 const THUMB_ROW_TOP = RULER_HEIGHT;
-const PROGRESS_BAR_HEIGHT = 4;
 const MIN_PX_PER_SEC = 4;
 const MAX_PX_PER_SEC = 100;
 const DEFAULT_PX_PER_SEC = 16;
@@ -37,19 +36,17 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, progress, supported, encrypted, generating } =
+  const { thumbnails, segmentTimes, supported, encrypted, requestRange } =
     useThumbnailGenerator(player, videoEl, true);
 
   // Keep latest values in refs so the rAF paint loop can read them
-  // without the useEffect needing to restart on every thumbnail/progress update.
+  // without the useEffect needing to restart on every thumbnail update.
   const thumbnailsRef = useRef(thumbnails);
   const segmentTimesRef = useRef(segmentTimes);
-  const progressRef = useRef(progress);
-  const generatingRef = useRef(generating);
+  const requestRangeRef = useRef(requestRange);
   thumbnailsRef.current = thumbnails;
   segmentTimesRef.current = segmentTimes;
-  progressRef.current = progress;
-  generatingRef.current = generating;
+  requestRangeRef.current = requestRange;
 
   // Track current time, duration, and video aspect ratio
   useEffect(() => {
@@ -136,6 +133,18 @@ export default function FilmstripTimeline({
 
       const sl = scrollLeftRef.current;
 
+      // Request thumbnails for the visible range + buffer
+      {
+        const visStartTime = sl / pxPerSec;
+        const visEndTime = (sl + w) / pxPerSec;
+        const buffer = visEndTime - visStartTime; // 1 viewport width buffer each side
+        requestRangeRef.current(
+          Math.max(0, visStartTime - buffer),
+          Math.min(dur, visEndTime + buffer),
+          time,
+        );
+      }
+
       // Background
       ctx.fillStyle = "#111";
       ctx.fillRect(0, 0, w, h);
@@ -193,7 +202,7 @@ export default function FilmstripTimeline({
       }
 
       // ── Thumbnail row ──
-      const thumbH = h - RULER_HEIGHT - PROGRESS_BAR_HEIGHT;
+      const thumbH = h - RULER_HEIGHT;
       const thumbW = thumbH * videoAspectRef.current;
       const times = segmentTimesRef.current;
 
@@ -233,7 +242,7 @@ export default function FilmstripTimeline({
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(playheadX, 0);
-        ctx.lineTo(playheadX, h - PROGRESS_BAR_HEIGHT);
+        ctx.lineTo(playheadX, h);
         ctx.stroke();
 
         // Playhead cap (triangle)
@@ -244,15 +253,6 @@ export default function FilmstripTimeline({
         ctx.lineTo(playheadX, 6);
         ctx.closePath();
         ctx.fill();
-      }
-
-      // ── Progress bar at bottom ──
-      if (generatingRef.current && progressRef.current.total > 0) {
-        const pct = progressRef.current.completed / progressRef.current.total;
-        ctx.fillStyle = "rgba(255, 255, 255, 0.1)";
-        ctx.fillRect(0, h - PROGRESS_BAR_HEIGHT, w, PROGRESS_BAR_HEIGHT);
-        ctx.fillStyle = PLAYHEAD_COLOR;
-        ctx.fillRect(0, h - PROGRESS_BAR_HEIGHT, w * pct, PROGRESS_BAR_HEIGHT);
       }
 
       rafRef.current = requestAnimationFrame(paint);

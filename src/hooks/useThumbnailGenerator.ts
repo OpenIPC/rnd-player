@@ -4,14 +4,16 @@ import type { WorkerRequest, WorkerResponse } from "../types/thumbnailWorker.typ
 
 const THUMBNAIL_WIDTH = 160;
 const DBG = "[FilmstripHook]";
+const THROTTLE_MS = 200;
+
+export type RequestRangeFn = (startTime: number, endTime: number, priorityTime: number) => void;
 
 export interface ThumbnailGeneratorResult {
   thumbnails: Map<number, ImageBitmap>;
   segmentTimes: number[];
-  progress: { completed: number; total: number };
   supported: boolean;
   encrypted: boolean;
-  generating: boolean;
+  requestRange: RequestRangeFn;
 }
 
 function isWebCodecsSupported(): boolean {
@@ -37,12 +39,20 @@ export function useThumbnailGenerator(
 ): ThumbnailGeneratorResult {
   const [thumbnails, setThumbnails] = useState<Map<number, ImageBitmap>>(new Map());
   const [segmentTimes, setSegmentTimes] = useState<number[]>([]);
-  const [progress, setProgress] = useState({ completed: 0, total: 0 });
-  const [generating, setGenerating] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const thumbnailsRef = useRef<Map<number, ImageBitmap>>(new Map());
+  const segmentsRef = useRef<{ url: string; startTime: number; endTime: number }[]>([]);
+  const workerReadyRef = useRef(false);
   const supported = isWebCodecsSupported();
+
+  // Track visible range for eviction
+  const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
+  // Track last sent indices to avoid redundant updateQueue messages
+  const lastSentIndicesRef = useRef<string>("");
+  // Throttle state
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSendTimeRef = useRef(0);
 
   const encrypted = useMemo(() => {
     const stream = getLowestVideoStream(player);
@@ -56,14 +66,77 @@ export function useThumbnailGenerator(
       workerRef.current.terminate();
       workerRef.current = null;
     }
+    workerReadyRef.current = false;
     for (const bmp of thumbnailsRef.current.values()) {
       bmp.close();
     }
     thumbnailsRef.current = new Map();
+    segmentsRef.current = [];
+    lastSentIndicesRef.current = "";
+    if (throttleTimerRef.current) {
+      clearTimeout(throttleTimerRef.current);
+      throttleTimerRef.current = null;
+    }
     setThumbnails(new Map());
     setSegmentTimes([]);
-    setProgress({ completed: 0, total: 0 });
-    setGenerating(false);
+  }, []);
+
+  // requestRange: called from paint loop, throttled to avoid flooding worker
+  const requestRange = useCallback<RequestRangeFn>((startTime, endTime, priorityTime) => {
+    visibleRangeRef.current = { start: startTime, end: endTime };
+
+    const sendUpdate = () => {
+      lastSendTimeRef.current = Date.now();
+      const worker = workerRef.current;
+      const segs = segmentsRef.current;
+      if (!worker || !workerReadyRef.current || segs.length === 0) return;
+
+      // Find segment indices overlapping the requested range
+      const { start: rangeStart, end: rangeEnd } = visibleRangeRef.current;
+      const indices: number[] = [];
+      for (let i = 0; i < segs.length; i++) {
+        const seg = segs[i];
+        if (seg.endTime >= rangeStart && seg.startTime <= rangeEnd) {
+          // Skip already-loaded thumbnails
+          if (!thumbnailsRef.current.has(seg.startTime)) {
+            indices.push(i);
+          }
+        }
+      }
+
+      if (indices.length === 0) return;
+
+      // Sort by proximity to priorityTime
+      indices.sort((a, b) => {
+        const aMid = (segs[a].startTime + segs[a].endTime) / 2;
+        const bMid = (segs[b].startTime + segs[b].endTime) / 2;
+        return Math.abs(aMid - priorityTime) - Math.abs(bMid - priorityTime);
+      });
+
+      // Skip if same set of indices as last request
+      const key = indices.join(",");
+      if (key === lastSentIndicesRef.current) return;
+      lastSentIndicesRef.current = key;
+
+      worker.postMessage({
+        type: "updateQueue",
+        segmentIndices: indices,
+        priorityTime,
+      } satisfies WorkerRequest);
+    };
+
+    // Throttle: fire immediately if enough time has passed, otherwise schedule trailing edge
+    if (throttleTimerRef.current) {
+      clearTimeout(throttleTimerRef.current);
+      throttleTimerRef.current = null;
+    }
+
+    const elapsed = Date.now() - lastSendTimeRef.current;
+    if (elapsed >= THROTTLE_MS) {
+      sendUpdate();
+    } else {
+      throttleTimerRef.current = setTimeout(sendUpdate, THROTTLE_MS - elapsed);
+    }
   }, []);
 
   useEffect(() => {
@@ -192,6 +265,7 @@ export function useThumbnailGenerator(
 
         if (cancelled || segments.length === 0) return;
 
+        segmentsRef.current = segments;
         setSegmentTimes(segments.map((s) => s.startTime));
 
         const duration = videoEl.duration || 0;
@@ -207,7 +281,6 @@ export function useThumbnailGenerator(
           { type: "module" },
         );
         workerRef.current = worker;
-        setGenerating(true);
 
         worker.onerror = (ev) => {
           console.error(DBG, "worker onerror:", ev.message, ev);
@@ -217,26 +290,35 @@ export function useThumbnailGenerator(
           const msg = e.data;
           switch (msg.type) {
             case "thumbnail": {
-              console.log(DBG, "received thumbnail for t=", msg.timestamp);
               thumbnailsRef.current.set(msg.timestamp, msg.bitmap);
+
+              // Evict bitmaps far from the current visible range
+              const { start: visStart, end: visEnd } = visibleRangeRef.current;
+              const span = visEnd - visStart;
+              if (span > 0) {
+                const evictLow = visStart - 3 * span;
+                const evictHigh = visEnd + 3 * span;
+                for (const [ts, bmp] of thumbnailsRef.current) {
+                  if (ts < evictLow || ts > evictHigh) {
+                    bmp.close();
+                    thumbnailsRef.current.delete(ts);
+                  }
+                }
+              }
+
               setThumbnails(new Map(thumbnailsRef.current));
               break;
             }
-            case "progress":
-              console.log(DBG, `progress: ${msg.completed}/${msg.total}`);
-              setProgress({ completed: msg.completed, total: msg.total });
-              break;
             case "error":
               console.warn(DBG, "worker error:", msg.message);
               break;
-            case "done":
-              console.log(DBG, "worker done");
-              setGenerating(false);
+            case "ready":
+              console.log(DBG, "worker ready for queue updates");
+              workerReadyRef.current = true;
               break;
           }
         };
 
-        const priorityTime = videoEl.currentTime || 0;
         const payload = {
           type: "generate" as const,
           initSegmentUrl,
@@ -245,8 +327,6 @@ export function useThumbnailGenerator(
           width,
           height,
           thumbnailWidth: THUMBNAIL_WIDTH,
-          duration,
-          priorityTime,
         };
         console.log(DBG, "posting to worker:", { ...payload, segments: `[${segments.length} items]` });
         worker.postMessage(payload satisfies WorkerRequest);
@@ -261,5 +341,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, progress, supported, encrypted, generating };
+  return { thumbnails, segmentTimes, supported, encrypted, requestRange };
 }
