@@ -11,13 +11,11 @@ interface FilmstripTimelineProps {
 
 const RULER_HEIGHT = 22;
 const THUMB_ROW_TOP = RULER_HEIGHT;
-const THUMB_HEIGHT = 80;
 const PROGRESS_BAR_HEIGHT = 4;
 const MIN_PX_PER_SEC = 4;
 const MAX_PX_PER_SEC = 100;
 const DEFAULT_PX_PER_SEC = 16;
 const THUMBNAIL_INTERVAL = 5;
-const THUMBNAIL_WIDTH = 160;
 const PLAYHEAD_COLOR = "rgb(71, 13, 179)";
 const FONT = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
@@ -36,7 +34,7 @@ export default function FilmstripTimeline({
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
-  const videoAspectRef = useRef(THUMBNAIL_WIDTH / THUMB_HEIGHT);
+  const videoAspectRef = useRef(16 / 9);
 
   const duration = videoEl.duration || 0;
 
@@ -194,7 +192,8 @@ export default function FilmstripTimeline({
       }
 
       // ── Thumbnail row ──
-      const thumbW = THUMB_HEIGHT * videoAspectRef.current;
+      const thumbH = h - RULER_HEIGHT - PROGRESS_BAR_HEIGHT;
+      const thumbW = thumbH * videoAspectRef.current;
       const thumbSpacing = THUMBNAIL_INTERVAL * pxPerSec;
 
       // Only draw visible thumbnails
@@ -210,22 +209,22 @@ export default function FilmstripTimeline({
 
         // Center thumbnail on its timestamp
         const drawX = x - thumbW / 2;
-        const drawY = THUMB_ROW_TOP + (THUMB_HEIGHT - THUMB_HEIGHT) / 2;
+        const drawY = THUMB_ROW_TOP;
 
         const bmp = thumbnailsRef.current.get(ts);
         if (bmp) {
-          ctx.drawImage(bmp, drawX, drawY, thumbW, THUMB_HEIGHT);
+          ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
           // Border
           ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
           ctx.lineWidth = 1;
-          ctx.strokeRect(drawX, drawY, thumbW, THUMB_HEIGHT);
+          ctx.strokeRect(drawX, drawY, thumbW, thumbH);
         } else {
           // Placeholder
           ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
-          ctx.fillRect(drawX, drawY, thumbW, THUMB_HEIGHT);
+          ctx.fillRect(drawX, drawY, thumbW, thumbH);
           ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
           ctx.lineWidth = 1;
-          ctx.strokeRect(drawX, drawY, thumbW, THUMB_HEIGHT);
+          ctx.strokeRect(drawX, drawY, thumbW, thumbH);
         }
       }
 
