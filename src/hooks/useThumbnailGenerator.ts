@@ -3,11 +3,11 @@ import type shaka from "shaka-player";
 import type { WorkerRequest, WorkerResponse } from "../types/thumbnailWorker.types";
 
 const THUMBNAIL_WIDTH = 160;
-const THUMBNAIL_INTERVAL = 5; // seconds
 const DBG = "[FilmstripHook]";
 
 export interface ThumbnailGeneratorResult {
   thumbnails: Map<number, ImageBitmap>;
+  segmentTimes: number[];
   progress: { completed: number; total: number };
   supported: boolean;
   encrypted: boolean;
@@ -36,6 +36,7 @@ export function useThumbnailGenerator(
   enabled: boolean,
 ): ThumbnailGeneratorResult {
   const [thumbnails, setThumbnails] = useState<Map<number, ImageBitmap>>(new Map());
+  const [segmentTimes, setSegmentTimes] = useState<number[]>([]);
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [generating, setGenerating] = useState(false);
 
@@ -60,6 +61,7 @@ export function useThumbnailGenerator(
     }
     thumbnailsRef.current = new Map();
     setThumbnails(new Map());
+    setSegmentTimes([]);
     setProgress({ completed: 0, total: 0 });
     setGenerating(false);
   }, []);
@@ -190,6 +192,8 @@ export function useThumbnailGenerator(
 
         if (cancelled || segments.length === 0) return;
 
+        setSegmentTimes(segments.map((s) => s.startTime));
+
         const duration = videoEl.duration || 0;
         console.log(DBG, "video duration:", duration);
         if (duration <= 0) {
@@ -241,7 +245,6 @@ export function useThumbnailGenerator(
           width,
           height,
           thumbnailWidth: THUMBNAIL_WIDTH,
-          interval: THUMBNAIL_INTERVAL,
           duration,
           priorityTime,
         };
@@ -258,5 +261,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, cleanup]);
 
-  return { thumbnails, progress, supported, encrypted, generating };
+  return { thumbnails, segmentTimes, progress, supported, encrypted, generating };
 }

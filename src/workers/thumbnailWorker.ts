@@ -40,32 +40,19 @@ async function fetchBuffer(url: string): Promise<ArrayBuffer> {
 }
 
 /**
- * For each target timestamp, find the segment that covers it.
- * Returns deduplicated segment indices sorted by proximity to priorityTime.
+ * Returns all segment indices sorted by proximity to priorityTime.
  */
-function computeNeededSegments(
-  targets: number[],
+function sortSegmentsByPriority(
   segments: { startTime: number; endTime: number }[],
   priorityTime: number,
 ): number[] {
-  const needed = new Set<number>();
-  for (const t of targets) {
-    const idx = segments.findIndex((s) => t >= s.startTime && t < s.endTime);
-    if (idx >= 0) needed.add(idx);
-  }
-  if (targets.length > 0) {
-    const last = targets[targets.length - 1];
-    const lastSeg = segments[segments.length - 1];
-    if (lastSeg && last >= lastSeg.startTime && last <= lastSeg.endTime) {
-      needed.add(segments.length - 1);
-    }
-  }
-
-  return [...needed].sort((a, b) => {
-    const aMid = (segments[a].startTime + segments[a].endTime) / 2;
-    const bMid = (segments[b].startTime + segments[b].endTime) / 2;
-    return Math.abs(aMid - priorityTime) - Math.abs(bMid - priorityTime);
-  });
+  return segments
+    .map((_, i) => i)
+    .sort((a, b) => {
+      const aMid = (segments[a].startTime + segments[a].endTime) / 2;
+      const bMid = (segments[b].startTime + segments[b].endTime) / 2;
+      return Math.abs(aMid - priorityTime) - Math.abs(bMid - priorityTime);
+    });
 }
 
 /**
@@ -125,24 +112,19 @@ async function generate(req: Extract<WorkerRequest, { type: "generate" }>) {
     width,
     height,
     thumbnailWidth,
-    interval,
     duration,
     priorityTime,
   } = req;
 
-  console.log(DBG, "generate()", { codec, width, height, interval, duration, priorityTime, totalSegments: segments.length });
+  console.log(DBG, "generate()", { codec, width, height, duration, priorityTime, totalSegments: segments.length });
 
-  // Compute target timestamps
-  const targets: number[] = [];
-  for (let t = 0; t <= duration; t += interval) {
-    targets.push(t);
-  }
-  const total = targets.length;
+  // One thumbnail per segment, keyed by segment startTime
+  const total = segments.length;
   let completed = 0;
   const fulfilled = new Set<number>();
 
-  const neededSegmentIndices = computeNeededSegments(targets, segments, priorityTime);
-  console.log(DBG, `need ${neededSegmentIndices.length} segments (of ${segments.length}) for ${total} targets`);
+  const orderedIndices = sortSegmentsByPriority(segments, priorityTime);
+  console.log(DBG, `processing ${total} segments (priority-sorted)`);
 
   // Set up thumbnail rendering
   const thumbHeight = Math.round((thumbnailWidth / width) * height);
@@ -174,31 +156,23 @@ async function generate(req: Extract<WorkerRequest, { type: "generate" }>) {
     ...(description ? { description } : {}),
   };
 
+  // Track which segment's first keyframe we're currently decoding
+  let currentSegStartTime = 0;
+
   const decoder = new VideoDecoder({
     output: (frame: VideoFrame) => {
-      const ts = frame.timestamp / 1_000_000;
+      const targetTime = currentSegStartTime;
       offCtx.drawImage(frame, 0, 0, thumbnailWidth, thumbHeight);
       frame.close();
 
-      let bestTarget = -1;
-      let bestDist = Infinity;
-      for (const t of targets) {
-        if (fulfilled.has(t)) continue;
-        const dist = Math.abs(ts - t);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestTarget = t;
-        }
-      }
-
-      if (bestTarget >= 0 && bestDist < interval) {
-        fulfilled.add(bestTarget);
+      if (!fulfilled.has(targetTime)) {
+        fulfilled.add(targetTime);
         createImageBitmap(offscreen).then((bitmap) => {
           if (aborted) {
             bitmap.close();
             return;
           }
-          post({ type: "thumbnail", timestamp: bestTarget, bitmap }, [bitmap]);
+          post({ type: "thumbnail", timestamp: targetTime, bitmap }, [bitmap]);
           completed++;
           post({ type: "progress", completed, total });
         });
@@ -218,12 +192,14 @@ async function generate(req: Extract<WorkerRequest, { type: "generate" }>) {
     return;
   }
 
-  // 3. Process each needed segment independently
+  // 3. Process each segment — decode only the first keyframe
   try {
-    for (let i = 0; i < neededSegmentIndices.length; i++) {
+    for (let i = 0; i < orderedIndices.length; i++) {
       if (aborted) break;
-      const segIdx = neededSegmentIndices[i];
+      const segIdx = orderedIndices[i];
       const seg = segments[segIdx];
+
+      if (fulfilled.has(seg.startTime)) continue;
 
       const mediaData = await fetchBuffer(seg.url);
       if (aborted) break;
@@ -231,35 +207,25 @@ async function generate(req: Extract<WorkerRequest, { type: "generate" }>) {
       // Extract sync samples using a fresh mp4box per segment
       const syncSamples = await extractSamplesFromSegment(initData, mediaData);
 
-      // Decode keyframes near unfulfilled targets
-      for (const sample of syncSamples) {
-        if (aborted) break;
-        const sampleTimeSec = sample.cts / sample.timescale;
-
-        let nearTarget = false;
-        for (const t of targets) {
-          if (fulfilled.has(t)) continue;
-          if (Math.abs(sampleTimeSec - t) < interval) {
-            nearTarget = true;
-            break;
-          }
-        }
-        if (!nearTarget) continue;
+      // Decode only the first keyframe (segment boundary I-frame)
+      if (syncSamples.length > 0) {
+        const sample = syncSamples[0];
+        currentSegStartTime = seg.startTime;
 
         decoder.decode(
           new EncodedVideoChunk({
             type: "key",
-            timestamp: sampleTimeSec * 1_000_000,
+            timestamp: sample.cts / sample.timescale * 1_000_000,
             data: sample.data!,
           }),
         );
+
+        // Flush to get the thumbnail immediately
+        await decoder.flush();
       }
 
-      // Flush decoder after each segment to get thumbnails ASAP
-      await decoder.flush();
-
-      if (i < 5 || i === neededSegmentIndices.length - 1) {
-        console.log(DBG, `segment ${i + 1}/${neededSegmentIndices.length} (t=${seg.startTime.toFixed(1)}-${seg.endTime.toFixed(1)}) fulfilled=${fulfilled.size}/${total}`);
+      if (i < 5 || i === orderedIndices.length - 1) {
+        console.log(DBG, `segment ${i + 1}/${orderedIndices.length} (t=${seg.startTime.toFixed(1)}-${seg.endTime.toFixed(1)}) fulfilled=${fulfilled.size}/${total}`);
       }
     }
   } catch (e) {

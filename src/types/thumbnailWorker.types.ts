@@ -8,7 +8,6 @@ export type WorkerRequest =
       width: number;
       height: number;
       thumbnailWidth: number;
-      interval: number;
       duration: number;
       priorityTime: number;
     }

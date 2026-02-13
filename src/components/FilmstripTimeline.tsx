@@ -15,7 +15,6 @@ const PROGRESS_BAR_HEIGHT = 4;
 const MIN_PX_PER_SEC = 4;
 const MAX_PX_PER_SEC = 100;
 const DEFAULT_PX_PER_SEC = 16;
-const THUMBNAIL_INTERVAL = 5;
 const PLAYHEAD_COLOR = "rgb(71, 13, 179)";
 const FONT = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
@@ -38,15 +37,17 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, progress, supported, encrypted, generating } =
+  const { thumbnails, segmentTimes, progress, supported, encrypted, generating } =
     useThumbnailGenerator(player, videoEl, true);
 
   // Keep latest values in refs so the rAF paint loop can read them
   // without the useEffect needing to restart on every thumbnail/progress update.
   const thumbnailsRef = useRef(thumbnails);
+  const segmentTimesRef = useRef(segmentTimes);
   const progressRef = useRef(progress);
   const generatingRef = useRef(generating);
   thumbnailsRef.current = thumbnails;
+  segmentTimesRef.current = segmentTimes;
   progressRef.current = progress;
   generatingRef.current = generating;
 
@@ -194,18 +195,15 @@ export default function FilmstripTimeline({
       // ── Thumbnail row ──
       const thumbH = h - RULER_HEIGHT - PROGRESS_BAR_HEIGHT;
       const thumbW = thumbH * videoAspectRef.current;
-      const thumbSpacing = THUMBNAIL_INTERVAL * pxPerSec;
+      const times = segmentTimesRef.current;
 
-      // Only draw visible thumbnails
-      const startIdx = Math.max(0, Math.floor(sl / thumbSpacing) - 1);
-      const endIdx = Math.min(
-        Math.ceil(dur / THUMBNAIL_INTERVAL),
-        Math.ceil((sl + w) / thumbSpacing) + 1,
-      );
-
-      for (let i = startIdx; i <= endIdx; i++) {
-        const ts = i * THUMBNAIL_INTERVAL;
+      // Only draw thumbnails visible in the current viewport
+      for (let i = 0; i < times.length; i++) {
+        const ts = times[i];
         const x = ts * pxPerSec - sl;
+
+        // Skip if completely outside viewport
+        if (x + thumbW / 2 < 0 || x - thumbW / 2 > w) continue;
 
         // Center thumbnail on its timestamp
         const drawX = x - thumbW / 2;
