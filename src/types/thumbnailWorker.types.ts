@@ -9,7 +9,7 @@ export type WorkerRequest =
       height: number;
       thumbnailWidth: number;
     }
-  | { type: "updateQueue"; segmentIndices: number[]; priorityTime: number }
+  | { type: "updateQueue"; segmentIndices: number[] }
   | { type: "abort" };
 
 /** Messages from thumbnail worker to main thread */

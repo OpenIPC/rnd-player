@@ -16,9 +16,7 @@ let decoder: VideoDecoder | null = null;
 let offscreen: OffscreenCanvas | null = null;
 let offCtx: OffscreenCanvasRenderingContext2D | null = null;
 let currentSegStartTime = 0;
-const fulfilled = new Set<number>(); // timestamps we've already sent back
 let currentQueue: number[] = [];
-let queueVersion = 0;
 let processing = false;
 
 function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefined {
@@ -104,9 +102,7 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
   console.log(DBG, "initialize()", { codec, width, height, totalSegments: segments.length });
 
   // Reset state
-  fulfilled.clear();
   currentQueue = [];
-  queueVersion = 0;
   processing = false;
 
   // Set up thumbnail rendering
@@ -145,16 +141,13 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
       offCtx!.drawImage(frame, 0, 0, offscreen!.width, offscreen!.height);
       frame.close();
 
-      if (!fulfilled.has(targetTime)) {
-        fulfilled.add(targetTime);
-        createImageBitmap(offscreen!).then((bitmap) => {
-          if (aborted) {
-            bitmap.close();
-            return;
-          }
-          post({ type: "thumbnail", timestamp: targetTime, bitmap }, [bitmap]);
-        });
-      }
+      createImageBitmap(offscreen!).then((bitmap) => {
+        if (aborted) {
+          bitmap.close();
+          return;
+        }
+        post({ type: "thumbnail", timestamp: targetTime, bitmap }, [bitmap]);
+      });
     },
     error: (e: DOMException) => {
       console.error(DBG, "VideoDecoder error:", e);
@@ -172,27 +165,27 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
 }
 
 /**
- * Process the current queue. Checks queueVersion after each async operation
- * to bail if a newer queue has been submitted.
+ * Process the current queue. New updateQueue messages replace currentQueue
+ * contents while this loop runs — the loop always finishes the current
+ * segment before checking for new items, so it makes steady progress.
  */
-async function processQueue(version: number) {
+async function processQueue() {
   processing = true;
 
   try {
     while (currentQueue.length > 0) {
-      if (aborted || version !== queueVersion) break;
+      if (aborted) break;
 
       const segIdx = currentQueue.shift()!;
       if (segIdx < 0 || segIdx >= segments.length) continue;
 
       const seg = segments[segIdx];
-      if (fulfilled.has(seg.startTime)) continue;
 
       const mediaData = await fetchBuffer(seg.url);
-      if (aborted || version !== queueVersion) break;
+      if (aborted) break;
 
       const syncSamples = await extractSamplesFromSegment(initData!, mediaData);
-      if (aborted || version !== queueVersion) break;
+      if (aborted) break;
 
       if (syncSamples.length > 0 && decoder) {
         const sample = syncSamples[0];
@@ -207,7 +200,6 @@ async function processQueue(version: number) {
         );
 
         await decoder.flush();
-        if (aborted || version !== queueVersion) break;
       }
     }
   } catch (e) {
@@ -217,18 +209,7 @@ async function processQueue(version: number) {
     }
   }
 
-  if (version === queueVersion) {
-    processing = false;
-  } else if (!aborted) {
-    // A newer queue was submitted while we were processing — restart with it
-    const newVersion = queueVersion;
-    processQueue(newVersion).catch((err) => {
-      if (!aborted) {
-        console.error(DBG, "processQueue uncaught:", err);
-        post({ type: "error", message: `${err}` });
-      }
-    });
-  }
+  processing = false;
 }
 
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
@@ -254,24 +235,20 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
   if (msg.type === "updateQueue") {
     if (!initData || !decoder) {
-      // Not yet initialized, ignore
       return;
     }
 
+    // Replace queue contents. If processQueue is mid-segment, it will
+    // finish that segment then pick up these new items on the next iteration.
     currentQueue = [...msg.segmentIndices];
-    queueVersion++;
-    const version = queueVersion;
-
-    console.log(DBG, `updateQueue v${version}: ${currentQueue.length} segments, priority=${msg.priorityTime.toFixed(1)}`);
 
     if (!processing) {
-      processQueue(version).catch((err) => {
+      processQueue().catch((err) => {
         if (!aborted) {
           console.error(DBG, "processQueue uncaught:", err);
           post({ type: "error", message: `${err}` });
         }
       });
     }
-    // If already processing, the version check will cause it to pick up the new queue
   }
 };

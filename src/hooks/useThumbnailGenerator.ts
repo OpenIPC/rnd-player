@@ -121,7 +121,6 @@ export function useThumbnailGenerator(
       worker.postMessage({
         type: "updateQueue",
         segmentIndices: indices,
-        priorityTime,
       } satisfies WorkerRequest);
     };
 
