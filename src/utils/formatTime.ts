@@ -35,6 +35,12 @@ export function formatTimecode(
     return `${hh}:${mm}:${ss}:${ff}`;
   }
 
-  const ms = String(Math.round((seconds % 1) * 1000) % 1000).padStart(3, "0");
-  return `${hh}:${mm}:${ss}.${ms}`;
+  // Work in integer milliseconds to avoid floating-point carry issues
+  // (e.g. 2.9999... would otherwise decompose as 2s + 1000ms → "02.000")
+  const totalMs = Math.round(seconds * 1000);
+  const msH = Math.floor(totalMs / 3600000);
+  const msM = Math.floor((totalMs % 3600000) / 60000);
+  const msS = Math.floor((totalMs % 60000) / 1000);
+  const msFrac = totalMs % 1000;
+  return `${msH}:${String(msM).padStart(2, "0")}:${String(msS).padStart(2, "0")}.${String(msFrac).padStart(3, "0")}`;
 }

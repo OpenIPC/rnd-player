@@ -18,7 +18,6 @@ interface FilmstripTimelineProps {
   inPoint?: number | null;
   outPoint?: number | null;
   startOffset?: number;
-  onZoomChange?: (pxPerSec: number) => void;
 }
 
 const RULER_HEIGHT = 22;
@@ -46,7 +45,6 @@ export default function FilmstripTimeline({
   inPoint,
   outPoint,
   startOffset = 0,
-  onZoomChange,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -114,8 +112,6 @@ export default function FilmstripTimeline({
   const startOffsetRef = useRef(startOffset);
   startOffsetRef.current = startOffset;
 
-  const onZoomChangeRef = useRef(onZoomChange);
-  onZoomChangeRef.current = onZoomChange;
 
   const saveFrame = useCallback(async () => {
     const targetTime = ctxMenuTimeRef.current;
@@ -476,8 +472,11 @@ export default function FilmstripTimeline({
             ctx.strokeRect(x1, drawY, drawW, thumbH);
           }
         } else {
-          // Gap mode: draw multiple thumbnails evenly across segment
+          // Gap mode: tile thumbnails edge-to-edge within equal-width slots
+          // so the first thumbnail starts at the segment boundary, aligning
+          // with the bitrate bar below.
           const count = Math.max(2, Math.ceil(segWidth / thumbW));
+          const slotW = segWidth / count;
           const intraArr = intraFramesMapRef.current.get(thumbSegIdx) ?? [];
           const intraTypes = intraFrameTypesRef.current.get(thumbSegIdx) ?? [];
 
@@ -487,12 +486,10 @@ export default function FilmstripTimeline({
           const segVisible = segX2 >= 0 && segX1 <= w;
 
           for (let j = 0; j < count; j++) {
-            const t = segStart + ((j + 0.5) / count) * segDuration;
-            const x = t * pxPerSec - sl;
-            const drawX = x - thumbW / 2;
+            const slotX = segX1 + j * slotW;
 
             // Skip if outside viewport
-            if (drawX + thumbW < 0 || drawX > w) continue;
+            if (slotX + slotW < 0 || slotX > w) continue;
 
             const drawY = THUMB_ROW_TOP;
             let bmp: ImageBitmap | undefined;
@@ -512,17 +509,27 @@ export default function FilmstripTimeline({
             }
 
             if (bmp && bmp.width > 0) {
-              ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
+              if (slotW >= thumbW) {
+                // Slot wider than thumbnail: center it in the slot
+                const drawX = slotX + (slotW - thumbW) / 2;
+                ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
+              } else {
+                // Slot narrower: crop center of bitmap to fit
+                const srcScale = slotW / thumbW;
+                const srcW = bmp.width * srcScale;
+                const srcX = (bmp.width - srcW) / 2;
+                ctx.drawImage(bmp, srcX, 0, srcW, bmp.height, slotX, drawY, slotW, thumbH);
+              }
               ctx.strokeStyle = frameType === "I" ? FRAME_BORDER_I
                 : frameType === "B" ? FRAME_BORDER_B : FRAME_BORDER_P;
               ctx.lineWidth = 1;
-              ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+              ctx.strokeRect(slotX, drawY, slotW, thumbH);
             } else {
               ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
-              ctx.fillRect(drawX, drawY, thumbW, thumbH);
+              ctx.fillRect(slotX, drawY, slotW, thumbH);
               ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
               ctx.lineWidth = 1;
-              ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+              ctx.strokeRect(slotX, drawY, slotW, thumbH);
             }
 
             // Frame number at max zoom
@@ -534,9 +541,9 @@ export default function FilmstripTimeline({
               ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
               const label = String(frameNum);
               const textW = ctx.measureText(label).width;
-              ctx.fillRect(drawX, drawY, textW + 6, 14);
+              ctx.fillRect(slotX, drawY, textW + 6, 14);
               ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
-              ctx.fillText(label, drawX + 3, drawY + 2);
+              ctx.fillText(label, slotX + 3, drawY + 2);
               ctx.font = FONT;
               ctx.textAlign = "center";
             }
@@ -788,7 +795,6 @@ export default function FilmstripTimeline({
           w,
         );
         setFollowMode(false);
-        onZoomChangeRef.current?.(pxPerSecRef.current);
       } else {
         // Horizontal scroll
         const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
@@ -833,7 +839,6 @@ export default function FilmstripTimeline({
         timeBefore * pxPerSecRef.current - anchorX,
         w,
       );
-      onZoomChangeRef.current?.(pxPerSecRef.current);
     };
 
     document.addEventListener("keydown", onKeyDown);
