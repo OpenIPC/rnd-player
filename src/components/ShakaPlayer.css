@@ -468,12 +468,6 @@ video::-webkit-media-text-track-container {
   background: rgba(255, 255, 255, 0.1);
 }
 
-.vp-context-menu-separator {
-  height: 1px;
-  background: rgba(255, 255, 255, 0.15);
-  margin: 2px 0;
-}
-
 .vp-copied-toast {
   position: absolute;
   top: 16px;

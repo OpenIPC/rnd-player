@@ -8,7 +8,13 @@ import {
   SpeedIcon,
   FullscreenIcon,
   ExitFullscreenIcon,
-  InfoIcon,
+  AudioIcon,
+  SubtitleIcon,
+  CopyLinkIcon,
+  StatsNerdIcon,
+  AudioLevelsIcon,
+  FilmstripIcon,
+  PipIcon,
 } from "./icons";
 
 const icons = [
@@ -20,7 +26,13 @@ const icons = [
   ["SpeedIcon", SpeedIcon],
   ["FullscreenIcon", FullscreenIcon],
   ["ExitFullscreenIcon", ExitFullscreenIcon],
-  ["InfoIcon", InfoIcon],
+  ["AudioIcon", AudioIcon],
+  ["SubtitleIcon", SubtitleIcon],
+  ["CopyLinkIcon", CopyLinkIcon],
+  ["StatsNerdIcon", StatsNerdIcon],
+  ["AudioLevelsIcon", AudioLevelsIcon],
+  ["FilmstripIcon", FilmstripIcon],
+  ["PipIcon", PipIcon],
 ] as const;
 
 describe("icons", () => {

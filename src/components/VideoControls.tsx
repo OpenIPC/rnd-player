@@ -42,14 +42,12 @@ interface AudioOption {
   index: number;
   language: string;
   label: string;
-  roles: string[];
 }
 
 interface TextOption {
   id: number;
   language: string;
   label: string;
-  kind: string;
 }
 
 function langDisplayName(code: string, fallback: string): string {
@@ -229,7 +227,6 @@ export default function VideoControls({
         index: i,
         language: t.language,
         label: t.label || "",
-        roles: t.roles || [],
       }))
     );
     const activeAudioIdx = audios.findIndex((t) => t.active);
@@ -244,7 +241,6 @@ export default function VideoControls({
         id: t.id,
         language: t.language,
         label: t.label || "",
-        kind: t.kind || "subtitle",
       }))
     );
     const activeText = texts.find((t) => t.active);

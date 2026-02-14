@@ -76,16 +76,6 @@ export function FullscreenIcon() {
   );
 }
 
-export function InfoIcon() {
-  return (
-    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="10" cy="10" r="8" />
-      <path d="M10 9v5" strokeLinecap="round" />
-      <circle cx="10" cy="6.5" r="0.5" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
 export function ExitFullscreenIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
