@@ -224,6 +224,24 @@ video::-webkit-media-text-track-container {
   appearance: none;
 }
 
+/* ── Progress bar hover tooltip ── */
+.vp-progress-tooltip {
+  position: absolute;
+  bottom: 100%;
+  transform: translateX(-50%);
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  line-height: 1;
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  font-size: 12px;
+  font-family: monospace;
+  white-space: nowrap;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 2;
+}
+
 /* ── In/Out point markers on progress bar ── */
 .vp-marker {
   position: absolute;

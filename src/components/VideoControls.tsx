@@ -566,6 +566,25 @@ export default function VideoControls({
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
 
+  // ── Progress bar hover tooltip ──
+  const [hoverInfo, setHoverInfo] = useState<{ pct: number; time: number } | null>(null);
+  const progressRowRef = useRef<HTMLDivElement>(null);
+
+  const onProgressMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const row = progressRowRef.current;
+      if (!row || !duration) return;
+      const rect = row.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      setHoverInfo({ pct: pct * 100, time: pct * duration });
+    },
+    [duration],
+  );
+
+  const onProgressMouseLeave = useCallback(() => {
+    setHoverInfo(null);
+  }, []);
+
   return (
     <div
       ref={wrapperRef}
@@ -580,7 +599,20 @@ export default function VideoControls({
       {/* Bottom bar */}
       <div className="vp-bottom-bar">
         {/* Progress bar */}
-        <div className="vp-progress-row">
+        <div
+          className="vp-progress-row"
+          ref={progressRowRef}
+          onMouseMove={onProgressMouseMove}
+          onMouseLeave={onProgressMouseLeave}
+        >
+          {hoverInfo && (
+            <div
+              className="vp-progress-tooltip"
+              style={{ left: `${hoverInfo.pct}%` }}
+            >
+              {formatTimecode(hoverInfo.time, timecodeMode, fps)}
+            </div>
+          )}
           <div className="vp-progress-track">
             <div
               className="vp-progress-buffered"
