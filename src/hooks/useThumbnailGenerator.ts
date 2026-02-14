@@ -3,7 +3,6 @@ import type shaka from "shaka-player";
 import type { WorkerRequest, WorkerResponse } from "../types/thumbnailWorker.types";
 
 const THUMBNAIL_WIDTH = 160;
-const DBG = "[FilmstripHook]";
 const THROTTLE_MS = 200;
 
 export type RequestRangeFn = (startTime: number, endTime: number, priorityTime: number) => void;
@@ -145,54 +144,34 @@ export function useThumbnailGenerator(
   }, []);
 
   useEffect(() => {
-    console.log(DBG, "effect run", { enabled, player: !!player, videoEl: !!videoEl, supported, encrypted });
-
     if (!enabled || !player || !videoEl || !supported || encrypted) {
-      console.log(DBG, "early exit:", { enabled, player: !!player, videoEl: !!videoEl, supported, encrypted });
       return cleanup;
     }
 
     const stream = getLowestVideoStream(player);
-    if (!stream) {
-      console.log(DBG, "no video stream found in manifest");
-      return;
-    }
+    if (!stream) return;
 
     const codec = stream.codecs;
     const width = stream.width ?? 0;
     const height = stream.height ?? 0;
-    console.log(DBG, "stream info:", { codec, width, height, encrypted: stream.encrypted });
 
-    if (!codec || !width || !height) {
-      console.log(DBG, "missing codec/dimensions, abort");
-      return;
-    }
+    if (!codec || !width || !height) return;
 
     let cancelled = false;
 
     (async () => {
       try {
-        console.log(DBG, "creating segment index...");
         await stream.createSegmentIndex();
         if (cancelled) return;
 
         const segmentIndex = stream.segmentIndex;
-        if (!segmentIndex) {
-          console.log(DBG, "segmentIndex is null after createSegmentIndex()");
-          return;
-        }
+        if (!segmentIndex) return;
 
         const iter = segmentIndex[Symbol.iterator]();
         const firstResult = iter.next();
-        if (firstResult.done) {
-          console.log(DBG, "segment iterator is empty");
-          return;
-        }
+        if (firstResult.done) return;
         const firstRef = firstResult.value;
-        if (!firstRef) {
-          console.log(DBG, "first segment ref is null");
-          return;
-        }
+        if (!firstRef) return;
 
         // Find the init segment reference on the SegmentReference.
         // In compiled Shaka builds, both property names AND method names are
@@ -223,7 +202,6 @@ export function useThumbnailGenerator(
           }
 
           if (fnNames.size === 0) continue;
-          console.log(DBG, `probing "${key}": ${fnNames.size} callables:`, [...fnNames]);
 
           for (const fn of fnNames) {
             try {
@@ -235,7 +213,6 @@ export function useThumbnailGenerator(
                 (result[0].startsWith("http") || result[0].startsWith("/"))
               ) {
                 initSegmentUrl = result[0];
-                console.log(DBG, `found init segment URI via "${key}.${fn}()":`, initSegmentUrl);
                 break;
               }
             } catch {
@@ -245,10 +222,7 @@ export function useThumbnailGenerator(
           if (initSegmentUrl) break;
         }
 
-        if (!initSegmentUrl) {
-          console.log(DBG, "could not find init segment URL on segment ref");
-          return;
-        }
+        if (!initSegmentUrl) return;
 
         const segments: { url: string; startTime: number; endTime: number }[] = [];
         for (const ref of segmentIndex) {
@@ -262,34 +236,19 @@ export function useThumbnailGenerator(
           });
         }
 
-        console.log(DBG, `collected ${segments.length} media segments`);
-        if (segments.length > 0) {
-          console.log(DBG, "first segment:", segments[0]);
-          console.log(DBG, "last segment:", segments[segments.length - 1]);
-        }
-
         if (cancelled || segments.length === 0) return;
 
         segmentsRef.current = segments;
         setSegmentTimes(segments.map((s) => s.startTime));
 
         const duration = videoEl.duration || 0;
-        console.log(DBG, "video duration:", duration);
-        if (duration <= 0) {
-          console.log(DBG, "duration <= 0, abort");
-          return;
-        }
+        if (duration <= 0) return;
 
-        console.log(DBG, "spawning worker...");
         const worker = new Worker(
           new URL("../workers/thumbnailWorker.ts", import.meta.url),
           { type: "module" },
         );
         workerRef.current = worker;
-
-        worker.onerror = (ev) => {
-          console.error(DBG, "worker onerror:", ev.message, ev);
-        };
 
         worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
           const msg = e.data;
@@ -314,11 +273,7 @@ export function useThumbnailGenerator(
               setThumbnails(new Map(thumbnailsRef.current));
               break;
             }
-            case "error":
-              console.warn(DBG, "worker error:", msg.message);
-              break;
             case "ready":
-              console.log(DBG, "worker ready for queue updates");
               workerReadyRef.current = true;
               break;
           }
@@ -334,10 +289,9 @@ export function useThumbnailGenerator(
           thumbnailWidth: THUMBNAIL_WIDTH,
           clearKeyHex: streamEncrypted ? clearKey : undefined,
         };
-        console.log(DBG, "posting to worker:", { ...payload, segments: `[${segments.length} items]` });
         worker.postMessage(payload satisfies WorkerRequest);
-      } catch (e) {
-        console.error(DBG, "Failed to start thumbnail generation:", e);
+      } catch {
+        // Thumbnail generation is best-effort; failures are silent
       }
     })();
 

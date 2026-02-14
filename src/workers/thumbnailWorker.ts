@@ -10,8 +10,6 @@ import {
   type TencInfo,
 } from "./cencDecrypt";
 
-const DBG = "[FilmstripWorker]";
-
 function post(msg: WorkerResponse, transfer?: Transferable[]) {
   self.postMessage(msg, { transfer: transfer ?? [] });
 }
@@ -46,8 +44,7 @@ function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefin
     box.write(stream);
     const pos = stream.getPosition();
     return new Uint8Array(stream.buffer, 8, pos - 8);
-  } catch (e) {
-    console.error(DBG, "failed to serialize description box:", e);
+  } catch {
     return undefined;
   }
 }
@@ -109,8 +106,6 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
   const { initSegmentUrl, codec, width, height, thumbnailWidth } = req;
   segments = req.segments;
 
-  console.log(DBG, "initialize()", { codec, width, height, totalSegments: segments.length });
-
   // Reset state
   currentQueue = [];
   processing = false;
@@ -137,15 +132,11 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
       if (req.clearKeyHex) {
         const scheme = extractScheme(mp4, vt.id);
         if (scheme && scheme !== "cenc") {
-          console.warn(DBG, `Unsupported encryption scheme "${scheme}", only "cenc" (AES-CTR) is supported`);
           post({ type: "error", message: `Unsupported encryption scheme: ${scheme}` });
         } else {
           const ti = extractTenc(mp4, vt.id);
           if (ti) {
             tencInfo = ti;
-            console.log(DBG, "tenc extracted, IV size:", ti.defaultPerSampleIVSize);
-          } else {
-            console.warn(DBG, "No tenc box found in init segment, proceeding without decryption");
           }
         }
       }
@@ -159,9 +150,7 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
   if (req.clearKeyHex && tencInfo) {
     try {
       cryptoKey = await importClearKey(req.clearKeyHex);
-      console.log(DBG, "CryptoKey imported for CENC decryption, IV size:", tencInfo.defaultPerSampleIVSize);
     } catch (e) {
-      console.error(DBG, "Failed to import ClearKey:", e);
       post({ type: "error", message: `Failed to import decryption key: ${e}` });
       cryptoKey = null;
       tencInfo = null;
@@ -191,14 +180,12 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
       });
     },
     error: (e: DOMException) => {
-      console.error(DBG, "VideoDecoder error:", e);
       post({ type: "error", message: `VideoDecoder error: ${e.message}` });
     },
   });
 
   try {
     decoder.configure(config);
-    console.log(DBG, "VideoDecoder configured, ready for queue updates");
     post({ type: "ready" });
   } catch (e) {
     post({ type: "error", message: `Failed to configure decoder: ${e}` });
@@ -253,8 +240,7 @@ async function processQueue() {
                 }
               }
             }
-          } catch (e) {
-            console.error(DBG, "Decryption failed for segment", segIdx, e);
+          } catch {
             continue;
           }
         }
@@ -272,7 +258,6 @@ async function processQueue() {
     }
   } catch (e) {
     if (!aborted) {
-      console.error(DBG, "processQueue error:", e);
       post({ type: "error", message: `${e}` });
     }
   }
@@ -297,7 +282,6 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   if (msg.type === "generate") {
     aborted = false;
     initialize(msg).catch((err) => {
-      console.error(DBG, "uncaught:", err);
       post({ type: "error", message: `${err}` });
     });
     return;
@@ -315,7 +299,6 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     if (!processing) {
       processQueue().catch((err) => {
         if (!aborted) {
-          console.error(DBG, "processQueue uncaught:", err);
           post({ type: "error", message: `${err}` });
         }
       });
