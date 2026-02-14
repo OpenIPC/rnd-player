@@ -142,6 +142,44 @@ export function FilmstripIcon() {
   );
 }
 
+export function FrameModeIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={12} height={12} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="2" y="3" width="16" height="14" rx="2" />
+      <line x1="6" y1="3" x2="6" y2="17" />
+      <line x1="14" y1="3" x2="14" y2="17" />
+      <circle cx="10" cy="10" r="2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function InPointIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="7,3 3,3 3,17 7,17" />
+      <line x1="3" y1="10" x2="14" y2="10" />
+    </svg>
+  );
+}
+
+export function OutPointIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="13,3 17,3 17,17 13,17" />
+      <line x1="6" y1="10" x2="17" y2="10" />
+    </svg>
+  );
+}
+
+export function ClearMarkersIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="6" y1="6" x2="14" y2="14" />
+      <line x1="14" y1="6" x2="6" y2="14" />
+    </svg>
+  );
+}
+
 export function PipIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

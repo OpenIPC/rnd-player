@@ -72,8 +72,8 @@ describe("VideoControls", () => {
   describe("time display", () => {
     it("displays formatted current time and duration", () => {
       setup({ currentTime: 65, duration: 3661 });
-      expect(screen.getByText(/1:05/)).toBeInTheDocument();
-      expect(screen.getByText(/1:01:01/)).toBeInTheDocument();
+      expect(screen.getByText(/0:01:05\.000/)).toBeInTheDocument();
+      expect(screen.getByText(/1:01:01\.000/)).toBeInTheDocument();
     });
   });
 

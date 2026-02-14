@@ -1,5 +1,8 @@
 /* ── Container ── */
 .vp-container {
+  --vp-accent: rgb(71, 13, 179);
+  --vp-accent-hover: rgb(85, 20, 210);
+
   position: relative;
   display: flex;
   flex-direction: column;
@@ -153,8 +156,8 @@ video::-webkit-media-text-track-container {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 120px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  height: 80px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
   pointer-events: none;
 }
 
@@ -162,6 +165,7 @@ video::-webkit-media-text-track-container {
 .vp-bottom-bar {
   position: relative;
   padding: 0 12px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 /* ── Progress bar row ── */
@@ -202,7 +206,7 @@ video::-webkit-media-text-track-container {
   top: 0;
   left: 0;
   height: 100%;
-  background: rgb(71, 13, 179);
+  background: var(--vp-accent);
   border-radius: 2px;
 }
 
@@ -220,12 +224,31 @@ video::-webkit-media-text-track-container {
   appearance: none;
 }
 
+/* ── In/Out point markers on progress bar ── */
+.vp-marker {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: #f5c518;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.vp-marker-region {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(245, 197, 24, 0.15);
+  pointer-events: none;
+}
+
 /* ── Controls row ── */
 .vp-controls-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 36px;
+  height: 32px;
   color: #fff;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 13px;
@@ -248,7 +271,7 @@ video::-webkit-media-text-track-container {
   border: none;
   color: #fff;
   cursor: pointer;
-  padding: 6px;
+  padding: 4px;
   border-radius: 4px;
   font-size: 13px;
   font-family: inherit;
@@ -261,22 +284,62 @@ video::-webkit-media-text-track-container {
 }
 
 .vp-btn-play {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  background: rgb(71, 13, 179);
+  background: var(--vp-accent);
   padding: 0;
 }
 
 .vp-btn-play:hover {
-  background: rgb(85, 20, 210);
+  background: var(--vp-accent-hover);
 }
 
 .vp-btn-label {
   white-space: nowrap;
 }
 
-/* ── Time display ── */
+/* ── Timecode display ── */
+.vp-timecode {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  white-space: nowrap;
+  font-family: "SF Mono", "Cascadia Mono", "Roboto Mono", "Consolas", monospace;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.85);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.vp-timecode:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+/* ── Shuttle speed indicator ── */
+.vp-shuttle-indicator {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  margin-left: 4px;
+  font-family: "SF Mono", "Cascadia Mono", "Roboto Mono", "Consolas", monospace;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* ── Time display (legacy, kept for compatibility) ── */
 .vp-time {
   padding: 0 6px;
   white-space: nowrap;
@@ -332,7 +395,7 @@ video::-webkit-media-text-track-container {
 .vp-volume-slider::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
-  background: linear-gradient(to right, rgb(71, 13, 179) var(--vp-vol, 100%), rgba(255, 255, 255, 0.3) var(--vp-vol, 100%));
+  background: linear-gradient(to right, var(--vp-accent) var(--vp-vol, 100%), rgba(255, 255, 255, 0.3) var(--vp-vol, 100%));
 }
 
 .vp-volume-slider::-moz-range-track {
@@ -345,7 +408,7 @@ video::-webkit-media-text-track-container {
 .vp-volume-slider::-moz-range-progress {
   height: 4px;
   border-radius: 2px;
-  background: rgb(71, 13, 179);
+  background: var(--vp-accent);
 }
 
 /* ── Popup anchor (wraps button + popup) ── */
@@ -360,7 +423,7 @@ video::-webkit-media-text-track-container {
   left: 50%;
   transform: translateX(-50%);
   background: rgba(20, 20, 20, 0.95);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 6px 0;
   min-width: 160px;
   white-space: nowrap;
@@ -394,7 +457,7 @@ video::-webkit-media-text-track-container {
 }
 
 .vp-popup-item.vp-active {
-  color: rgb(71, 13, 179);
+  color: var(--vp-accent);
 }
 
 .vp-popup-item.vp-active::before {
@@ -403,7 +466,7 @@ video::-webkit-media-text-track-container {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgb(71, 13, 179);
+  background: var(--vp-accent);
   margin-right: 8px;
   flex-shrink: 0;
 }
@@ -444,7 +507,7 @@ video::-webkit-media-text-track-container {
   position: absolute;
   z-index: 20;
   background: rgba(20, 20, 20, 0.95);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 4px 0;
   min-width: 180px;
   color: #fff;
@@ -469,8 +532,10 @@ video::-webkit-media-text-track-container {
 }
 
 .vp-context-menu-separator {
-  height: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  height: 0;
+  margin: 4px 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.4);
 }
 
 .vp-context-menu-check {
@@ -651,7 +716,7 @@ video::-webkit-media-text-track-container {
   flex-shrink: 0;
   height: 114px;
   background: #111;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   cursor: crosshair;
   line-height: normal;
 }

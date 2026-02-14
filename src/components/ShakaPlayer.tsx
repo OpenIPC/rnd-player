@@ -23,6 +23,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
+  const [inPoint, setInPoint] = useState<number | null>(null);
+  const [outPoint, setOutPoint] = useState<number | null>(null);
 
   useEffect(() => {
     if (!polyfillsInstalled) {
@@ -220,6 +222,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               clearKey={activeKey}
               showFilmstrip={showFilmstrip}
               onToggleFilmstrip={() => setShowFilmstrip((s) => !s)}
+              inPoint={inPoint}
+              outPoint={outPoint}
+              onInPointChange={setInPoint}
+              onOutPointChange={setOutPoint}
             />
           )}
       </div>
@@ -233,6 +239,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               player={playerRef.current}
               onClose={() => setShowFilmstrip(false)}
               clearKey={activeKey}
+              inPoint={inPoint}
+              outPoint={outPoint}
             />
           </Suspense>
         )}

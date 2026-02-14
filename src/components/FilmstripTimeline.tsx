@@ -1,13 +1,18 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import type shaka from "shaka-player";
 import { useThumbnailGenerator } from "../hooks/useThumbnailGenerator";
-import { formatTime } from "../utils/formatTime";
+import { formatTime, formatTimecode } from "../utils/formatTime";
+import type { TimecodeMode } from "../utils/formatTime";
 
 interface FilmstripTimelineProps {
   videoEl: HTMLVideoElement;
   player: shaka.Player;
   onClose: () => void;
   clearKey?: string;
+  timecodeMode?: TimecodeMode;
+  fps?: number;
+  inPoint?: number | null;
+  outPoint?: number | null;
 }
 
 const RULER_HEIGHT = 22;
@@ -15,7 +20,8 @@ const THUMB_ROW_TOP = RULER_HEIGHT;
 const MIN_PX_PER_SEC = 4;
 const MAX_PX_PER_SEC = 100;
 const DEFAULT_PX_PER_SEC = 16;
-const PLAYHEAD_COLOR = "rgb(71, 13, 179)";
+const PLAYHEAD_COLOR_CANVAS = "rgb(71, 13, 179)";
+const MARKER_COLOR = "#f5c518";
 const FONT = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
 export default function FilmstripTimeline({
@@ -23,6 +29,10 @@ export default function FilmstripTimeline({
   player,
   onClose,
   clearKey,
+  timecodeMode,
+  fps = 30,
+  inPoint,
+  outPoint,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -54,6 +64,15 @@ export default function FilmstripTimeline({
   thumbnailsRef.current = thumbnails;
   segmentTimesRef.current = segmentTimes;
   requestRangeRef.current = requestRange;
+
+  const inPointRef = useRef(inPoint);
+  const outPointRef = useRef(outPoint);
+  const timecodeModeRef = useRef(timecodeMode);
+  const fpsRef = useRef(fps);
+  inPointRef.current = inPoint;
+  outPointRef.current = outPoint;
+  timecodeModeRef.current = timecodeMode;
+  fpsRef.current = fps;
 
   const saveFrame = useCallback(async () => {
     const targetTime = ctxMenuTimeRef.current;
@@ -291,7 +310,11 @@ export default function FilmstripTimeline({
         ctx.lineTo(x, RULER_HEIGHT);
         ctx.stroke();
 
-        ctx.fillText(formatTime(t), x, RULER_HEIGHT - 7);
+        const label =
+          pxPerSec > 30 && timecodeModeRef.current
+            ? formatTimecode(t, timecodeModeRef.current, fpsRef.current)
+            : formatTime(t);
+        ctx.fillText(label, x, RULER_HEIGHT - 7);
 
         // Minor ticks (subdivide into 4)
         const subInterval = tickInterval / 4;
@@ -340,10 +363,71 @@ export default function FilmstripTimeline({
         }
       }
 
+      // ── In/Out markers ──
+      const inPt = inPointRef.current;
+      const outPt = outPointRef.current;
+
+      if (inPt != null && outPt != null) {
+        const inX = inPt * pxPerSec - sl;
+        const outX = outPt * pxPerSec - sl;
+        ctx.fillStyle = "rgba(245, 197, 24, 0.1)";
+        ctx.fillRect(inX, 0, outX - inX, h);
+      }
+
+      if (inPt != null) {
+        const inX = inPt * pxPerSec - sl;
+        if (inX >= -2 && inX <= w + 2) {
+          ctx.strokeStyle = MARKER_COLOR;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(inX, 0);
+          ctx.lineTo(inX, h);
+          ctx.stroke();
+          // Bracket shape
+          ctx.beginPath();
+          ctx.moveTo(inX + 6, 0);
+          ctx.lineTo(inX, 0);
+          ctx.lineTo(inX, 8);
+          ctx.strokeStyle = MARKER_COLOR;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(inX + 6, h);
+          ctx.lineTo(inX, h);
+          ctx.lineTo(inX, h - 8);
+          ctx.stroke();
+        }
+      }
+
+      if (outPt != null) {
+        const outX = outPt * pxPerSec - sl;
+        if (outX >= -2 && outX <= w + 2) {
+          ctx.strokeStyle = MARKER_COLOR;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(outX, 0);
+          ctx.lineTo(outX, h);
+          ctx.stroke();
+          // Bracket shape (mirrored)
+          ctx.beginPath();
+          ctx.moveTo(outX - 6, 0);
+          ctx.lineTo(outX, 0);
+          ctx.lineTo(outX, 8);
+          ctx.strokeStyle = MARKER_COLOR;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(outX - 6, h);
+          ctx.lineTo(outX, h);
+          ctx.lineTo(outX, h - 8);
+          ctx.stroke();
+        }
+      }
+
       // ── Playhead ──
       const playheadX = time * pxPerSec - sl;
       if (playheadX >= -2 && playheadX <= w + 2) {
-        ctx.strokeStyle = PLAYHEAD_COLOR;
+        ctx.strokeStyle = PLAYHEAD_COLOR_CANVAS;
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(playheadX, 0);
@@ -351,7 +435,7 @@ export default function FilmstripTimeline({
         ctx.stroke();
 
         // Playhead cap (triangle)
-        ctx.fillStyle = PLAYHEAD_COLOR;
+        ctx.fillStyle = PLAYHEAD_COLOR_CANVAS;
         ctx.beginPath();
         ctx.moveTo(playheadX - 5, 0);
         ctx.lineTo(playheadX + 5, 0);

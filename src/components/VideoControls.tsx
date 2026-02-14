@@ -17,10 +17,16 @@ import {
   StatsNerdIcon,
   AudioLevelsIcon,
   FilmstripIcon,
+  InPointIcon,
+  OutPointIcon,
+  ClearMarkersIcon,
+  FrameModeIcon,
 } from "./icons";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
-import { formatTime } from "../utils/formatTime";
+import { formatTimecode } from "../utils/formatTime";
+import type { TimecodeMode } from "../utils/formatTime";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -30,6 +36,10 @@ interface VideoControlsProps {
   clearKey?: string;
   showFilmstrip?: boolean;
   onToggleFilmstrip?: () => void;
+  inPoint: number | null;
+  outPoint: number | null;
+  onInPointChange: (time: number | null) => void;
+  onOutPointChange: (time: number | null) => void;
 }
 
 interface QualityOption {
@@ -71,6 +81,10 @@ export default function VideoControls({
   clearKey,
   showFilmstrip,
   onToggleFilmstrip,
+  inPoint,
+  outPoint,
+  onInPointChange,
+  onOutPointChange,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -98,6 +112,8 @@ export default function VideoControls({
   const [showStats, setShowStats] = useState(false);
   const [showAudioLevels, setShowAudioLevels] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("milliseconds");
+  const [detectedFps, setDetectedFps] = useState<number | null>(null);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -218,6 +234,9 @@ export default function VideoControls({
     const activeVariant = variantTracks.find((t) => t.active);
     if (activeVariant?.height != null) {
       setActiveHeight(activeVariant.height);
+    }
+    if (activeVariant?.frameRate != null && activeVariant.frameRate > 0) {
+      setDetectedFps(activeVariant.frameRate);
     }
 
     // Audio tracks
@@ -476,6 +495,19 @@ export default function VideoControls({
     }
   };
 
+  const fps = detectedFps ?? 30;
+
+  const { shuttleSpeed, shuttleDirection } = useKeyboardShortcuts({
+    videoEl,
+    containerEl,
+    fps,
+    onTogglePlay: togglePlay,
+    onToggleMute: toggleMute,
+    onToggleFullscreen: toggleFullscreen,
+    onInPointSet: onInPointChange,
+    onOutPointSet: onOutPointChange,
+  });
+
   const togglePip = async () => {
     if (document.pictureInPictureElement) {
       await document.exitPictureInPicture();
@@ -548,6 +580,27 @@ export default function VideoControls({
               className="vp-progress-played"
               style={{ width: `${progressPct}%` }}
             />
+            {inPoint != null && outPoint != null && duration > 0 && (
+              <div
+                className="vp-marker-region"
+                style={{
+                  left: `${(inPoint / duration) * 100}%`,
+                  width: `${((outPoint - inPoint) / duration) * 100}%`,
+                }}
+              />
+            )}
+            {inPoint != null && duration > 0 && (
+              <div
+                className="vp-marker vp-marker-in"
+                style={{ left: `${(inPoint / duration) * 100}%` }}
+              />
+            )}
+            {outPoint != null && duration > 0 && (
+              <div
+                className="vp-marker vp-marker-out"
+                style={{ left: `${(outPoint / duration) * 100}%` }}
+              />
+            )}
           </div>
           <input
             className="vp-progress-input"
@@ -567,9 +620,28 @@ export default function VideoControls({
               {playing ? <PauseIcon /> : <PlayIcon />}
             </button>
 
-            <span className="vp-time">
-              {formatTime(currentTime)} / {formatTime(duration)}
-            </span>
+            <button
+              className="vp-timecode"
+              onClick={() =>
+                setTimecodeMode((m) =>
+                  m === "milliseconds" ? "frames" : "milliseconds",
+                )
+              }
+              title="Click to toggle timecode format"
+            >
+              {formatTimecode(currentTime, timecodeMode, fps)}
+              {timecodeMode === "frames" && <FrameModeIcon />}
+              {" / "}
+              {formatTimecode(duration, timecodeMode, fps)}
+              {timecodeMode === "frames" && <FrameModeIcon />}
+            </button>
+            {shuttleDirection !== 0 && (
+              <span className="vp-shuttle-indicator">
+                {shuttleDirection === -1
+                  ? `${"◀".repeat(Math.min(shuttleSpeed, 4))} ${shuttleSpeed}x`
+                  : `${"▶".repeat(Math.min(shuttleSpeed, 4))} ${shuttleSpeed}x`}
+              </span>
+            )}
           </div>
 
           <div className="vp-controls-right">
@@ -754,6 +826,41 @@ export default function VideoControls({
               <CopyLinkIcon />
               Copy video URL at current time
             </div>
+            <div className="vp-context-menu-separator" />
+            <div
+              className="vp-context-menu-item"
+              onClick={() => {
+                onInPointChange(videoEl.currentTime);
+                setContextMenu(null);
+              }}
+            >
+              <InPointIcon />
+              Set in-point (I)
+            </div>
+            <div
+              className="vp-context-menu-item"
+              onClick={() => {
+                onOutPointChange(videoEl.currentTime);
+                setContextMenu(null);
+              }}
+            >
+              <OutPointIcon />
+              Set out-point (O)
+            </div>
+            {(inPoint != null || outPoint != null) && (
+              <div
+                className="vp-context-menu-item"
+                onClick={() => {
+                  onInPointChange(null);
+                  onOutPointChange(null);
+                  setContextMenu(null);
+                }}
+              >
+                <ClearMarkersIcon />
+                Clear in/out points
+              </div>
+            )}
+            <div className="vp-context-menu-separator" />
             <div
               className="vp-context-menu-item"
               onClick={() => {
