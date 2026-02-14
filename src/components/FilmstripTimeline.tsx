@@ -407,41 +407,74 @@ export default function FilmstripTimeline({
       const maxPxPerSec = thumbW > 0 ? fpsRef.current * thumbW : 5000;
       const atMaxZoom = pxPerSec >= maxPxPerSec * 0.95;
 
-      // Draw thumbnails — single per segment when packed, multiple when zoomed in
+      // Draw thumbnails — single per segment when packed, multiple when zoomed in.
+      // When the bitrate graph is visible, use the active stream's segment
+      // boundaries for layout so thumbnails and bars align. The thumbnail
+      // bitmaps come from the lowest-quality stream which may have different
+      // segment boundaries, so we map each layout segment to its nearest
+      // thumbnail segment for bitmap/intra-frame lookup.
+      const bd = bitrateDataRef.current;
+      const useBdLayout = graphOn && bd.segments.length > 0;
+      const layoutLen = useBdLayout ? bd.segments.length : times.length;
+
       const neededIntra: { segmentIndex: number; count: number }[] = [];
 
-      for (let i = 0; i < times.length; i++) {
-        const segStart = times[i];
-        const segEnd = i < times.length - 1 ? times[i + 1] : dur;
+      // Pointer for efficient nearest-thumbnail-segment lookup (both lists sorted)
+      let thumbPtr = 0;
+
+      for (let li = 0; li < layoutLen; li++) {
+        // Layout segment boundaries
+        let segStart: number, segEnd: number;
+        if (useBdLayout) {
+          segStart = bd.segments[li].startTime;
+          segEnd = bd.segments[li].endTime;
+        } else {
+          segStart = times[li];
+          segEnd = li < times.length - 1 ? times[li + 1] : dur;
+        }
+
+        // Find nearest thumbnail segment (sorted pointer scan)
+        while (
+          thumbPtr < times.length - 1 &&
+          Math.abs(times[thumbPtr + 1] - segStart) <= Math.abs(times[thumbPtr] - segStart)
+        ) {
+          thumbPtr++;
+        }
+        const thumbSegIdx = thumbPtr;
+        const thumbSegTime = times[thumbSegIdx] ?? segStart;
+
         const segDuration = segEnd - segStart;
         const segWidth = segDuration * pxPerSec;
 
         if (segWidth <= thumbW) {
-          // Packed mode: single thumbnail centered on segment midpoint
-          const mid = (segStart + segEnd) / 2;
-          const x = mid * pxPerSec - sl;
-          if (x + thumbW / 2 < 0 || x - thumbW / 2 > w) continue;
+          // Packed mode: crop thumbnail to segment boundaries
+          const x1 = segStart * pxPerSec - sl;
+          const x2 = segEnd * pxPerSec - sl;
+          if (x2 < 0 || x1 > w) continue;
 
-          const drawX = x - thumbW / 2;
+          const drawW = x2 - x1;
           const drawY = THUMB_ROW_TOP;
-          const bmp = thumbnailsRef.current.get(segStart);
+          const bmp = thumbnailsRef.current.get(thumbSegTime);
           if (bmp && bmp.width > 0) {
-            ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
+            const srcScale = Math.min(1, drawW / thumbW);
+            const srcW = bmp.width * srcScale;
+            const srcX = (bmp.width - srcW) / 2;
+            ctx.drawImage(bmp, srcX, 0, srcW, bmp.height, x1, drawY, drawW, thumbH);
             ctx.strokeStyle = FRAME_BORDER_I;
             ctx.lineWidth = 1;
-            ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+            ctx.strokeRect(x1, drawY, drawW, thumbH);
           } else {
             ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
-            ctx.fillRect(drawX, drawY, thumbW, thumbH);
+            ctx.fillRect(x1, drawY, drawW, thumbH);
             ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
             ctx.lineWidth = 1;
-            ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+            ctx.strokeRect(x1, drawY, drawW, thumbH);
           }
         } else {
           // Gap mode: draw multiple thumbnails evenly across segment
           const count = Math.max(2, Math.ceil(segWidth / thumbW));
-          const intraArr = intraFramesMapRef.current.get(i) ?? [];
-          const intraTypes = intraFrameTypesRef.current.get(i) ?? [];
+          const intraArr = intraFramesMapRef.current.get(thumbSegIdx) ?? [];
+          const intraTypes = intraFrameTypesRef.current.get(thumbSegIdx) ?? [];
 
           // Check if any part of the segment is visible on screen
           const segX1 = segStart * pxPerSec - sl;
@@ -461,11 +494,9 @@ export default function FilmstripTimeline({
             let frameType: FrameType = "I";
 
             if (j === 0) {
-              // First slot uses the existing I-frame thumbnail
-              bmp = thumbnailsRef.current.get(segStart);
+              bmp = thumbnailsRef.current.get(thumbSegTime);
               frameType = "I";
             } else if (intraArr.length > 0) {
-              // Map j-1 to closest available intra-frame
               const arrIdx = count > 2
                 ? Math.round(((j - 1) / (count - 2)) * (intraArr.length - 1))
                 : 0;
@@ -501,7 +532,6 @@ export default function FilmstripTimeline({
               ctx.fillRect(drawX, drawY, textW + 6, 14);
               ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
               ctx.fillText(label, drawX + 3, drawY + 2);
-              // Restore font for ruler/other text
               ctx.font = FONT;
               ctx.textAlign = "center";
             }
@@ -509,7 +539,7 @@ export default function FilmstripTimeline({
 
           // Only request intra-frames for visible segments
           if (segVisible && count > 1 && intraArr.length < count - 1) {
-            neededIntra.push({ segmentIndex: i, count: count - 1 });
+            neededIntra.push({ segmentIndex: thumbSegIdx, count: count - 1 });
           }
         }
       }
@@ -523,7 +553,6 @@ export default function FilmstripTimeline({
 
       // ── Bitrate graph ──
       if (graphOn) {
-        const bd = bitrateDataRef.current;
         if (bd.segments.length > 0 && bd.maxBitrateBps > 0) {
           const graphTop = THUMB_ROW_TOP + thumbH;
           const graphBottom = graphTop + GRAPH_HEIGHT;
@@ -537,11 +566,10 @@ export default function FilmstripTimeline({
           ctx.lineTo(w, graphTop);
           ctx.stroke();
 
-          // Draw bars
+          // Draw bars using the active stream's own segment boundaries
           for (const seg of bd.segments) {
             const x1 = seg.startTime * pxPerSec - sl;
             const x2 = seg.endTime * pxPerSec - sl;
-            // Skip if outside viewport
             if (x2 < 0 || x1 > w) continue;
 
             const barW = Math.max(1, x2 - x1 - 1);
