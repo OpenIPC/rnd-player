@@ -738,6 +738,11 @@ video::-webkit-media-text-track-container {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   cursor: crosshair;
   line-height: normal;
+  transition: height 0.2s ease;
+}
+
+.vp-filmstrip-panel.vp-filmstrip-graph {
+  height: 162px;
 }
 
 .vp-filmstrip-close {
@@ -775,6 +780,10 @@ video::-webkit-media-text-track-container {
 /* Adjust audio levels bottom when filmstrip is visible */
 .vp-container:has(.vp-filmstrip-panel) .vp-audio-levels {
   bottom: 162px;
+}
+
+.vp-container:has(.vp-filmstrip-graph) .vp-audio-levels {
+  bottom: 210px;
 }
 
 /* ── Export rendition picker ── */

@@ -1,8 +1,11 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import type shaka from "shaka-player";
 import { useThumbnailGenerator } from "../hooks/useThumbnailGenerator";
+import { useBitrateGraph } from "../hooks/useBitrateGraph";
+import type { BitrateGraphData } from "../hooks/useBitrateGraph";
 import { formatTime, formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
+import { formatBitrate } from "../utils/formatBitrate";
 
 interface FilmstripTimelineProps {
   videoEl: HTMLVideoElement;
@@ -17,12 +20,16 @@ interface FilmstripTimelineProps {
 
 const RULER_HEIGHT = 22;
 const THUMB_ROW_TOP = RULER_HEIGHT;
+const GRAPH_HEIGHT = 48;
 const MIN_PX_PER_SEC = 4;
 const MAX_PX_PER_SEC = 100;
 const DEFAULT_PX_PER_SEC = 16;
 const PLAYHEAD_COLOR_CANVAS = "rgb(71, 13, 179)";
 const MARKER_COLOR = "#f5c518";
 const FONT = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+const GRAPH_MEASURED_COLOR = "rgba(74, 158, 237, 0.6)";
+const GRAPH_ESTIMATED_COLOR = "rgba(74, 158, 237, 0.25)";
+const GRAPH_AVG_COLOR = "rgba(74, 158, 237, 0.5)";
 
 export default function FilmstripTimeline({
   videoEl,
@@ -43,6 +50,9 @@ export default function FilmstripTimeline({
   const [followMode, setFollowMode] = useState(true);
   const followModeRef = useRef(followMode);
   followModeRef.current = followMode;
+  const [showBitrateGraph, setShowBitrateGraph] = useState(false);
+  const showBitrateGraphRef = useRef(showBitrateGraph);
+  showBitrateGraphRef.current = showBitrateGraph;
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; time: number } | null>(null);
   const ctxMenuTimeRef = useRef(0);
 
@@ -64,6 +74,10 @@ export default function FilmstripTimeline({
   thumbnailsRef.current = thumbnails;
   segmentTimesRef.current = segmentTimes;
   requestRangeRef.current = requestRange;
+
+  const bitrateData = useBitrateGraph(player, showBitrateGraph);
+  const bitrateDataRef = useRef<BitrateGraphData>(bitrateData);
+  bitrateDataRef.current = bitrateData;
 
   const inPointRef = useRef(inPoint);
   const outPointRef = useRef(outPoint);
@@ -330,7 +344,9 @@ export default function FilmstripTimeline({
       }
 
       // ── Thumbnail row ──
-      const thumbH = h - RULER_HEIGHT;
+      const graphOn = showBitrateGraphRef.current;
+      const graphH = graphOn ? GRAPH_HEIGHT : 0;
+      const thumbH = h - RULER_HEIGHT - graphH;
       const thumbW = thumbH * videoAspectRef.current;
       const times = segmentTimesRef.current;
 
@@ -360,6 +376,73 @@ export default function FilmstripTimeline({
           ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
           ctx.lineWidth = 1;
           ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+        }
+      }
+
+      // ── Bitrate graph ──
+      if (graphOn) {
+        const bd = bitrateDataRef.current;
+        if (bd.segments.length > 0 && bd.maxBitrateBps > 0) {
+          const graphTop = THUMB_ROW_TOP + thumbH;
+          const graphBottom = graphTop + GRAPH_HEIGHT;
+          const barMaxH = GRAPH_HEIGHT - 12; // leave space for labels
+
+          // Separator line
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, graphTop);
+          ctx.lineTo(w, graphTop);
+          ctx.stroke();
+
+          // Draw bars
+          for (const seg of bd.segments) {
+            const x1 = seg.startTime * pxPerSec - sl;
+            const x2 = seg.endTime * pxPerSec - sl;
+            // Skip if outside viewport
+            if (x2 < 0 || x1 > w) continue;
+
+            const barW = Math.max(1, x2 - x1 - 1);
+            const ratio = seg.bitrateBps / bd.maxBitrateBps;
+            const barH = ratio * barMaxH;
+            const barY = graphBottom - barH;
+
+            ctx.fillStyle = seg.measured ? GRAPH_MEASURED_COLOR : GRAPH_ESTIMATED_COLOR;
+            ctx.fillRect(x1, barY, barW, barH);
+          }
+
+          // Average bitrate dashed line
+          const avgRatio = bd.avgBitrateBps / bd.maxBitrateBps;
+          const avgY = graphBottom - avgRatio * barMaxH;
+          ctx.strokeStyle = GRAPH_AVG_COLOR;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(0, avgY);
+          ctx.lineTo(w, avgY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Labels
+          ctx.font = "9px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+          ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+          ctx.fillText(formatBitrate(bd.maxBitrateBps), 4, graphTop + 2);
+          ctx.textBaseline = "middle";
+          ctx.fillText(`avg ${formatBitrate(bd.avgBitrateBps)}`, 4, avgY);
+
+          // Rendition label at top-right
+          if (bd.renditionLabel) {
+            ctx.textAlign = "right";
+            ctx.textBaseline = "top";
+            ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+            ctx.fillText(bd.renditionLabel, w - 4, graphTop + 2);
+          }
+
+          // Reset text settings for subsequent drawing
+          ctx.font = FONT;
+          ctx.textAlign = "center";
         }
       }
 
@@ -590,7 +673,7 @@ export default function FilmstripTimeline({
   return (
     <div
       ref={wrapperRef}
-      className="vp-filmstrip-panel"
+      className={`vp-filmstrip-panel${showBitrateGraph ? " vp-filmstrip-graph" : ""}`}
       onClick={(e) => e.stopPropagation()}
     >
       <button className="vp-filmstrip-close" onClick={onClose}>
@@ -619,6 +702,18 @@ export default function FilmstripTimeline({
               {followMode ? "✓" : ""}
             </span>
             Follow mode
+          </div>
+          <div
+            className="vp-context-menu-item"
+            onClick={() => {
+              setShowBitrateGraph((v) => !v);
+              setCtxMenu(null);
+            }}
+          >
+            <span className="vp-context-menu-check">
+              {showBitrateGraph ? "✓" : ""}
+            </span>
+            Bitrate graph
           </div>
           <div className="vp-context-menu-separator" />
           <div
