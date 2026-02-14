@@ -33,48 +33,9 @@ export default function FilmstripTimeline({
   const [followMode, setFollowMode] = useState(true);
   const followModeRef = useRef(followMode);
   followModeRef.current = followMode;
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; time: number } | null>(null);
+  const ctxMenuTimeRef = useRef(0);
 
-  const saveFrame = useCallback(() => {
-    try {
-      const w = videoEl.videoWidth;
-      const h = videoEl.videoHeight;
-      if (!w || !h) return;
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(videoEl, 0, 0, w, h);
-
-      // Build filename: {title}_{MM-SS}_{height}p.png
-      const secs = videoEl.currentTime;
-      const hh = Math.floor(secs / 3600);
-      const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, "0");
-      const ss = String(Math.floor(secs % 60)).padStart(2, "0");
-      const time = hh > 0 ? `${hh}-${mm}-${ss}` : `${mm}-${ss}`;
-
-      const uri = player.getAssetUri?.() ?? "";
-      const slug = decodeURIComponent(uri.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "")
-        .replace(/[^a-zA-Z0-9_-]+/g, "_")
-        .replace(/^_+|_+$/g, "");
-      const title = slug || "frame";
-
-      const filename = `${title}_${time}_${h}p.png`;
-
-      canvas.toBlob((blob) => {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(url);
-      }, "image/png");
-    } catch {
-      // Canvas tainted by DRM — silently ignore
-    }
-    setCtxMenu(null);
-  }, [videoEl, player]);
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
@@ -82,7 +43,7 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, supported, requestRange } =
+  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame } =
     useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
@@ -93,6 +54,104 @@ export default function FilmstripTimeline({
   thumbnailsRef.current = thumbnails;
   segmentTimesRef.current = segmentTimes;
   requestRangeRef.current = requestRange;
+
+  const saveFrame = useCallback(async () => {
+    const targetTime = ctxMenuTimeRef.current;
+    setCtxMenu(null);
+
+    const w = videoEl.videoWidth;
+    const h = videoEl.videoHeight;
+    if (!w || !h) return;
+
+    // Build filename: {title}_{MM-SS}_{height}p.png
+    const secs = targetTime;
+    const hh = Math.floor(secs / 3600);
+    const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, "0");
+    const ss = String(Math.floor(secs % 60)).padStart(2, "0");
+    const time = hh > 0 ? `${hh}-${mm}-${ss}` : `${mm}-${ss}`;
+
+    const uri = player.getAssetUri?.() ?? "";
+    const slug = decodeURIComponent(uri.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "")
+      .replace(/[^a-zA-Z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    const title = slug || "frame";
+
+    const filename = `${title}_${time}_${h}p.png`;
+
+    const download = (blob: Blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    // If the right-clicked time is close to the current playback position,
+    // try direct canvas capture first (fast path, works for non-DRM).
+    const isCurrentFrame = Math.abs(videoEl.currentTime - targetTime) < 0.5;
+
+    if (isCurrentFrame) {
+      let directOk = false;
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(videoEl, 0, 0, w, h);
+
+        // DRM-tainted canvases may not throw but render all-black pixels.
+        // Sample a few pixels to detect this before accepting the result.
+        let tainted = false;
+        try {
+          const sample = ctx.getImageData(0, 0, Math.min(w, 32), Math.min(h, 32));
+          const d = sample.data;
+          let nonZero = false;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i] !== 0 || d[i + 1] !== 0 || d[i + 2] !== 0) {
+              nonZero = true;
+              break;
+            }
+          }
+          if (!nonZero) tainted = true;
+        } catch {
+          tainted = true;
+        }
+
+        if (!tainted) {
+          const blob = await new Promise<Blob | null>((resolve) =>
+            canvas.toBlob(resolve, "image/png"),
+          );
+          if (blob) {
+            download(blob);
+            directOk = true;
+          }
+        }
+      } catch {
+        // Canvas tainted by DRM — fall through to worker fallback
+      }
+
+      if (directOk) return;
+    }
+
+    // Worker-based decode: works for any time and handles DRM
+    try {
+      const bitmap = await workerSaveFrame(secs);
+      if (!bitmap) return;
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/png"),
+      );
+      if (blob) download(blob);
+    } catch {
+      // Worker fallback also failed — silently ignore
+    }
+  }, [videoEl, player, workerSaveFrame]);
 
   // Track current time, duration, and video aspect ratio
   useEffect(() => {
@@ -415,7 +474,12 @@ export default function FilmstripTimeline({
       e.preventDefault();
       e.stopPropagation();
       const rect = wrapper.getBoundingClientRect();
-      setCtxMenu({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      const localX = e.clientX - rect.left;
+      const clickTime = (localX + scrollLeftRef.current) / pxPerSecRef.current;
+      const dur = durationRef.current;
+      const clampedTime = Math.max(0, Math.min(dur, clickTime));
+      ctxMenuTimeRef.current = clampedTime;
+      setCtxMenu({ x: localX, y: e.clientY - rect.top, time: clampedTime });
     };
     wrapper.addEventListener("contextmenu", onContextMenu);
     return () => wrapper.removeEventListener("contextmenu", onContextMenu);

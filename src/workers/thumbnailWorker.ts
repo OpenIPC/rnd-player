@@ -265,6 +265,134 @@ async function processQueue() {
   processing = false;
 }
 
+/**
+ * One-shot frame capture at the requested time using the active stream's
+ * segments. Reuses module-level cryptoKey/tencInfo for DRM decryption.
+ */
+async function handleSaveFrame(msg: Extract<WorkerRequest, { type: "saveFrame" }>) {
+  try {
+    const { time, initSegmentUrl, segments: segs, codec, width, height } = msg;
+
+    // 1. Find the segment containing the requested time (or nearest)
+    let targetSeg = segs[0];
+    for (const seg of segs) {
+      if (time >= seg.startTime && time < seg.endTime) {
+        targetSeg = seg;
+        break;
+      }
+      if (
+        Math.abs(seg.startTime - time) <
+        Math.abs(targetSeg.startTime - time)
+      ) {
+        targetSeg = seg;
+      }
+    }
+
+    // 2. Fetch the active stream's init segment and extract codec description
+    const initBuf = await fetchBuffer(initSegmentUrl);
+    let description: Uint8Array | undefined;
+    {
+      const mp4 = createFile();
+      const buf = MP4BoxBuffer.fromArrayBuffer(initBuf.slice(0), 0);
+      mp4.onReady = (info) => {
+        const vt = info.videoTracks[0];
+        if (vt) description = extractDescription(mp4, vt.id);
+      };
+      mp4.appendBuffer(buf);
+      mp4.flush();
+      mp4.stop();
+    }
+
+    // 3. Fetch the media segment and extract sync samples
+    const mediaData = await fetchBuffer(targetSeg.url);
+    const syncSamples = await extractSamplesFromSegment(initBuf, mediaData);
+    if (syncSamples.length === 0) {
+      post({ type: "saveFrameResult", bitmap: null });
+      return;
+    }
+
+    // 4. Pick the sync sample closest to the requested time
+    let bestSample = syncSamples[0];
+    let bestDist = Infinity;
+    for (const s of syncSamples) {
+      const sampleTime = s.cts / s.timescale;
+      const dist = Math.abs(sampleTime - time);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestSample = s;
+      }
+    }
+
+    // 5. Decrypt if CENC is configured
+    let sampleBytes: Uint8Array = new Uint8Array(bestSample.data!);
+    if (cryptoKey && tencInfo) {
+      try {
+        const ivSize = tencInfo.defaultPerSampleIVSize;
+        const sencSamples = parseSencFromSegment(mediaData, ivSize);
+        if (sencSamples.length > 0) {
+          const sencIdx = bestSample.number_in_traf ?? bestSample.number;
+          const sencEntry = sencSamples[sencIdx];
+          if (sencEntry) {
+            const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
+            if (iv && iv.length > 0) {
+              sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
+            }
+          }
+        }
+      } catch {
+        post({ type: "saveFrameResult", bitmap: null });
+        return;
+      }
+    }
+
+    // 6. One-shot VideoDecoder at full resolution
+    const bitmap = await new Promise<ImageBitmap | null>((resolve) => {
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx2d = canvas.getContext("2d")!;
+
+      const dec = new VideoDecoder({
+        output: (frame: VideoFrame) => {
+          ctx2d.drawImage(frame, 0, 0, width, height);
+          frame.close();
+          createImageBitmap(canvas).then(resolve).catch(() => resolve(null));
+        },
+        error: () => resolve(null),
+      });
+
+      const config: VideoDecoderConfig = {
+        codec,
+        codedWidth: width,
+        codedHeight: height,
+        ...(description ? { description } : {}),
+      };
+
+      try {
+        dec.configure(config);
+        dec.decode(
+          new EncodedVideoChunk({
+            type: "key",
+            timestamp: (bestSample.cts / bestSample.timescale) * 1_000_000,
+            data: sampleBytes,
+          }),
+        );
+        dec.flush().then(() => {
+          try { dec.close(); } catch { /* */ }
+        }).catch(() => resolve(null));
+      } catch {
+        resolve(null);
+      }
+    });
+
+    if (bitmap) {
+      post({ type: "saveFrameResult", bitmap }, [bitmap]);
+    } else {
+      post({ type: "saveFrameResult", bitmap: null });
+    }
+  } catch {
+    post({ type: "saveFrameResult", bitmap: null });
+  }
+}
+
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data;
 
@@ -283,6 +411,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     aborted = false;
     initialize(msg).catch((err) => {
       post({ type: "error", message: `${err}` });
+    });
+    return;
+  }
+
+  if (msg.type === "saveFrame") {
+    handleSaveFrame(msg).catch(() => {
+      post({ type: "saveFrameResult", bitmap: null });
     });
     return;
   }
