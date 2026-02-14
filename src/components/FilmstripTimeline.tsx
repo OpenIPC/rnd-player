@@ -563,7 +563,7 @@ export default function FilmstripTimeline({
       const dur = durationRef.current;
       const clampedTime = Math.max(0, Math.min(dur, clickTime));
       ctxMenuTimeRef.current = clampedTime;
-      setCtxMenu({ x: localX, y: e.clientY - rect.top, time: clampedTime });
+      setCtxMenu({ x: e.clientX, y: e.clientY, time: clampedTime });
     };
     wrapper.addEventListener("contextmenu", onContextMenu);
     return () => wrapper.removeEventListener("contextmenu", onContextMenu);
@@ -606,7 +606,7 @@ export default function FilmstripTimeline({
       {ctxMenu && (
         <div
           className="vp-context-menu"
-          style={{ left: ctxMenu.x, top: ctxMenu.y, transform: "translateY(-100%)" }}
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
         >
           <div
             className="vp-context-menu-item"

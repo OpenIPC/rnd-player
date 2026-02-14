@@ -421,8 +421,7 @@ export default function VideoControls({
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      const rect = containerEl.getBoundingClientRect();
-      setContextMenu({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      setContextMenu({ x: e.clientX, y: e.clientY });
     };
     const dismissContextMenu = () => setContextMenu(null);
 

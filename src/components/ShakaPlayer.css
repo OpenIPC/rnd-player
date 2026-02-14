@@ -523,7 +523,7 @@ video::-webkit-media-text-track-container {
 
 /* ── Context menu (right-click) ── */
 .vp-context-menu {
-  position: absolute;
+  position: fixed;
   z-index: 20;
   background: rgba(20, 20, 20, 0.95);
   border-radius: 4px;
