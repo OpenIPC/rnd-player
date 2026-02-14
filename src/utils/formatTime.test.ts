@@ -83,4 +83,25 @@ describe("formatTimecode", () => {
       expect(formatTimecode(8638.567, "frames", 30)).toBe("2:23:58:17");
     });
   });
+
+  describe("totalFrames mode", () => {
+    it("formats zero", () => {
+      expect(formatTimecode(0, "totalFrames", 30)).toBe("0");
+    });
+
+    it("returns absolute frame number at 30fps", () => {
+      // 65.32 * 30 = 1959.6 => floor = 1959
+      expect(formatTimecode(65.32, "totalFrames", 30)).toBe("1959");
+    });
+
+    it("returns absolute frame number at 24fps", () => {
+      // 60.5 * 24 = 1452
+      expect(formatTimecode(60.5, "totalFrames", 24)).toBe("1452");
+    });
+
+    it("handles large values", () => {
+      // 8638.567 * 30 = 259157.01 => floor = 259157
+      expect(formatTimecode(8638.567, "totalFrames", 30)).toBe("259157");
+    });
+  });
 });

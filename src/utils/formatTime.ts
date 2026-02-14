@@ -7,7 +7,7 @@ export function formatTime(seconds: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
 }
 
-export type TimecodeMode = "milliseconds" | "frames";
+export type TimecodeMode = "milliseconds" | "frames" | "totalFrames";
 
 export function formatTimecode(
   seconds: number,
@@ -20,6 +20,10 @@ export function formatTimecode(
   const hh = String(h);
   const mm = String(m).padStart(2, "0");
   const ss = String(s).padStart(2, "0");
+
+  if (mode === "totalFrames") {
+    return String(Math.floor(seconds * fps));
+  }
 
   if (mode === "frames") {
     const ff = String(Math.floor((seconds % 1) * fps)).padStart(2, "0");

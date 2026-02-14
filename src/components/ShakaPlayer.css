@@ -303,6 +303,7 @@ video::-webkit-media-text-track-container {
 .vp-timecode {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   padding: 0 6px;
   white-space: nowrap;
   font-family: "SF Mono", "Cascadia Mono", "Roboto Mono", "Consolas", monospace;

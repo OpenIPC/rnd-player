@@ -624,16 +624,19 @@ export default function VideoControls({
               className="vp-timecode"
               onClick={() =>
                 setTimecodeMode((m) =>
-                  m === "milliseconds" ? "frames" : "milliseconds",
+                  m === "milliseconds"
+                    ? "frames"
+                    : m === "frames"
+                      ? "totalFrames"
+                      : "milliseconds",
                 )
               }
               title="Click to toggle timecode format"
             >
+              {(timecodeMode === "frames" || timecodeMode === "totalFrames") && <FrameModeIcon />}
               {formatTimecode(currentTime, timecodeMode, fps)}
-              {timecodeMode === "frames" && <FrameModeIcon />}
               {" / "}
               {formatTimecode(duration, timecodeMode, fps)}
-              {timecodeMode === "frames" && <FrameModeIcon />}
             </button>
             {shuttleDirection !== 0 && (
               <span className="vp-shuttle-indicator">
