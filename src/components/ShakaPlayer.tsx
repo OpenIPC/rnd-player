@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
-import FilmstripTimeline from "./FilmstripTimeline";
+const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 import "./ShakaPlayer.css";
 
 interface ShakaPlayerProps {
@@ -227,12 +227,14 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
         playerReady &&
         videoRef.current &&
         playerRef.current && (
-          <FilmstripTimeline
-            videoEl={videoRef.current}
-            player={playerRef.current}
-            onClose={() => setShowFilmstrip(false)}
-            clearKey={activeKey}
-          />
+          <Suspense fallback={null}>
+            <FilmstripTimeline
+              videoEl={videoRef.current}
+              player={playerRef.current}
+              onClose={() => setShowFilmstrip(false)}
+              clearKey={activeKey}
+            />
+          </Suspense>
         )}
     </div>
   );

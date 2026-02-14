@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import shaka from "shaka-player";
 import {
@@ -18,8 +18,8 @@ import {
   AudioLevelsIcon,
   FilmstripIcon,
 } from "./icons";
-import StatsPanel from "./StatsPanel";
-import AudioLevels from "./AudioLevels";
+const StatsPanel = lazy(() => import("./StatsPanel"));
+const AudioLevels = lazy(() => import("./AudioLevels"));
 import { formatTime } from "../utils/formatTime";
 
 interface VideoControlsProps {
@@ -800,21 +800,25 @@ export default function VideoControls({
       {/* Stats for nerds panel — portaled into containerEl so it stays visible when controls auto-hide */}
       {showStats &&
         createPortal(
-          <StatsPanel
-            player={player}
-            videoEl={videoEl}
-            onClose={() => setShowStats(false)}
-          />,
+          <Suspense fallback={null}>
+            <StatsPanel
+              player={player}
+              videoEl={videoEl}
+              onClose={() => setShowStats(false)}
+            />
+          </Suspense>,
           containerEl
         )}
 
       {/* Audio level meters — portaled into containerEl so they stay visible when controls auto-hide */}
       {showAudioLevels && (
-        <AudioLevels
-          videoEl={videoEl}
-          containerEl={containerEl}
-          onClose={() => setShowAudioLevels(false)}
-        />
+        <Suspense fallback={null}>
+          <AudioLevels
+            videoEl={videoEl}
+            containerEl={containerEl}
+            onClose={() => setShowAudioLevels(false)}
+          />
+        </Suspense>
       )}
     </div>
   );
