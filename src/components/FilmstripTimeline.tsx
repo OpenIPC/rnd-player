@@ -371,9 +371,9 @@ export default function FilmstripTimeline({
 
         let label: string;
         if (tickInterval < 1) {
-          // Sub-second: show frame timecode adjusted for startOffset
+          // Sub-second: show milliseconds (frame numbers are already on thumbnails)
           const adjusted = Math.max(0, t - sOff);
-          label = formatTimecode(adjusted, "frames", curFps);
+          label = formatTimecode(adjusted, "milliseconds");
         } else if (pxPerSec > 30 && timecodeModeRef.current) {
           label = formatTimecode(t, timecodeModeRef.current, curFps);
         } else {
