@@ -21,12 +21,17 @@ export function formatTimecode(
   const mm = String(m).padStart(2, "0");
   const ss = String(s).padStart(2, "0");
 
+  // Use floor with a tiny epsilon so the entire duration of frame N
+  // (from N/fps up to but not including (N+1)/fps) displays as frame N.
+  // The epsilon handles floating-point imprecision at exact boundaries.
+  const FRAME_EPS = 1e-6;
+
   if (mode === "totalFrames") {
-    return String(Math.round(seconds * fps));
+    return String(Math.floor(seconds * fps + FRAME_EPS));
   }
 
   if (mode === "frames") {
-    const ff = String(Math.round((seconds % 1) * fps) % fps).padStart(2, "0");
+    const ff = String(Math.floor((seconds % 1) * fps + FRAME_EPS) % fps).padStart(2, "0");
     return `${hh}:${mm}:${ss}:${ff}`;
   }
 

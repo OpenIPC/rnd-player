@@ -16,6 +16,7 @@ interface FilmstripTimelineProps {
   fps?: number;
   inPoint?: number | null;
   outPoint?: number | null;
+  startOffset?: number;
 }
 
 const RULER_HEIGHT = 22;
@@ -39,6 +40,7 @@ export default function FilmstripTimeline({
   fps = 30,
   inPoint,
   outPoint,
+  startOffset = 0,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,9 @@ export default function FilmstripTimeline({
     return null;
   })();
   fpsRef.current = detectedFps ?? fps;
+
+  const startOffsetRef = useRef(startOffset);
+  startOffsetRef.current = startOffset;
 
   const saveFrame = useCallback(async () => {
     const targetTime = ctxMenuTimeRef.current;
@@ -447,7 +452,7 @@ export default function FilmstripTimeline({
 
             // Frame number at max zoom
             if (atMaxZoom) {
-              const frameNum = Math.round(segStart * fpsRef.current) + j;
+              const frameNum = Math.round((segStart - startOffsetRef.current) * fpsRef.current) + j;
               ctx.font = "9px monospace";
               ctx.textAlign = "left";
               ctx.textBaseline = "top";

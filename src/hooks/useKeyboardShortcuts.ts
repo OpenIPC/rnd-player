@@ -161,7 +161,10 @@ export function useKeyboardShortcuts({
           resetShuttle();
           videoEl.playbackRate = 1;
           videoEl.pause();
-          videoEl.currentTime = Math.max(0, videoEl.currentTime - 1 / fps);
+          // Use frame-number math to avoid floating-point drift
+          const curFrame = Math.floor(videoEl.currentTime * fps + 1e-6);
+          const prevFrame = Math.max(0, curFrame - 1);
+          videoEl.currentTime = prevFrame / fps;
           break;
         }
 
@@ -172,7 +175,8 @@ export function useKeyboardShortcuts({
           videoEl.playbackRate = 1;
           videoEl.pause();
           const dur = videoEl.duration || 0;
-          videoEl.currentTime = Math.min(dur, videoEl.currentTime + 1 / fps);
+          const curFrameR = Math.floor(videoEl.currentTime * fps + 1e-6);
+          videoEl.currentTime = Math.min(dur, (curFrameR + 1) / fps);
           break;
         }
 

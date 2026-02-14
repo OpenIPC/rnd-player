@@ -28,6 +28,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
   const [compareMode, setCompareMode] = useState(false);
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
+  const [startOffset, setStartOffset] = useState(0);
 
   useEffect(() => {
     if (!polyfillsInstalled) {
@@ -124,6 +125,21 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
       try {
         await player.load(src, loadStartTime);
         if (destroyed) return;
+
+        // Detect B-frame composition time offset: after loading from
+        // the beginning, the browser settles on the first displayable
+        // frame which may be > 0 due to B-frame reordering.
+        if (loadStartTime == null) {
+          const onCanPlay = () => {
+            if (!destroyed) setStartOffset(video.currentTime);
+          };
+          if (video.readyState >= 3) {
+            onCanPlay();
+          } else {
+            video.addEventListener("canplay", onCanPlay, { once: true });
+          }
+        }
+
         setPlayerReady(true);
 
         if (savedState) {
@@ -231,6 +247,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               outPoint={outPoint}
               onInPointChange={setInPoint}
               onOutPointChange={setOutPoint}
+              startOffset={startOffset}
             />
           )}
         {compareMode &&
@@ -266,6 +283,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               clearKey={activeKey}
               inPoint={inPoint}
               outPoint={outPoint}
+              startOffset={startOffset}
             />
           </Suspense>
         )}

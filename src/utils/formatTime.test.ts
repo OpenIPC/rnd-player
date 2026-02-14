@@ -58,8 +58,8 @@ describe("formatTimecode", () => {
     });
 
     it("formats fractional seconds at 30fps", () => {
-      // 65.32 => frames = round(0.32 * 30) % 30 = round(9.6) % 30 = 10
-      expect(formatTimecode(65.32, "frames", 30)).toBe("0:01:05:10");
+      // 65.32 => frames = floor(0.32 * 30) % 30 = floor(9.6) % 30 = 9
+      expect(formatTimecode(65.32, "frames", 30)).toBe("0:01:05:09");
     });
 
     it("formats at 24fps", () => {
@@ -90,8 +90,8 @@ describe("formatTimecode", () => {
     });
 
     it("returns absolute frame number at 30fps", () => {
-      // 65.32 * 30 = 1959.6 => round = 1960
-      expect(formatTimecode(65.32, "totalFrames", 30)).toBe("1960");
+      // 65.32 * 30 = 1959.6 => floor = 1959
+      expect(formatTimecode(65.32, "totalFrames", 30)).toBe("1959");
     });
 
     it("returns absolute frame number at 24fps", () => {

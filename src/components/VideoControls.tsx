@@ -45,6 +45,7 @@ interface VideoControlsProps {
   outPoint: number | null;
   onInPointChange: (time: number | null) => void;
   onOutPointChange: (time: number | null) => void;
+  startOffset?: number;
 }
 
 interface QualityOption {
@@ -92,6 +93,7 @@ export default function VideoControls({
   outPoint,
   onInPointChange,
   onOutPointChange,
+  startOffset = 0,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -172,6 +174,19 @@ export default function VideoControls({
       setPlaying(false);
       saveState(videoEl.currentTime, true);
     };
+    let seekingFlag = false;
+
+    const onSeeking = () => {
+      seekingFlag = true;
+    };
+    const onSeeked = () => {
+      seekingFlag = false;
+      const now = videoEl.currentTime;
+      lastTimeRef.current = now;
+      setCurrentTime(now);
+      saveState(now, videoEl.paused);
+    };
+
     const onTimeUpdate = () => {
       const now = videoEl.currentTime;
       if (isGuarding()) {
@@ -185,6 +200,8 @@ export default function VideoControls({
           return;
         }
       }
+      // Skip intermediate updates while seeking to avoid frame counter flash
+      if (seekingFlag) return;
       lastTimeRef.current = now;
       setCurrentTime(now);
 
@@ -209,6 +226,8 @@ export default function VideoControls({
 
     videoEl.addEventListener("play", onPlay);
     videoEl.addEventListener("pause", onPause);
+    videoEl.addEventListener("seeking", onSeeking);
+    videoEl.addEventListener("seeked", onSeeked);
     videoEl.addEventListener("timeupdate", onTimeUpdate);
     videoEl.addEventListener("durationchange", onDurationChange);
     videoEl.addEventListener("volumechange", onVolumeChange);
@@ -218,6 +237,8 @@ export default function VideoControls({
     return () => {
       videoEl.removeEventListener("play", onPlay);
       videoEl.removeEventListener("pause", onPause);
+      videoEl.removeEventListener("seeking", onSeeking);
+      videoEl.removeEventListener("seeked", onSeeked);
       videoEl.removeEventListener("timeupdate", onTimeUpdate);
       videoEl.removeEventListener("durationchange", onDurationChange);
       videoEl.removeEventListener("volumechange", onVolumeChange);
@@ -614,7 +635,7 @@ export default function VideoControls({
               className="vp-progress-tooltip"
               style={{ left: `${hoverInfo.pct}%` }}
             >
-              {formatTimecode(hoverInfo.time, timecodeMode, fps)}
+              {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
             </div>
           )}
           <div className="vp-progress-track">
@@ -653,7 +674,7 @@ export default function VideoControls({
             type="range"
             min={0}
             max={duration || 0}
-            step={0.1}
+            step="any"
             value={currentTime}
             onChange={handleSeek}
           />
@@ -680,9 +701,9 @@ export default function VideoControls({
               title="Click to toggle timecode format"
             >
               {(timecodeMode === "frames" || timecodeMode === "totalFrames") && <FrameModeIcon />}
-              {formatTimecode(currentTime, timecodeMode, fps)}
+              {formatTimecode(Math.max(0, currentTime - startOffset), timecodeMode, fps)}
               {" / "}
-              {formatTimecode(duration, timecodeMode, fps)}
+              {formatTimecode(Math.max(0, duration - startOffset), timecodeMode, fps)}
             </button>
             {shuttleDirection !== 0 && (
               <span className="vp-shuttle-indicator">
