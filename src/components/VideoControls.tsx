@@ -22,6 +22,7 @@ import {
   ClearMarkersIcon,
   FrameModeIcon,
   SaveSegmentIcon,
+  CompareIcon,
 } from "./icons";
 import { useSegmentExport, type ExportRendition } from "../hooks/useSegmentExport";
 const StatsPanel = lazy(() => import("./StatsPanel"));
@@ -38,6 +39,8 @@ interface VideoControlsProps {
   clearKey?: string;
   showFilmstrip?: boolean;
   onToggleFilmstrip?: () => void;
+  showCompare?: boolean;
+  onToggleCompare?: () => void;
   inPoint: number | null;
   outPoint: number | null;
   onInPointChange: (time: number | null) => void;
@@ -83,6 +86,8 @@ export default function VideoControls({
   clearKey,
   showFilmstrip,
   onToggleFilmstrip,
+  showCompare,
+  onToggleCompare,
   inPoint,
   outPoint,
   onInPointChange,
@@ -375,7 +380,7 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
@@ -948,6 +953,18 @@ export default function VideoControls({
               >
                 <FilmstripIcon />
                 {showFilmstrip ? "Hide filmstrip" : "Filmstrip timeline"}
+              </div>
+            )}
+            {onToggleCompare && (
+              <div
+                className="vp-context-menu-item"
+                onClick={() => {
+                  onToggleCompare();
+                  setContextMenu(null);
+                }}
+              >
+                <CompareIcon />
+                {showCompare ? "Hide quality compare" : "Quality compare"}
               </div>
             )}
           </div>,

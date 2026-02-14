@@ -844,6 +844,113 @@ video::-webkit-media-text-track-container {
 }
 
 /* ── Export progress toast ── */
+/* ── Quality Compare overlay ── */
+.vp-compare-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.vp-compare-video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.vp-compare-slider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #fff;
+  z-index: 4;
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  transform: translateX(-1px);
+}
+
+.vp-compare-handle {
+  position: absolute;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  cursor: col-resize;
+  pointer-events: auto;
+  user-select: none;
+  touch-action: none;
+}
+
+.vp-compare-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 5;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  color: #fff;
+  pointer-events: auto;
+  line-height: normal;
+}
+
+.vp-compare-toolbar-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vp-compare-select {
+  background: rgba(20, 20, 20, 0.85);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  outline: none;
+}
+
+.vp-compare-select:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.vp-compare-label {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  line-height: normal;
+}
+
+.vp-compare-close {
+  background: rgba(20, 20, 20, 0.85);
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 14px;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  line-height: normal;
+}
+
+.vp-compare-close:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
 .vp-export-progress {
   position: absolute;
   top: 16px;

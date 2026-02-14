@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
+const QualityCompare = lazy(() => import("./QualityCompare"));
 import "./ShakaPlayer.css";
 
 interface ShakaPlayerProps {
@@ -23,6 +24,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
 
@@ -222,11 +224,28 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               clearKey={activeKey}
               showFilmstrip={showFilmstrip}
               onToggleFilmstrip={() => setShowFilmstrip((s) => !s)}
+              showCompare={compareMode}
+              onToggleCompare={() => setCompareMode((s) => !s)}
               inPoint={inPoint}
               outPoint={outPoint}
               onInPointChange={setInPoint}
               onOutPointChange={setOutPoint}
             />
+          )}
+        {compareMode &&
+          playerReady &&
+          videoRef.current &&
+          playerRef.current && (
+            <Suspense fallback={null}>
+              <QualityCompare
+                videoEl={videoRef.current}
+                player={playerRef.current}
+                src={src}
+                clearKey={activeKey}
+                kid={kidRef.current ?? undefined}
+                onClose={() => setCompareMode(false)}
+              />
+            </Suspense>
           )}
       </div>
       {showFilmstrip &&

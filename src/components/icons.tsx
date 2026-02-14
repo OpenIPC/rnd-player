@@ -189,6 +189,16 @@ export function SaveSegmentIcon() {
   );
 }
 
+export function CompareIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="2" y="3" width="16" height="14" rx="2" />
+      <line x1="10" y1="3" x2="10" y2="17" />
+      <polyline points="7,10 10,7 13,10" fill="none" />
+    </svg>
+  );
+}
+
 export function PipIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
