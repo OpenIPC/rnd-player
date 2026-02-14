@@ -11,7 +11,6 @@ export interface ThumbnailGeneratorResult {
   thumbnails: Map<number, ImageBitmap>;
   segmentTimes: number[];
   supported: boolean;
-  encrypted: boolean;
   requestRange: RequestRangeFn;
 }
 
@@ -301,5 +300,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, supported, encrypted, requestRange };
+  return { thumbnails, segmentTimes, supported, requestRange };
 }

@@ -38,7 +38,7 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, supported, encrypted, requestRange } =
+  const { thumbnails, segmentTimes, supported, requestRange } =
     useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
@@ -371,23 +371,6 @@ export default function FilmstripTimeline({
         </button>
         <div className="vp-filmstrip-fallback">
           Filmstrip timeline requires a browser with WebCodecs support
-        </div>
-      </div>
-    );
-  }
-
-  if (encrypted) {
-    return (
-      <div
-        className="vp-filmstrip-panel"
-        onClick={(e) => e.stopPropagation()}
-        onContextMenu={(e) => e.stopPropagation()}
-      >
-        <button className="vp-filmstrip-close" onClick={onClose}>
-          ×
-        </button>
-        <div className="vp-filmstrip-fallback">
-          Filmstrip timeline unavailable for encrypted content
         </div>
       </div>
     );
