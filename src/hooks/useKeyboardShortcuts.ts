@@ -178,15 +178,24 @@ export function useKeyboardShortcuts({
 
         case "ArrowUp": {
           e.preventDefault();
-          const newVol = Math.min(1, videoEl.volume + VOLUME_STEP);
-          videoEl.volume = newVol;
-          if (newVol > 0 && videoEl.muted) videoEl.muted = false;
+          if (e.shiftKey) {
+            const dur = videoEl.duration || 0;
+            videoEl.currentTime = Math.min(dur, videoEl.currentTime + 1);
+          } else {
+            const newVol = Math.min(1, videoEl.volume + VOLUME_STEP);
+            videoEl.volume = newVol;
+            if (newVol > 0 && videoEl.muted) videoEl.muted = false;
+          }
           break;
         }
 
         case "ArrowDown": {
           e.preventDefault();
-          videoEl.volume = Math.max(0, videoEl.volume - VOLUME_STEP);
+          if (e.shiftKey) {
+            videoEl.currentTime = Math.max(0, videoEl.currentTime - 1);
+          } else {
+            videoEl.volume = Math.max(0, videoEl.volume - VOLUME_STEP);
+          }
           break;
         }
 
