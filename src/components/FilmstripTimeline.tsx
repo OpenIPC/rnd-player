@@ -624,6 +624,43 @@ export default function FilmstripTimeline({
     return () => canvas.removeEventListener("wheel", onWheel);
   }, [clampScroll]);
 
+  // ── Keyboard zoom (+/-) ──
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const isZoomIn = e.key === "+" || e.key === "=";
+      const isZoomOut = e.key === "-" || e.key === "_";
+      if (!isZoomIn && !isZoomOut) return;
+
+      e.preventDefault();
+      const w = containerWidthRef.current;
+      const zoomFactor = isZoomIn ? 1.15 : 1 / 1.15;
+
+      // Anchor zoom on the playhead position
+      const time = currentTimeRef.current;
+      const playheadScreenX = time * pxPerSecRef.current - scrollLeftRef.current;
+      const anchorX = Math.max(0, Math.min(w, playheadScreenX));
+
+      const timeBefore = (anchorX + scrollLeftRef.current) / pxPerSecRef.current;
+
+      pxPerSecRef.current = Math.max(
+        MIN_PX_PER_SEC,
+        Math.min(MAX_PX_PER_SEC, pxPerSecRef.current * zoomFactor),
+      );
+
+      scrollLeftRef.current = clampScroll(
+        timeBefore * pxPerSecRef.current - anchorX,
+        w,
+      );
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [clampScroll]);
+
   // ── Dismiss context menu on outside click ──
   useEffect(() => {
     if (!ctxMenu) return;
