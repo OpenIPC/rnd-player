@@ -91,7 +91,15 @@ export default function FilmstripTimeline({
   inPointRef.current = inPoint;
   outPointRef.current = outPoint;
   timecodeModeRef.current = timecodeMode;
-  fpsRef.current = fps;
+
+  // Detect fps from the player's active variant track
+  const detectedFps = (() => {
+    const tracks = player.getVariantTracks();
+    const active = tracks.find((t) => t.active);
+    if (active?.frameRate != null && active.frameRate > 0) return active.frameRate;
+    return null;
+  })();
+  fpsRef.current = detectedFps ?? fps;
 
   const saveFrame = useCallback(async () => {
     const targetTime = ctxMenuTimeRef.current;
