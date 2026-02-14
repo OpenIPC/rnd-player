@@ -231,6 +231,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
             videoEl={videoRef.current}
             player={playerRef.current}
             onClose={() => setShowFilmstrip(false)}
+            clearKey={activeKey}
           />
         )}
     </div>

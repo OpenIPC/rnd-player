@@ -36,6 +36,7 @@ export function useThumbnailGenerator(
   player: shaka.Player | null,
   videoEl: HTMLVideoElement | null,
   enabled: boolean,
+  clearKey?: string,
 ): ThumbnailGeneratorResult {
   const [thumbnails, setThumbnails] = useState<Map<number, ImageBitmap>>(new Map());
   const [segmentTimes, setSegmentTimes] = useState<number[]>([]);
@@ -54,11 +55,16 @@ export function useThumbnailGenerator(
   const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSendTimeRef = useRef(0);
 
-  const encrypted = useMemo(() => {
+  const streamEncrypted = useMemo(() => {
     const stream = getLowestVideoStream(player);
     if (!stream) return false;
     return !!(stream.encrypted || (stream.drmInfos && stream.drmInfos.length > 0));
   }, [player]);
+
+  // Only show "encrypted" fallback when encrypted AND we can't self-decrypt
+  const encrypted = useMemo(() => {
+    return streamEncrypted && !clearKey;
+  }, [streamEncrypted, clearKey]);
 
   const cleanup = useCallback(() => {
     if (workerRef.current) {
@@ -326,6 +332,7 @@ export function useThumbnailGenerator(
           width,
           height,
           thumbnailWidth: THUMBNAIL_WIDTH,
+          clearKeyHex: streamEncrypted ? clearKey : undefined,
         };
         console.log(DBG, "posting to worker:", { ...payload, segments: `[${segments.length} items]` });
         worker.postMessage(payload satisfies WorkerRequest);
@@ -338,7 +345,7 @@ export function useThumbnailGenerator(
       cancelled = true;
       cleanup();
     };
-  }, [player, videoEl, enabled, supported, encrypted, cleanup]);
+  }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
   return { thumbnails, segmentTimes, supported, encrypted, requestRange };
 }

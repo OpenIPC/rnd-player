@@ -7,6 +7,7 @@ interface FilmstripTimelineProps {
   videoEl: HTMLVideoElement;
   player: shaka.Player;
   onClose: () => void;
+  clearKey?: string;
 }
 
 const RULER_HEIGHT = 22;
@@ -21,6 +22,7 @@ export default function FilmstripTimeline({
   videoEl,
   player,
   onClose,
+  clearKey,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -37,7 +39,7 @@ export default function FilmstripTimeline({
   const duration = videoEl.duration || 0;
 
   const { thumbnails, segmentTimes, supported, encrypted, requestRange } =
-    useThumbnailGenerator(player, videoEl, true);
+    useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
   // without the useEffect needing to restart on every thumbnail update.

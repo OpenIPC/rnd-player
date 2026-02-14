@@ -8,6 +8,7 @@ export type WorkerRequest =
       width: number;
       height: number;
       thumbnailWidth: number;
+      clearKeyHex?: string;
     }
   | { type: "updateQueue"; segmentIndices: number[] }
   | { type: "abort" };

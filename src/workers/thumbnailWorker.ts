@@ -1,6 +1,14 @@
 import { createFile, DataStream, MP4BoxBuffer, Endianness } from "mp4box";
 import type { ISOFile, Sample } from "mp4box";
 import type { WorkerRequest, WorkerResponse } from "../types/thumbnailWorker.types";
+import {
+  importClearKey,
+  extractScheme,
+  extractTenc,
+  parseSencFromSegment,
+  decryptSample,
+  type TencInfo,
+} from "./cencDecrypt";
 
 const DBG = "[FilmstripWorker]";
 
@@ -18,6 +26,8 @@ let offCtx: OffscreenCanvasRenderingContext2D | null = null;
 let currentSegStartTime = 0;
 let currentQueue: number[] = [];
 let processing = false;
+let cryptoKey: CryptoKey | null = null;
+let tencInfo: TencInfo | null = null;
 
 function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefined {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -120,11 +130,42 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
     const buf = MP4BoxBuffer.fromArrayBuffer(initData.slice(0), 0);
     mp4.onReady = (info) => {
       const vt = info.videoTracks[0];
-      if (vt) description = extractDescription(mp4, vt.id);
+      if (!vt) return;
+      description = extractDescription(mp4, vt.id);
+
+      // CENC decryption setup (if key provided)
+      if (req.clearKeyHex) {
+        const scheme = extractScheme(mp4, vt.id);
+        if (scheme && scheme !== "cenc") {
+          console.warn(DBG, `Unsupported encryption scheme "${scheme}", only "cenc" (AES-CTR) is supported`);
+          post({ type: "error", message: `Unsupported encryption scheme: ${scheme}` });
+        } else {
+          const ti = extractTenc(mp4, vt.id);
+          if (ti) {
+            tencInfo = ti;
+            console.log(DBG, "tenc extracted, IV size:", ti.defaultPerSampleIVSize);
+          } else {
+            console.warn(DBG, "No tenc box found in init segment, proceeding without decryption");
+          }
+        }
+      }
     };
     mp4.appendBuffer(buf);
     mp4.flush();
     mp4.stop();
+  }
+
+  // Import CryptoKey if tenc was found
+  if (req.clearKeyHex && tencInfo) {
+    try {
+      cryptoKey = await importClearKey(req.clearKeyHex);
+      console.log(DBG, "CryptoKey imported for CENC decryption, IV size:", tencInfo.defaultPerSampleIVSize);
+    } catch (e) {
+      console.error(DBG, "Failed to import ClearKey:", e);
+      post({ type: "error", message: `Failed to import decryption key: ${e}` });
+      cryptoKey = null;
+      tencInfo = null;
+    }
   }
 
   // 2. Configure VideoDecoder
@@ -191,11 +232,38 @@ async function processQueue() {
         const sample = syncSamples[0];
         currentSegStartTime = seg.startTime;
 
+        let sampleBytes: Uint8Array = new Uint8Array(sample.data!);
+
+        // Decrypt if CENC is configured
+        if (cryptoKey && tencInfo) {
+          try {
+            const ivSize = tencInfo.defaultPerSampleIVSize;
+            const sencSamples = parseSencFromSegment(mediaData, ivSize);
+
+            if (sencSamples.length > 0) {
+              // Look up senc entry for this sample
+              const sencIdx = sample.number_in_traf ?? sample.number;
+              const sencEntry = sencSamples[sencIdx];
+
+              if (sencEntry) {
+                // Use per-sample IV, falling back to constant IV when IV size is 0
+                const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
+                if (iv && iv.length > 0) {
+                  sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
+                }
+              }
+            }
+          } catch (e) {
+            console.error(DBG, "Decryption failed for segment", segIdx, e);
+            continue;
+          }
+        }
+
         decoder.decode(
           new EncodedVideoChunk({
             type: "key",
             timestamp: (sample.cts / sample.timescale) * 1_000_000,
-            data: sample.data!,
+            data: sampleBytes,
           }),
         );
 
@@ -221,6 +289,8 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       try { decoder.close(); } catch { /* */ }
       decoder = null;
     }
+    cryptoKey = null;
+    tencInfo = null;
     return;
   }
 
