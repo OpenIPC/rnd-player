@@ -398,7 +398,7 @@ export default function FilmstripTimeline({
       // ── Thumbnail row ──
       const graphOn = showBitrateGraphRef.current;
       const graphH = graphOn ? GRAPH_HEIGHT : 0;
-      const thumbH = h - RULER_HEIGHT - graphH;
+      const thumbH = h - RULER_HEIGHT - graphH - (graphOn ? 0 : 1);
       const thumbW = thumbH * videoAspectRef.current;
       thumbWRef.current = thumbW;
       const times = segmentTimesRef.current;
