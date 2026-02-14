@@ -45,12 +45,28 @@ export default function FilmstripTimeline({
       canvas.height = h;
       const ctx = canvas.getContext("2d")!;
       ctx.drawImage(videoEl, 0, 0, w, h);
+
+      // Build filename: {title}_{MM-SS}_{height}p.png
+      const secs = videoEl.currentTime;
+      const hh = Math.floor(secs / 3600);
+      const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, "0");
+      const ss = String(Math.floor(secs % 60)).padStart(2, "0");
+      const time = hh > 0 ? `${hh}-${mm}-${ss}` : `${mm}-${ss}`;
+
+      const uri = player.getAssetUri?.() ?? "";
+      const slug = decodeURIComponent(uri.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "")
+        .replace(/[^a-zA-Z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+      const title = slug || "frame";
+
+      const filename = `${title}_${time}_${h}p.png`;
+
       canvas.toBlob((blob) => {
         if (!blob) return;
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `frame_${formatTime(videoEl.currentTime).replace(/:/g, "-")}.png`;
+        a.download = filename;
         a.click();
         URL.revokeObjectURL(url);
       }, "image/png");
@@ -58,7 +74,7 @@ export default function FilmstripTimeline({
       // Canvas tainted by DRM — silently ignore
     }
     setCtxMenu(null);
-  }, [videoEl]);
+  }, [videoEl, player]);
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
