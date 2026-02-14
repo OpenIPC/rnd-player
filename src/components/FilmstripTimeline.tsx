@@ -356,6 +356,10 @@ export default function FilmstripTimeline({
       thumbWRef.current = thumbW;
       const times = segmentTimesRef.current;
 
+      // Determine if we're at max zoom (frame-level)
+      const maxPxPerSec = thumbW > 0 ? fpsRef.current * thumbW : 5000;
+      const atMaxZoom = pxPerSec >= maxPxPerSec * 0.95;
+
       // Draw thumbnails — single per segment when packed, multiple when zoomed in
       const neededIntra: { segmentIndex: number; count: number }[] = [];
 
@@ -426,6 +430,23 @@ export default function FilmstripTimeline({
               ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
               ctx.lineWidth = 1;
               ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+            }
+
+            // Frame number at max zoom
+            if (atMaxZoom) {
+              const frameNum = Math.round(segStart * fpsRef.current) + j;
+              ctx.font = "9px monospace";
+              ctx.textAlign = "left";
+              ctx.textBaseline = "top";
+              ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+              const label = String(frameNum);
+              const textW = ctx.measureText(label).width;
+              ctx.fillRect(drawX, drawY, textW + 6, 14);
+              ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+              ctx.fillText(label, drawX + 3, drawY + 2);
+              // Restore font for ruler/other text
+              ctx.font = FONT;
+              ctx.textAlign = "center";
             }
           }
 

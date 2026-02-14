@@ -22,11 +22,11 @@ export function formatTimecode(
   const ss = String(s).padStart(2, "0");
 
   if (mode === "totalFrames") {
-    return String(Math.floor(seconds * fps));
+    return String(Math.round(seconds * fps));
   }
 
   if (mode === "frames") {
-    const ff = String(Math.floor((seconds % 1) * fps)).padStart(2, "0");
+    const ff = String(Math.round((seconds % 1) * fps) % fps).padStart(2, "0");
     return `${hh}:${mm}:${ss}:${ff}`;
   }
 
