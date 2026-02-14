@@ -18,6 +18,7 @@ interface FilmstripTimelineProps {
   inPoint?: number | null;
   outPoint?: number | null;
   startOffset?: number;
+  onZoomChange?: (pxPerSec: number) => void;
 }
 
 const RULER_HEIGHT = 22;
@@ -45,6 +46,7 @@ export default function FilmstripTimeline({
   inPoint,
   outPoint,
   startOffset = 0,
+  onZoomChange,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -111,6 +113,9 @@ export default function FilmstripTimeline({
 
   const startOffsetRef = useRef(startOffset);
   startOffsetRef.current = startOffset;
+
+  const onZoomChangeRef = useRef(onZoomChange);
+  onZoomChangeRef.current = onZoomChange;
 
   const saveFrame = useCallback(async () => {
     const targetTime = ctxMenuTimeRef.current;
@@ -783,6 +788,7 @@ export default function FilmstripTimeline({
           w,
         );
         setFollowMode(false);
+        onZoomChangeRef.current?.(pxPerSecRef.current);
       } else {
         // Horizontal scroll
         const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
@@ -827,6 +833,7 @@ export default function FilmstripTimeline({
         timeBefore * pxPerSecRef.current - anchorX,
         w,
       );
+      onZoomChangeRef.current?.(pxPerSecRef.current);
     };
 
     document.addEventListener("keydown", onKeyDown);

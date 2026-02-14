@@ -16,7 +16,11 @@ function fmt(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1);
 }
 
-export default function DebugPanel() {
+interface DebugPanelProps {
+  filmstripZoom?: number;
+}
+
+export default function DebugPanel({ filmstripZoom }: DebugPanelProps) {
   const [mem, setMem] = useState<MemoryInfo | null>(getMemory);
   const prevUsedRef = useRef(mem?.usedJSHeapSize ?? 0);
   const [delta, setDelta] = useState(0);
@@ -91,6 +95,12 @@ export default function DebugPanel() {
           }}
         />
       </div>
+      {filmstripZoom != null && filmstripZoom > 0 && (
+        <div style={{ ...rowStyle, marginTop: 4, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 3 }}>
+          <span style={labelStyle}>Filmstrip zoom</span>
+          <span style={valueStyle}>{filmstripZoom.toFixed(1)} px/s</span>
+        </div>
+      )}
     </div>
   );
 }

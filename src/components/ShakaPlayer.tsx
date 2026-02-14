@@ -29,6 +29,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
   const [startOffset, setStartOffset] = useState(0);
+  const [filmstripZoom, setFilmstripZoom] = useState(0);
 
   useEffect(() => {
     if (!polyfillsInstalled) {
@@ -267,7 +268,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
           )}
         {DebugPanel && (
           <Suspense fallback={null}>
-            <DebugPanel />
+            <DebugPanel filmstripZoom={filmstripZoom} />
           </Suspense>
         )}
       </div>
@@ -284,6 +285,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               inPoint={inPoint}
               outPoint={outPoint}
               startOffset={startOffset}
+              onZoomChange={setFilmstripZoom}
             />
           </Suspense>
         )}
