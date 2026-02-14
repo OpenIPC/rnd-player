@@ -312,7 +312,14 @@ export default function FilmstripTimeline({
       // Compute tick interval based on zoom
       const minTickPx = 60;
       const rawInterval = minTickPx / pxPerSec;
-      const niceIntervals = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+      const curFps = fpsRef.current;
+      const frameDur = 1 / curFps;
+      // Frame-aligned sub-second intervals for high zoom levels
+      const frameNice = [1, 2, 5, 10, Math.round(curFps / 2)]
+        .map(n => n * frameDur)
+        .filter(v => v > 0 && v < 1);
+      frameNice.sort((a, b) => a - b);
+      const niceIntervals = [...frameNice, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
       let tickInterval = niceIntervals[niceIntervals.length - 1];
       for (const ni of niceIntervals) {
         if (ni >= rawInterval) {
@@ -321,13 +328,27 @@ export default function FilmstripTimeline({
         }
       }
 
-      const startTick = Math.floor(sl / pxPerSec / tickInterval) * tickInterval;
-      const endTick = Math.ceil((sl + w) / pxPerSec / tickInterval) * tickInterval;
+      const sOff = startOffsetRef.current;
+      let startTick: number;
+      let endTick: number;
+      if (tickInterval < 1) {
+        // Anchor from startOffset so ticks land on frame boundaries
+        startTick = sOff + Math.floor((sl / pxPerSec - sOff) / tickInterval) * tickInterval;
+        endTick = sOff + Math.ceil(((sl + w) / pxPerSec - sOff) / tickInterval) * tickInterval;
+      } else {
+        startTick = Math.floor(sl / pxPerSec / tickInterval) * tickInterval;
+        endTick = Math.ceil((sl + w) / pxPerSec / tickInterval) * tickInterval;
+      }
 
       ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
       ctx.font = FONT;
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
+
+      // Minor tick subdivision: frame-aligned for sub-second, capped at 5
+      const subCount = tickInterval < 1
+        ? Math.min(Math.round(tickInterval / frameDur), 5)
+        : 4;
 
       for (let t = startTick; t <= endTick; t += tickInterval) {
         if (t < 0) continue;
@@ -342,15 +363,22 @@ export default function FilmstripTimeline({
         ctx.lineTo(x, RULER_HEIGHT);
         ctx.stroke();
 
-        const label =
-          pxPerSec > 30 && timecodeModeRef.current
-            ? formatTimecode(t, timecodeModeRef.current, fpsRef.current)
-            : formatTime(t);
+        let label: string;
+        if (tickInterval < 1) {
+          // Sub-second: show frame timecode adjusted for startOffset
+          const adjusted = Math.max(0, t - sOff);
+          label = formatTimecode(adjusted, "frames", curFps);
+        } else if (pxPerSec > 30 && timecodeModeRef.current) {
+          label = formatTimecode(t, timecodeModeRef.current, curFps);
+        } else {
+          label = formatTime(t);
+        }
+        ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
         ctx.fillText(label, x, RULER_HEIGHT - 7);
 
-        // Minor ticks (subdivide into 4)
-        const subInterval = tickInterval / 4;
-        for (let s = 1; s < 4; s++) {
+        // Minor ticks
+        const subInterval = tickInterval / subCount;
+        for (let s = 1; s < subCount; s++) {
           const sx = (t + s * subInterval) * pxPerSec - sl;
           if (sx < 0 || sx > w) continue;
           ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
