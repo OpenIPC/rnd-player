@@ -1,3 +1,5 @@
+export type FrameType = "I" | "P" | "B";
+
 /** Messages from main thread to thumbnail worker */
 export type WorkerRequest =
   | {
@@ -29,4 +31,4 @@ export type WorkerResponse =
   | { type: "error"; message: string }
   | { type: "ready" }
   | { type: "saveFrameResult"; bitmap: ImageBitmap | null }
-  | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[] };
+  | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[] };

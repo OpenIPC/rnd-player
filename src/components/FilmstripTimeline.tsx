@@ -6,6 +6,7 @@ import type { BitrateGraphData } from "../hooks/useBitrateGraph";
 import { formatTime, formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
 import { formatBitrate } from "../utils/formatBitrate";
+import type { FrameType } from "../types/thumbnailWorker.types";
 
 interface FilmstripTimelineProps {
   videoEl: HTMLVideoElement;
@@ -27,6 +28,9 @@ const DEFAULT_PX_PER_SEC = 16;
 const PLAYHEAD_COLOR_CANVAS = "rgb(71, 13, 179)";
 const MARKER_COLOR = "#f5c518";
 const FONT = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+const FRAME_BORDER_I = "rgba(255, 50, 50, 0.8)";
+const FRAME_BORDER_P = "rgba(60, 130, 255, 0.8)";
+const FRAME_BORDER_B = "rgba(50, 200, 50, 0.8)";
 const GRAPH_MEASURED_COLOR = "rgba(74, 158, 237, 0.6)";
 const GRAPH_ESTIMATED_COLOR = "rgba(74, 158, 237, 0.25)";
 const GRAPH_AVG_COLOR = "rgba(74, 158, 237, 0.5)";
@@ -65,7 +69,7 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, requestIntraBatch } =
+  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, intraFrameTypes, requestIntraBatch } =
     useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
@@ -78,8 +82,10 @@ export default function FilmstripTimeline({
   requestRangeRef.current = requestRange;
 
   const intraFramesMapRef = useRef(intraFrames);
+  const intraFrameTypesRef = useRef(intraFrameTypes);
   const requestIntraBatchRef = useRef(requestIntraBatch);
   intraFramesMapRef.current = intraFrames;
+  intraFrameTypesRef.current = intraFrameTypes;
   requestIntraBatchRef.current = requestIntraBatch;
 
   const bitrateData = useBitrateGraph(player, showBitrateGraph);
@@ -421,7 +427,7 @@ export default function FilmstripTimeline({
           const bmp = thumbnailsRef.current.get(segStart);
           if (bmp && bmp.width > 0) {
             ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+            ctx.strokeStyle = FRAME_BORDER_I;
             ctx.lineWidth = 1;
             ctx.strokeRect(drawX, drawY, thumbW, thumbH);
           } else {
@@ -435,6 +441,7 @@ export default function FilmstripTimeline({
           // Gap mode: draw multiple thumbnails evenly across segment
           const count = Math.max(2, Math.ceil(segWidth / thumbW));
           const intraArr = intraFramesMapRef.current.get(i) ?? [];
+          const intraTypes = intraFrameTypesRef.current.get(i) ?? [];
 
           // Check if any part of the segment is visible on screen
           const segX1 = segStart * pxPerSec - sl;
@@ -451,10 +458,12 @@ export default function FilmstripTimeline({
 
             const drawY = THUMB_ROW_TOP;
             let bmp: ImageBitmap | undefined;
+            let frameType: FrameType = "I";
 
             if (j === 0) {
               // First slot uses the existing I-frame thumbnail
               bmp = thumbnailsRef.current.get(segStart);
+              frameType = "I";
             } else if (intraArr.length > 0) {
               // Map j-1 to closest available intra-frame
               const arrIdx = count > 2
@@ -462,12 +471,14 @@ export default function FilmstripTimeline({
                 : 0;
               if (arrIdx >= 0 && arrIdx < intraArr.length) {
                 bmp = intraArr[arrIdx];
+                frameType = intraTypes[arrIdx] ?? "P";
               }
             }
 
             if (bmp && bmp.width > 0) {
               ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
-              ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+              ctx.strokeStyle = frameType === "I" ? FRAME_BORDER_I
+                : frameType === "B" ? FRAME_BORDER_B : FRAME_BORDER_P;
               ctx.lineWidth = 1;
               ctx.strokeRect(drawX, drawY, thumbW, thumbH);
             } else {

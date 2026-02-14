@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type shaka from "shaka-player";
-import type { WorkerRequest, WorkerResponse } from "../types/thumbnailWorker.types";
+import type { WorkerRequest, WorkerResponse, FrameType } from "../types/thumbnailWorker.types";
 import { extractInitSegmentUrl } from "../utils/extractInitSegmentUrl";
 
 const THUMBNAIL_WIDTH = 160;
@@ -22,6 +22,7 @@ export interface ThumbnailGeneratorResult {
   requestRange: RequestRangeFn;
   saveFrame: SaveFrameFn;
   intraFrames: Map<number, ImageBitmap[]>;
+  intraFrameTypes: Map<number, FrameType[]>;
   requestIntraBatch: RequestIntraBatchFn;
 }
 
@@ -70,6 +71,7 @@ export function useThumbnailGenerator(
   const [thumbnails, setThumbnails] = useState<Map<number, ImageBitmap>>(new Map());
   const [segmentTimes, setSegmentTimes] = useState<number[]>([]);
   const [intraFrames, setIntraFrames] = useState<Map<number, ImageBitmap[]>>(new Map());
+  const [intraFrameTypes, setIntraFrameTypes] = useState<Map<number, FrameType[]>>(new Map());
 
   const workerRef = useRef<Worker | null>(null);
   const thumbnailsRef = useRef<Map<number, ImageBitmap>>(new Map());
@@ -77,6 +79,7 @@ export function useThumbnailGenerator(
   const workerReadyRef = useRef(false);
   const supported = isWebCodecsSupported();
   const intraFramesRef = useRef<Map<number, ImageBitmap[]>>(new Map());
+  const intraFrameTypesRef = useRef<Map<number, FrameType[]>>(new Map());
   const lastSentIntraRef = useRef<string>("");
 
   // Track visible range for eviction
@@ -119,10 +122,12 @@ export function useThumbnailGenerator(
       arr.forEach((b) => b.close());
     }
     intraFramesRef.current = new Map();
+    intraFrameTypesRef.current = new Map();
     lastSentIntraRef.current = "";
     setThumbnails(new Map());
     setSegmentTimes([]);
     setIntraFrames(new Map());
+    setIntraFrameTypes(new Map());
   }, []);
 
   // requestRange: called from paint loop, throttled to avoid flooding worker
@@ -368,6 +373,7 @@ export function useThumbnailGenerator(
             if (seg && (seg.endTime < evictLow || seg.startTime > evictHigh)) {
               arr.forEach((b) => b.close());
               intraFramesRef.current.delete(segIdx);
+              intraFrameTypesRef.current.delete(segIdx);
               intraEvicted = true;
             }
           }
@@ -391,8 +397,10 @@ export function useThumbnailGenerator(
               const old = intraFramesRef.current.get(msg.segmentIndex);
               if (old) old.forEach((b) => b.close());
               intraFramesRef.current.set(msg.segmentIndex, msg.bitmaps);
+              intraFrameTypesRef.current.set(msg.segmentIndex, msg.frameTypes);
               evictOutOfRange();
               setIntraFrames(new Map(intraFramesRef.current));
+              setIntraFrameTypes(new Map(intraFrameTypesRef.current));
               break;
             }
             case "ready":
@@ -423,5 +431,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, requestIntraBatch };
+  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, requestIntraBatch };
 }

@@ -1,6 +1,6 @@
 import { createFile, DataStream, MP4BoxBuffer, Endianness } from "mp4box";
 import type { ISOFile, Sample } from "mp4box";
-import type { WorkerRequest, WorkerResponse } from "../types/thumbnailWorker.types";
+import type { WorkerRequest, WorkerResponse, FrameType } from "../types/thumbnailWorker.types";
 import {
   importClearKey,
   extractScheme,
@@ -172,6 +172,26 @@ async function handleGenerateIntra(segIdx: number, count: number) {
       }
     }
 
+    // Classify frame types in decode order using max-CTS heuristic:
+    // Reference frames (I/P) advance the max CTS; B-frames fall below it.
+    const decodeTypes: FrameType[] = [];
+    let maxCts = -Infinity;
+    for (const s of allSamples) {
+      if (s.is_sync) {
+        decodeTypes.push("I");
+      } else if (s.cts >= maxCts) {
+        decodeTypes.push("P");
+      } else {
+        decodeTypes.push("B");
+      }
+      if (s.cts > maxCts) maxCts = s.cts;
+    }
+
+    // VideoDecoder outputs in display (CTS) order, so map decode→display
+    const displayOrder = allSamples
+      .map((s, i) => ({ cts: s.cts, type: decodeTypes[i] }))
+      .sort((a, b) => a.cts - b.cts);
+
     // Determine which output frames to capture (skip the first one — it's the I-frame thumbnail)
     const totalFrames = allSamples.length;
     const captureIndices = new Set<number>();
@@ -185,7 +205,7 @@ async function handleGenerateIntra(segIdx: number, count: number) {
     const captureCanvas = new OffscreenCanvas(thumbW, thumbH);
     const captureCtx = captureCanvas.getContext("2d")!;
 
-    const bitmapPromises: { outputIdx: number; promise: Promise<ImageBitmap> }[] = [];
+    const bitmapPromises: { outputIdx: number; promise: Promise<ImageBitmap>; frameType: FrameType }[] = [];
     let outputCount = 0;
 
     const intraDecoder = new VideoDecoder({
@@ -197,6 +217,7 @@ async function handleGenerateIntra(segIdx: number, count: number) {
           bitmapPromises.push({
             outputIdx: currentOutputIdx,
             promise: createImageBitmap(captureCanvas),
+            frameType: displayOrder[currentOutputIdx]?.type ?? "P",
           });
         } else {
           frame.close();
@@ -250,13 +271,14 @@ async function handleGenerateIntra(segIdx: number, count: number) {
     // Collect all captured bitmaps in order
     bitmapPromises.sort((a, b) => a.outputIdx - b.outputIdx);
     const bitmaps = await Promise.all(bitmapPromises.map((p) => p.promise));
+    const frameTypes = bitmapPromises.map((p) => p.frameType);
 
     if (aborted) {
       bitmaps.forEach((b) => b.close());
       return;
     }
 
-    post({ type: "intraFrames", segmentIndex: segIdx, bitmaps }, bitmaps);
+    post({ type: "intraFrames", segmentIndex: segIdx, bitmaps, frameTypes }, bitmaps);
   } catch (e) {
     if (!aborted) {
       post({ type: "error", message: `Intra-frame error: ${e}` });
