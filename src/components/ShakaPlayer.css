@@ -468,6 +468,13 @@ video::-webkit-media-text-track-container {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.vp-context-menu-check {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  font-size: 12px;
+}
+
 .vp-copied-toast {
   position: absolute;
   top: 16px;

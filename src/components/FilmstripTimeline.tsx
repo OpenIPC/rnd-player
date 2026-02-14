@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import type shaka from "shaka-player";
 import { useThumbnailGenerator } from "../hooks/useThumbnailGenerator";
 import { formatTime } from "../utils/formatTime";
@@ -30,7 +30,10 @@ export default function FilmstripTimeline({
   const scrollLeftRef = useRef(0);
   const pxPerSecRef = useRef(DEFAULT_PX_PER_SEC);
   const isDraggingRef = useRef(false);
-  const autoFollowRef = useRef(true);
+  const [followMode, setFollowMode] = useState(true);
+  const followModeRef = useRef(followMode);
+  followModeRef.current = followMode;
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
@@ -125,7 +128,7 @@ export default function FilmstripTimeline({
       }
 
       // Auto-follow playhead
-      if (autoFollowRef.current && !isDraggingRef.current) {
+      if (followModeRef.current && !isDraggingRef.current) {
         const playheadX = time * pxPerSec - scrollLeft;
         const margin = w * 0.15;
         if (playheadX < margin || playheadX > w - margin) {
@@ -290,7 +293,7 @@ export default function FilmstripTimeline({
       // Ignore right-click
       if (e.button !== 0) return;
       isDraggingRef.current = true;
-      autoFollowRef.current = false;
+      setFollowMode(false);
       canvas.setPointerCapture(e.pointerId);
       seekToX(e.clientX);
     };
@@ -302,10 +305,6 @@ export default function FilmstripTimeline({
 
     const onPointerUp = () => {
       isDraggingRef.current = false;
-      // Re-enable auto-follow after a short delay
-      setTimeout(() => {
-        autoFollowRef.current = true;
-      }, 2000);
     };
 
     canvas.addEventListener("pointerdown", onPointerDown);
@@ -345,18 +344,41 @@ export default function FilmstripTimeline({
           timeBefore * pxPerSecRef.current - mouseX,
           w,
         );
-        autoFollowRef.current = false;
+        setFollowMode(false);
       } else {
         // Horizontal scroll
         const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
         scrollLeftRef.current = clampScroll(scrollLeftRef.current + delta, w);
-        autoFollowRef.current = false;
+        setFollowMode(false);
       }
     };
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
   }, [clampScroll]);
+
+  // ── Dismiss context menu on outside click ──
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const dismiss = () => setCtxMenu(null);
+    document.addEventListener("click", dismiss);
+    return () => document.removeEventListener("click", dismiss);
+  }, [ctxMenu]);
+
+  // ── Context menu handler (native listener so stopPropagation fires
+  //    before the VideoControls listener on the parent container) ──
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = wrapper.getBoundingClientRect();
+      setCtxMenu({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    };
+    wrapper.addEventListener("contextmenu", onContextMenu);
+    return () => wrapper.removeEventListener("contextmenu", onContextMenu);
+  }, []);
 
   // ── Fallback states ──
   if (!supported) {
@@ -381,7 +403,6 @@ export default function FilmstripTimeline({
       ref={wrapperRef}
       className="vp-filmstrip-panel"
       onClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => e.stopPropagation()}
     >
       <button className="vp-filmstrip-close" onClick={onClose}>
         ×
@@ -392,6 +413,25 @@ export default function FilmstripTimeline({
       />
       {duration <= 0 && (
         <div className="vp-filmstrip-fallback">Waiting for video duration...</div>
+      )}
+      {ctxMenu && (
+        <div
+          className="vp-context-menu"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        >
+          <div
+            className="vp-context-menu-item"
+            onClick={() => {
+              setFollowMode((v) => !v);
+              setCtxMenu(null);
+            }}
+          >
+            <span className="vp-context-menu-check">
+              {followMode ? "✓" : ""}
+            </span>
+            Follow mode
+          </div>
+        </div>
       )}
     </div>
   );
