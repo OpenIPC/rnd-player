@@ -353,12 +353,14 @@ export default function FilmstripTimeline({
       // Only draw thumbnails visible in the current viewport
       for (let i = 0; i < times.length; i++) {
         const ts = times[i];
-        const x = ts * pxPerSec - sl;
+        const nextTs = i < times.length - 1 ? times[i + 1] : dur;
+        const mid = (ts + nextTs) / 2;
+        const x = mid * pxPerSec - sl;
 
         // Skip if completely outside viewport
         if (x + thumbW / 2 < 0 || x - thumbW / 2 > w) continue;
 
-        // Center thumbnail on its timestamp
+        // Center thumbnail on segment midpoint
         const drawX = x - thumbW / 2;
         const drawY = THUMB_ROW_TOP;
 
