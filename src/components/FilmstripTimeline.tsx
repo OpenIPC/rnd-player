@@ -34,6 +34,31 @@ export default function FilmstripTimeline({
   const followModeRef = useRef(followMode);
   followModeRef.current = followMode;
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+
+  const saveFrame = useCallback(() => {
+    try {
+      const w = videoEl.videoWidth;
+      const h = videoEl.videoHeight;
+      if (!w || !h) return;
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(videoEl, 0, 0, w, h);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `frame_${formatTime(videoEl.currentTime).replace(/:/g, "-")}.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }, "image/png");
+    } catch {
+      // Canvas tainted by DRM — silently ignore
+    }
+    setCtxMenu(null);
+  }, [videoEl]);
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
@@ -417,7 +442,7 @@ export default function FilmstripTimeline({
       {ctxMenu && (
         <div
           className="vp-context-menu"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          style={{ left: ctxMenu.x, top: ctxMenu.y, transform: "translateY(-100%)" }}
         >
           <div
             className="vp-context-menu-item"
@@ -430,6 +455,13 @@ export default function FilmstripTimeline({
               {followMode ? "✓" : ""}
             </span>
             Follow mode
+          </div>
+          <div className="vp-context-menu-separator" />
+          <div
+            className="vp-context-menu-item"
+            onClick={saveFrame}
+          >
+            Save frame
           </div>
         </div>
       )}
