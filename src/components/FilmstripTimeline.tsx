@@ -403,6 +403,11 @@ export default function FilmstripTimeline({
           const count = Math.max(2, Math.ceil(segWidth / thumbW));
           const intraArr = intraFramesMapRef.current.get(i) ?? [];
 
+          // Check if any part of the segment is visible on screen
+          const segX1 = segStart * pxPerSec - sl;
+          const segX2 = segEnd * pxPerSec - sl;
+          const segVisible = segX2 >= 0 && segX1 <= w;
+
           for (let j = 0; j < count; j++) {
             const t = segStart + ((j + 0.5) / count) * segDuration;
             const x = t * pxPerSec - sl;
@@ -458,16 +463,18 @@ export default function FilmstripTimeline({
             }
           }
 
-          // Collect needed intra-frames (only for visible segments)
-          if (count > 1 && intraArr.length < count - 1) {
+          // Only request intra-frames for visible segments
+          if (segVisible && count > 1 && intraArr.length < count - 1) {
             neededIntra.push({ segmentIndex: i, count: count - 1 });
           }
         }
       }
 
       // Send batched intra-frame request (deduplicated by fingerprint in hook)
+      // Use viewport center as priority so visible segments are decoded first
       if (neededIntra.length > 0) {
-        requestIntraBatchRef.current(neededIntra, time);
+        const viewportCenterTime = (sl + w / 2) / pxPerSec;
+        requestIntraBatchRef.current(neededIntra, viewportCenterTime);
       }
 
       // ── Bitrate graph ──
