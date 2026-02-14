@@ -180,6 +180,15 @@ export function ClearMarkersIcon() {
   );
 }
 
+export function SaveSegmentIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 3v10M6 9l4 4 4-4" />
+      <path d="M3 14v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2" />
+    </svg>
+  );
+}
+
 export function PipIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

@@ -21,7 +21,9 @@ import {
   OutPointIcon,
   ClearMarkersIcon,
   FrameModeIcon,
+  SaveSegmentIcon,
 } from "./icons";
+import { useSegmentExport, type ExportRendition } from "../hooks/useSegmentExport";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
 import { formatTimecode } from "../utils/formatTime";
@@ -114,9 +116,17 @@ export default function VideoControls({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("milliseconds");
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
+  const [showExportPicker, setShowExportPicker] = useState(false);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
+
+  const { startExport, exporting, progress, cancel: cancelExport } = useSegmentExport(
+    player,
+    inPoint,
+    outPoint,
+    clearKey,
+  );
 
   // ── Track last-known-good state for sleep/wake recovery ──
   const lastTimeRef = useRef(videoEl.currentTime);
@@ -863,6 +873,18 @@ export default function VideoControls({
                 Clear in/out points
               </div>
             )}
+            {inPoint != null && outPoint != null && (
+              <div
+                className="vp-context-menu-item"
+                onClick={() => {
+                  setShowExportPicker(true);
+                  setContextMenu(null);
+                }}
+              >
+                <SaveSegmentIcon />
+                Save MP4...
+              </div>
+            )}
             <div className="vp-context-menu-separator" />
             <div
               className="vp-context-menu-item"
@@ -904,6 +926,77 @@ export default function VideoControls({
       {copiedMsg &&
         createPortal(
           <div className="vp-copied-toast">{copiedMsg}</div>,
+          containerEl
+        )}
+
+      {/* Export rendition picker */}
+      {showExportPicker &&
+        createPortal(
+          <div
+            className="vp-export-picker"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="vp-export-picker-card">
+              <div className="vp-export-picker-header">
+                Save MP4 — select rendition
+              </div>
+              {(() => {
+                const manifest = player.getManifest();
+                const variants = manifest?.variants ?? [];
+                const byHeight = new Map<number, ExportRendition>();
+                for (const v of variants) {
+                  if (!v.video || v.video.height == null) continue;
+                  const existing = byHeight.get(v.video.height);
+                  if (!existing || v.bandwidth > existing.bandwidth) {
+                    byHeight.set(v.video.height, {
+                      width: v.video.width ?? 0,
+                      height: v.video.height,
+                      videoCodec: v.video.codecs ?? "",
+                      bandwidth: v.bandwidth,
+                    });
+                  }
+                }
+                const renditions = Array.from(byHeight.values()).sort(
+                  (a, b) => b.height - a.height,
+                );
+                return renditions.map((r) => (
+                  <div
+                    key={r.height}
+                    className="vp-export-picker-item"
+                    onClick={() => {
+                      setShowExportPicker(false);
+                      startExport(r);
+                    }}
+                  >
+                    {r.height}p
+                    <span className="vp-export-picker-detail">
+                      {r.videoCodec}
+                      {" · "}
+                      {r.bandwidth >= 1_000_000
+                        ? `${(r.bandwidth / 1_000_000).toFixed(1)} Mbps`
+                        : `${Math.round(r.bandwidth / 1000)} kbps`}
+                    </span>
+                  </div>
+                ));
+              })()}
+              <div
+                className="vp-export-picker-cancel"
+                onClick={() => setShowExportPicker(false)}
+              >
+                Cancel
+              </div>
+            </div>
+          </div>,
+          containerEl
+        )}
+
+      {/* Export progress toast */}
+      {exporting &&
+        progress &&
+        createPortal(
+          <div className="vp-export-progress" onClick={cancelExport}>
+            Exporting: {progress.loaded}/{progress.total} segments...
+          </div>,
           containerEl
         )}
 
