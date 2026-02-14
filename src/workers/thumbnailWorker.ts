@@ -26,6 +26,9 @@ let currentQueue: number[] = [];
 let processing = false;
 let cryptoKey: CryptoKey | null = null;
 let tencInfo: TencInfo | null = null;
+let decoderConfig: VideoDecoderConfig | null = null;
+let currentIntraQueue: { segmentIndex: number; count: number }[] = [];
+let intraProcessing = false;
 
 function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefined {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,6 +102,189 @@ function extractSamplesFromSegment(
 }
 
 /**
+ * Extract ALL samples (sync and non-sync) from a media segment.
+ */
+function extractAllSamplesFromSegment(
+  initBuf: ArrayBuffer,
+  mediaData: ArrayBuffer,
+): Promise<Sample[]> {
+  return new Promise((resolve, reject) => {
+    const allSamples: Sample[] = [];
+    const mp4 = createFile();
+
+    mp4.onReady = (info) => {
+      const vt = info.videoTracks[0];
+      if (!vt) {
+        resolve([]);
+        return;
+      }
+      mp4.setExtractionOptions(vt.id, null, { nbSamples: 5000 });
+      mp4.start();
+    };
+
+    mp4.onSamples = (_id: number, _ref: unknown, samples: Sample[]) => {
+      for (const s of samples) {
+        if (s.data) allSamples.push(s);
+      }
+    };
+
+    mp4.onError = (_mod: string, msg: string) => reject(new Error(msg));
+
+    try {
+      const initSlice = MP4BoxBuffer.fromArrayBuffer(initBuf.slice(0), 0);
+      const offset1 = mp4.appendBuffer(initSlice);
+      const mediaBuf = MP4BoxBuffer.fromArrayBuffer(mediaData.slice(0), offset1);
+      mp4.appendBuffer(mediaBuf);
+      mp4.flush();
+      mp4.stop();
+      resolve(allSamples);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+/**
+ * Decode all frames in a segment and capture N evenly-spaced ones as thumbnails.
+ */
+async function handleGenerateIntra(segIdx: number, count: number) {
+  if (!initData || !offscreen || !decoderConfig) return;
+  if (segIdx < 0 || segIdx >= segments.length) return;
+
+  const seg = segments[segIdx];
+  const thumbW = offscreen.width;
+  const thumbH = offscreen.height;
+
+  try {
+    const mediaData = await fetchBuffer(seg.url);
+    if (aborted) return;
+
+    const allSamples = await extractAllSamplesFromSegment(initData, mediaData);
+    if (aborted || allSamples.length <= 1) return;
+
+    // Parse SENC data once if CENC is configured
+    let sencSamples: Awaited<ReturnType<typeof parseSencFromSegment>> | null = null;
+    if (cryptoKey && tencInfo) {
+      try {
+        sencSamples = parseSencFromSegment(mediaData, tencInfo.defaultPerSampleIVSize);
+      } catch {
+        return;
+      }
+    }
+
+    // Determine which output frames to capture (skip the first one — it's the I-frame thumbnail)
+    const totalFrames = allSamples.length;
+    const captureIndices = new Set<number>();
+    for (let i = 0; i < count; i++) {
+      // Evenly space captures across the non-sync range (indices 1..totalFrames-1)
+      const idx = Math.round(((i + 1) / (count + 1)) * (totalFrames - 1));
+      if (idx > 0 && idx < totalFrames) captureIndices.add(idx);
+    }
+
+    // Reuse a single canvas for all captures in this segment
+    const captureCanvas = new OffscreenCanvas(thumbW, thumbH);
+    const captureCtx = captureCanvas.getContext("2d")!;
+
+    const bitmapPromises: { outputIdx: number; promise: Promise<ImageBitmap> }[] = [];
+    let outputCount = 0;
+
+    const intraDecoder = new VideoDecoder({
+      output: (frame: VideoFrame) => {
+        const currentOutputIdx = outputCount++;
+        if (captureIndices.has(currentOutputIdx)) {
+          captureCtx.drawImage(frame, 0, 0, thumbW, thumbH);
+          frame.close();
+          bitmapPromises.push({
+            outputIdx: currentOutputIdx,
+            promise: createImageBitmap(captureCanvas),
+          });
+        } else {
+          frame.close();
+        }
+      },
+      error: () => { /* best-effort */ },
+    });
+
+    intraDecoder.configure(decoderConfig);
+
+    // Feed all samples to the decoder
+    for (let i = 0; i < allSamples.length; i++) {
+      if (aborted) break;
+
+      const sample = allSamples[i];
+      let sampleBytes: Uint8Array = new Uint8Array(sample.data!);
+
+      // Decrypt if CENC is configured
+      if (cryptoKey && tencInfo && sencSamples && sencSamples.length > 0) {
+        try {
+          const sencIdx = sample.number_in_traf ?? sample.number;
+          const sencEntry = sencSamples[sencIdx];
+          if (sencEntry) {
+            const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
+            if (iv && iv.length > 0) {
+              sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      intraDecoder.decode(
+        new EncodedVideoChunk({
+          type: sample.is_sync ? "key" : "delta",
+          timestamp: (sample.cts / sample.timescale) * 1_000_000,
+          data: sampleBytes,
+        }),
+      );
+    }
+
+    if (aborted) {
+      try { intraDecoder.close(); } catch { /* */ }
+      return;
+    }
+
+    await intraDecoder.flush();
+    try { intraDecoder.close(); } catch { /* */ }
+
+    // Collect all captured bitmaps in order
+    bitmapPromises.sort((a, b) => a.outputIdx - b.outputIdx);
+    const bitmaps = await Promise.all(bitmapPromises.map((p) => p.promise));
+
+    if (aborted) {
+      bitmaps.forEach((b) => b.close());
+      return;
+    }
+
+    post({ type: "intraFrames", segmentIndex: segIdx, bitmaps }, bitmaps);
+  } catch (e) {
+    if (!aborted) {
+      post({ type: "error", message: `Intra-frame error: ${e}` });
+    }
+  }
+}
+
+/**
+ * Process the intra-frame queue one segment at a time.
+ * New updateIntraQueue messages replace pending items while this runs.
+ */
+async function processIntraQueue() {
+  intraProcessing = true;
+  try {
+    while (currentIntraQueue.length > 0) {
+      if (aborted) break;
+      const item = currentIntraQueue.shift()!;
+      await handleGenerateIntra(item.segmentIndex, item.count);
+    }
+  } catch (e) {
+    if (!aborted) {
+      post({ type: "error", message: `${e}` });
+    }
+  }
+  intraProcessing = false;
+}
+
+/**
  * Initialize: fetch init segment, extract codec description, configure decoder.
  * Does NOT process any media segments.
  */
@@ -164,6 +350,7 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
     codedHeight: height,
     ...(description ? { description } : {}),
   };
+  decoderConfig = config;
 
   decoder = new VideoDecoder({
     output: (frame: VideoFrame) => {
@@ -404,6 +591,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     }
     cryptoKey = null;
     tencInfo = null;
+    currentIntraQueue = [];
     return;
   }
 
@@ -419,6 +607,18 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     handleSaveFrame(msg).catch(() => {
       post({ type: "saveFrameResult", bitmap: null });
     });
+    return;
+  }
+
+  if (msg.type === "updateIntraQueue") {
+    currentIntraQueue = [...msg.items];
+    if (!intraProcessing && initData && decoderConfig) {
+      processIntraQueue().catch((err) => {
+        if (!aborted) {
+          post({ type: "error", message: `${err}` });
+        }
+      });
+    }
     return;
   }
 

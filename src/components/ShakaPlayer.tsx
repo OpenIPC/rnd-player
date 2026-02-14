@@ -3,6 +3,7 @@ import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
+const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
 import "./ShakaPlayer.css";
 
 interface ShakaPlayerProps {
@@ -247,6 +248,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               />
             </Suspense>
           )}
+        {DebugPanel && (
+          <Suspense fallback={null}>
+            <DebugPanel />
+          </Suspense>
+        )}
       </div>
       {showFilmstrip &&
         playerReady &&

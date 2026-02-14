@@ -10,12 +10,19 @@ export type RequestRangeFn = (startTime: number, endTime: number, priorityTime: 
 
 export type SaveFrameFn = (time: number) => Promise<ImageBitmap | null>;
 
+export type RequestIntraBatchFn = (
+  items: { segmentIndex: number; count: number }[],
+  priorityTime: number,
+) => void;
+
 export interface ThumbnailGeneratorResult {
   thumbnails: Map<number, ImageBitmap>;
   segmentTimes: number[];
   supported: boolean;
   requestRange: RequestRangeFn;
   saveFrame: SaveFrameFn;
+  intraFrames: Map<number, ImageBitmap[]>;
+  requestIntraBatch: RequestIntraBatchFn;
 }
 
 function isWebCodecsSupported(): boolean {
@@ -62,12 +69,15 @@ export function useThumbnailGenerator(
 ): ThumbnailGeneratorResult {
   const [thumbnails, setThumbnails] = useState<Map<number, ImageBitmap>>(new Map());
   const [segmentTimes, setSegmentTimes] = useState<number[]>([]);
+  const [intraFrames, setIntraFrames] = useState<Map<number, ImageBitmap[]>>(new Map());
 
   const workerRef = useRef<Worker | null>(null);
   const thumbnailsRef = useRef<Map<number, ImageBitmap>>(new Map());
   const segmentsRef = useRef<{ url: string; startTime: number; endTime: number }[]>([]);
   const workerReadyRef = useRef(false);
   const supported = isWebCodecsSupported();
+  const intraFramesRef = useRef<Map<number, ImageBitmap[]>>(new Map());
+  const lastSentIntraRef = useRef<string>("");
 
   // Track visible range for eviction
   const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
@@ -105,8 +115,14 @@ export function useThumbnailGenerator(
       clearTimeout(throttleTimerRef.current);
       throttleTimerRef.current = null;
     }
+    for (const arr of intraFramesRef.current.values()) {
+      arr.forEach((b) => b.close());
+    }
+    intraFramesRef.current = new Map();
+    lastSentIntraRef.current = "";
     setThumbnails(new Map());
     setSegmentTimes([]);
+    setIntraFrames(new Map());
   }, []);
 
   // requestRange: called from paint loop, throttled to avoid flooding worker
@@ -164,6 +180,38 @@ export function useThumbnailGenerator(
     } else {
       throttleTimerRef.current = setTimeout(sendUpdate, THROTTLE_MS - elapsed);
     }
+  }, []);
+
+  // requestIntraBatch: send a prioritized batch of intra-frame requests to the worker
+  const requestIntraBatch = useCallback<RequestIntraBatchFn>((items, priorityTime) => {
+    const worker = workerRef.current;
+    const segs = segmentsRef.current;
+    if (!worker || !workerReadyRef.current || segs.length === 0) return;
+
+    // Filter out segments that already have enough intra-frames
+    const needed = items.filter((item) => {
+      const existing = intraFramesRef.current.get(item.segmentIndex);
+      return !existing || existing.length < item.count;
+    });
+
+    if (needed.length === 0) return;
+
+    // Sort by proximity to priorityTime (closest first)
+    needed.sort((a, b) => {
+      const aMid = (segs[a.segmentIndex].startTime + segs[a.segmentIndex].endTime) / 2;
+      const bMid = (segs[b.segmentIndex].startTime + segs[b.segmentIndex].endTime) / 2;
+      return Math.abs(aMid - priorityTime) - Math.abs(bMid - priorityTime);
+    });
+
+    // Fingerprint to avoid redundant sends
+    const key = needed.map((n) => `${n.segmentIndex}:${n.count}`).join(",");
+    if (key === lastSentIntraRef.current) return;
+    lastSentIntraRef.current = key;
+
+    worker.postMessage({
+      type: "updateIntraQueue",
+      items: needed,
+    } satisfies WorkerRequest);
   }, []);
 
   // saveFrame: sends a one-shot decode request to the worker for the active stream
@@ -296,27 +344,55 @@ export function useThumbnailGenerator(
         );
         workerRef.current = worker;
 
+        // Evict bitmaps far from the current visible range.
+        // Returns true if any intra-frame bitmaps were evicted.
+        const evictOutOfRange = (): boolean => {
+          const { start: visStart, end: visEnd } = visibleRangeRef.current;
+          const span = visEnd - visStart;
+          if (span <= 0) return false;
+
+          const evictLow = visStart - 3 * span;
+          const evictHigh = visEnd + 3 * span;
+
+          for (const [ts, bmp] of thumbnailsRef.current) {
+            if (ts < evictLow || ts > evictHigh) {
+              bmp.close();
+              thumbnailsRef.current.delete(ts);
+            }
+          }
+
+          const segs = segmentsRef.current;
+          let intraEvicted = false;
+          for (const [segIdx, arr] of intraFramesRef.current) {
+            const seg = segs[segIdx];
+            if (seg && (seg.endTime < evictLow || seg.startTime > evictHigh)) {
+              arr.forEach((b) => b.close());
+              intraFramesRef.current.delete(segIdx);
+              intraEvicted = true;
+            }
+          }
+          return intraEvicted;
+        };
+
         worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
           const msg = e.data;
           switch (msg.type) {
             case "thumbnail": {
               thumbnailsRef.current.set(msg.timestamp, msg.bitmap);
-
-              // Evict bitmaps far from the current visible range
-              const { start: visStart, end: visEnd } = visibleRangeRef.current;
-              const span = visEnd - visStart;
-              if (span > 0) {
-                const evictLow = visStart - 3 * span;
-                const evictHigh = visEnd + 3 * span;
-                for (const [ts, bmp] of thumbnailsRef.current) {
-                  if (ts < evictLow || ts > evictHigh) {
-                    bmp.close();
-                    thumbnailsRef.current.delete(ts);
-                  }
-                }
-              }
-
+              const intraEvicted = evictOutOfRange();
               setThumbnails(new Map(thumbnailsRef.current));
+              if (intraEvicted) {
+                setIntraFrames(new Map(intraFramesRef.current));
+              }
+              break;
+            }
+            case "intraFrames": {
+              // Close old bitmaps if replacing
+              const old = intraFramesRef.current.get(msg.segmentIndex);
+              if (old) old.forEach((b) => b.close());
+              intraFramesRef.current.set(msg.segmentIndex, msg.bitmaps);
+              evictOutOfRange();
+              setIntraFrames(new Map(intraFramesRef.current));
               break;
             }
             case "ready":
@@ -347,5 +423,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, supported, requestRange, saveFrame };
+  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, requestIntraBatch };
 }

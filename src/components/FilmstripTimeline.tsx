@@ -22,7 +22,6 @@ const RULER_HEIGHT = 22;
 const THUMB_ROW_TOP = RULER_HEIGHT;
 const GRAPH_HEIGHT = 48;
 const MIN_PX_PER_SEC = 4;
-const MAX_PX_PER_SEC = 100;
 const DEFAULT_PX_PER_SEC = 16;
 const PLAYHEAD_COLOR_CANVAS = "rgb(71, 13, 179)";
 const MARKER_COLOR = "#f5c518";
@@ -60,10 +59,11 @@ export default function FilmstripTimeline({
   const durationRef = useRef(0);
   const currentTimeRef = useRef(0);
   const videoAspectRef = useRef(16 / 9);
+  const thumbWRef = useRef(0);
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame } =
+  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, requestIntraBatch } =
     useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
@@ -74,6 +74,11 @@ export default function FilmstripTimeline({
   thumbnailsRef.current = thumbnails;
   segmentTimesRef.current = segmentTimes;
   requestRangeRef.current = requestRange;
+
+  const intraFramesMapRef = useRef(intraFrames);
+  const requestIntraBatchRef = useRef(requestIntraBatch);
+  intraFramesMapRef.current = intraFrames;
+  requestIntraBatchRef.current = requestIntraBatch;
 
   const bitrateData = useBitrateGraph(player, showBitrateGraph);
   const bitrateDataRef = useRef<BitrateGraphData>(bitrateData);
@@ -348,37 +353,92 @@ export default function FilmstripTimeline({
       const graphH = graphOn ? GRAPH_HEIGHT : 0;
       const thumbH = h - RULER_HEIGHT - graphH;
       const thumbW = thumbH * videoAspectRef.current;
+      thumbWRef.current = thumbW;
       const times = segmentTimesRef.current;
 
-      // Only draw thumbnails visible in the current viewport
+      // Draw thumbnails — single per segment when packed, multiple when zoomed in
+      const neededIntra: { segmentIndex: number; count: number }[] = [];
+
       for (let i = 0; i < times.length; i++) {
-        const ts = times[i];
-        const nextTs = i < times.length - 1 ? times[i + 1] : dur;
-        const mid = (ts + nextTs) / 2;
-        const x = mid * pxPerSec - sl;
+        const segStart = times[i];
+        const segEnd = i < times.length - 1 ? times[i + 1] : dur;
+        const segDuration = segEnd - segStart;
+        const segWidth = segDuration * pxPerSec;
 
-        // Skip if completely outside viewport
-        if (x + thumbW / 2 < 0 || x - thumbW / 2 > w) continue;
+        if (segWidth <= thumbW) {
+          // Packed mode: single thumbnail centered on segment midpoint
+          const mid = (segStart + segEnd) / 2;
+          const x = mid * pxPerSec - sl;
+          if (x + thumbW / 2 < 0 || x - thumbW / 2 > w) continue;
 
-        // Center thumbnail on segment midpoint
-        const drawX = x - thumbW / 2;
-        const drawY = THUMB_ROW_TOP;
-
-        const bmp = thumbnailsRef.current.get(ts);
-        if (bmp) {
-          ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
-          // Border
-          ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+          const drawX = x - thumbW / 2;
+          const drawY = THUMB_ROW_TOP;
+          const bmp = thumbnailsRef.current.get(segStart);
+          if (bmp && bmp.width > 0) {
+            ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+          } else {
+            ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+            ctx.fillRect(drawX, drawY, thumbW, thumbH);
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+          }
         } else {
-          // Placeholder
-          ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
-          ctx.fillRect(drawX, drawY, thumbW, thumbH);
-          ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+          // Gap mode: draw multiple thumbnails evenly across segment
+          const count = Math.max(2, Math.ceil(segWidth / thumbW));
+          const intraArr = intraFramesMapRef.current.get(i) ?? [];
+
+          for (let j = 0; j < count; j++) {
+            const t = segStart + ((j + 0.5) / count) * segDuration;
+            const x = t * pxPerSec - sl;
+            const drawX = x - thumbW / 2;
+
+            // Skip if outside viewport
+            if (drawX + thumbW < 0 || drawX > w) continue;
+
+            const drawY = THUMB_ROW_TOP;
+            let bmp: ImageBitmap | undefined;
+
+            if (j === 0) {
+              // First slot uses the existing I-frame thumbnail
+              bmp = thumbnailsRef.current.get(segStart);
+            } else if (intraArr.length > 0) {
+              // Map j-1 to closest available intra-frame
+              const arrIdx = count > 2
+                ? Math.round(((j - 1) / (count - 2)) * (intraArr.length - 1))
+                : 0;
+              if (arrIdx >= 0 && arrIdx < intraArr.length) {
+                bmp = intraArr[arrIdx];
+              }
+            }
+
+            if (bmp && bmp.width > 0) {
+              ctx.drawImage(bmp, drawX, drawY, thumbW, thumbH);
+              ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+              ctx.lineWidth = 1;
+              ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+            } else {
+              ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+              ctx.fillRect(drawX, drawY, thumbW, thumbH);
+              ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+              ctx.lineWidth = 1;
+              ctx.strokeRect(drawX, drawY, thumbW, thumbH);
+            }
+          }
+
+          // Collect needed intra-frames (only for visible segments)
+          if (count > 1 && intraArr.length < count - 1) {
+            neededIntra.push({ segmentIndex: i, count: count - 1 });
+          }
         }
+      }
+
+      // Send batched intra-frame request (deduplicated by fingerprint in hook)
+      if (neededIntra.length > 0) {
+        requestIntraBatchRef.current(neededIntra, time);
       }
 
       // ── Bitrate graph ──
@@ -603,9 +663,10 @@ export default function FilmstripTimeline({
         const mouseX = e.clientX - rect.left;
         const timeBefore = (mouseX + scrollLeftRef.current) / pxPerSecRef.current;
 
+        const maxPxPerSec = thumbWRef.current > 0 ? fpsRef.current * thumbWRef.current : 5000;
         pxPerSecRef.current = Math.max(
           MIN_PX_PER_SEC,
-          Math.min(MAX_PX_PER_SEC, pxPerSecRef.current * zoomFactor),
+          Math.min(maxPxPerSec, pxPerSecRef.current * zoomFactor),
         );
 
         // Keep the time under the cursor in the same screen position
@@ -648,9 +709,10 @@ export default function FilmstripTimeline({
 
       const timeBefore = (anchorX + scrollLeftRef.current) / pxPerSecRef.current;
 
+      const maxPxPerSec = thumbWRef.current > 0 ? fpsRef.current * thumbWRef.current : 5000;
       pxPerSecRef.current = Math.max(
         MIN_PX_PER_SEC,
-        Math.min(MAX_PX_PER_SEC, pxPerSecRef.current * zoomFactor),
+        Math.min(maxPxPerSec, pxPerSecRef.current * zoomFactor),
       );
 
       scrollLeftRef.current = clampScroll(

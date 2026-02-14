@@ -20,6 +20,7 @@ export type WorkerRequest =
       width: number;
       height: number;
     }
+  | { type: "updateIntraQueue"; items: { segmentIndex: number; count: number }[] }
   | { type: "abort" };
 
 /** Messages from thumbnail worker to main thread */
@@ -27,4 +28,5 @@ export type WorkerResponse =
   | { type: "thumbnail"; timestamp: number; bitmap: ImageBitmap }
   | { type: "error"; message: string }
   | { type: "ready" }
-  | { type: "saveFrameResult"; bitmap: ImageBitmap | null };
+  | { type: "saveFrameResult"; bitmap: ImageBitmap | null }
+  | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[] };
