@@ -70,8 +70,8 @@ jobs:
       - name: Install ffmpeg with drawtext (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          brew tap homebrew-ffmpeg/ffmpeg
-          brew install homebrew-ffmpeg/ffmpeg/ffmpeg --with-freetype
+          brew install ffmpeg-full
+          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
 
       - name: Install ffmpeg (Windows)
         if: matrix.os == 'windows-latest'
