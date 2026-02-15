@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Vibe Player — a custom web video player built with React 19, TypeScript, and Shaka Player 5 for adaptive streaming (DASH/HLS). Replaces native browser controls with a dark-themed custom overlay. Supports ClearKey DRM auto-detection, multi-track audio/subtitles, playback diagnostics, and sleep/wake recovery.
+R&D Player — a custom web video player built with React 19, TypeScript, and Shaka Player 5 for adaptive streaming (DASH/HLS). Replaces native browser controls with a dark-themed custom overlay. Supports ClearKey DRM auto-detection, multi-track audio/subtitles, playback diagnostics, and sleep/wake recovery.
 
 ## Commands
 

@@ -1,4 +1,4 @@
-# Vibe Player
+# R&D Player
 
 A custom video player built with React, TypeScript, and [Shaka Player](https://github.com/shaka-project/shaka-player) for adaptive streaming (DASH/HLS).
 
