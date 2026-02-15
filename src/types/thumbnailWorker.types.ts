@@ -1,5 +1,10 @@
 export type FrameType = "I" | "P" | "B";
 
+export interface GopFrame {
+  type: FrameType;
+  size: number;
+}
+
 /** Messages from main thread to thumbnail worker */
 export type WorkerRequest =
   | {
@@ -26,6 +31,7 @@ export type WorkerRequest =
       height: number;
     }
   | { type: "updateIntraQueue"; items: { segmentIndex: number; count: number }[] }
+  | { type: "requestGop"; segmentIndex: number }
   | { type: "abort" };
 
 /** Messages from thumbnail worker to main thread */
@@ -34,4 +40,5 @@ export type WorkerResponse =
   | { type: "error"; message: string }
   | { type: "ready" }
   | { type: "saveFrameResult"; bitmap: ImageBitmap | null }
-  | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[] };
+  | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[]; gopStructure: GopFrame[] }
+  | { type: "gopStructure"; segmentIndex: number; gopStructure: GopFrame[] };

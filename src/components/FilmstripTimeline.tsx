@@ -60,6 +60,8 @@ export default function FilmstripTimeline({
   showBitrateGraphRef.current = showBitrateGraph;
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; time: number } | null>(null);
   const ctxMenuTimeRef = useRef(0);
+  const [gopTooltip, setGopTooltip] = useState<{ x: number; y: number; segIdx: number } | null>(null);
+  const gopTooltipRef = useRef<{ x: number; y: number; segIdx: number } | null>(null);
 
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
@@ -69,7 +71,7 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, intraFrameTypes, requestIntraBatch } =
+  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, intraFrameTypes, gopStructures, requestGop, requestIntraBatch } =
     useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
@@ -83,9 +85,13 @@ export default function FilmstripTimeline({
 
   const intraFramesMapRef = useRef(intraFrames);
   const intraFrameTypesRef = useRef(intraFrameTypes);
+  const gopStructuresRef = useRef(gopStructures);
+  const requestGopRef = useRef(requestGop);
   const requestIntraBatchRef = useRef(requestIntraBatch);
   intraFramesMapRef.current = intraFrames;
   intraFrameTypesRef.current = intraFrameTypes;
+  gopStructuresRef.current = gopStructures;
+  requestGopRef.current = requestGop;
   requestIntraBatchRef.current = requestIntraBatch;
 
   const bitrateData = useBitrateGraph(player, showBitrateGraph);
@@ -766,14 +772,84 @@ export default function FilmstripTimeline({
       isDraggingRef.current = false;
     };
 
+    const onMouseMove = (e: MouseEvent) => {
+      if (isDraggingRef.current) return;
+      if (!showBitrateGraphRef.current) {
+        if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const localX = e.clientX - rect.left;
+      const localY = e.clientY - rect.top;
+      const h = rect.height;
+      const thumbH = h - RULER_HEIGHT - GRAPH_HEIGHT;
+      const graphTop = RULER_HEIGHT + thumbH;
+
+      // Only show tooltip when hovering over the bitrate graph region
+      if (localY < graphTop || localY > h) {
+        if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
+        return;
+      }
+
+      const time = (localX + scrollLeftRef.current) / pxPerSecRef.current;
+      const bd = bitrateDataRef.current;
+      const segs = bd.segments;
+      let hitIdx = -1;
+      for (let i = 0; i < segs.length; i++) {
+        if (time >= segs[i].startTime && time < segs[i].endTime) {
+          hitIdx = i;
+          break;
+        }
+      }
+
+      if (hitIdx < 0) {
+        if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
+        return;
+      }
+
+      // Map bitrate-graph segment index to nearest thumbnail segment index
+      const times = segmentTimesRef.current;
+      const segStart = segs[hitIdx].startTime;
+      let thumbIdx = 0;
+      for (let i = 1; i < times.length; i++) {
+        if (Math.abs(times[i] - segStart) < Math.abs(times[thumbIdx] - segStart)) {
+          thumbIdx = i;
+        }
+      }
+
+      // Request GOP structure if not yet available
+      if (!gopStructuresRef.current.has(thumbIdx)) {
+        requestGopRef.current(thumbIdx);
+      }
+
+      const prev = gopTooltipRef.current;
+      if (prev && prev.segIdx === thumbIdx) {
+        // Same segment — just update position
+        prev.x = e.clientX;
+        prev.y = e.clientY;
+        setGopTooltip({ ...prev });
+      } else {
+        gopTooltipRef.current = { x: e.clientX, y: e.clientY, segIdx: thumbIdx };
+        setGopTooltip({ x: e.clientX, y: e.clientY, segIdx: thumbIdx });
+      }
+    };
+
+    const onMouseLeave = () => {
+      if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
+    };
+
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("mousemove", onMouseMove);
+    canvas.addEventListener("mouseleave", onMouseLeave);
 
     return () => {
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("mousemove", onMouseMove);
+      canvas.removeEventListener("mouseleave", onMouseLeave);
     };
   }, [seekToX]);
 
@@ -959,6 +1035,29 @@ export default function FilmstripTimeline({
           </div>
         </div>
       )}
+      {gopTooltip && (() => {
+        const gop = gopStructures.get(gopTooltip.segIdx);
+        if (!gop || gop.length === 0) return null;
+        const maxSize = Math.max(...gop.map((f) => f.size), 1);
+        const BAR_HEIGHT = 32;
+        return (
+          <div
+            className="vp-gop-tooltip"
+            style={{ left: gopTooltip.x, top: gopTooltip.y }}
+          >
+            <div className="vp-gop-tooltip-label">GOP ({gop.length} frames)</div>
+            <div className="vp-gop-tooltip-bars">
+              {gop.map((f, i) => (
+                <div
+                  key={i}
+                  className={`vp-gop-bar vp-gop-bar-${f.type}`}
+                  style={{ height: Math.max(2, (f.size / maxSize) * BAR_HEIGHT) }}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

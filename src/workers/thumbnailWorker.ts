@@ -1,6 +1,6 @@
 import { createFile, DataStream, MP4BoxBuffer, Endianness } from "mp4box";
 import type { ISOFile, Sample } from "mp4box";
-import type { WorkerRequest, WorkerResponse, FrameType } from "../types/thumbnailWorker.types";
+import type { WorkerRequest, WorkerResponse, FrameType, GopFrame } from "../types/thumbnailWorker.types";
 import {
   importClearKey,
   extractScheme,
@@ -32,7 +32,7 @@ let intraProcessing = false;
 let activeInitData: ArrayBuffer | null = null;
 let activeSegments: { url: string; startTime: number; endTime: number }[] = [];
 /** Cache of frame types per active-stream segment URL to avoid re-fetching */
-const activeFrameTypeCache = new Map<string, FrameType[]>();
+const activeFrameTypeCache = new Map<string, GopFrame[]>();
 
 function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefined {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -150,9 +150,9 @@ function extractAllSamplesFromSegment(
 
 /**
  * Classify an array of samples (in decode order) into I/P/B frame types,
- * returning the types in display (CTS) order.
+ * returning GopFrame[] in display (CTS) order with byte sizes.
  */
-function classifyFrameTypes(samples: { cts: number; is_sync: boolean }[]): FrameType[] {
+function classifyFrameTypes(samples: { cts: number; is_sync: boolean; data?: { byteLength: number } | null }[]): GopFrame[] {
   const decodeTypes: FrameType[] = [];
   let maxCts = -Infinity;
   for (const s of samples) {
@@ -166,9 +166,16 @@ function classifyFrameTypes(samples: { cts: number; is_sync: boolean }[]): Frame
     if (s.cts > maxCts) maxCts = s.cts;
   }
   return samples
-    .map((s, i) => ({ cts: s.cts, type: decodeTypes[i] }))
+    .map((s, i) => ({ cts: s.cts, type: decodeTypes[i], size: s.data?.byteLength ?? 0 }))
     .sort((a, b) => a.cts - b.cts)
-    .map((x) => x.type);
+    .map((x) => ({ type: x.type, size: x.size }));
+}
+
+/**
+ * Extract just the frame types (no sizes) from GopFrame[].
+ */
+function gopTypes(gop: GopFrame[]): FrameType[] {
+  return gop.map((f) => f.type);
 }
 
 /**
@@ -177,8 +184,8 @@ function classifyFrameTypes(samples: { cts: number; is_sync: boolean }[]): Frame
  */
 async function getActiveFrameTypes(
   thumbSegStartTime: number,
-  fallbackSamples: { cts: number; is_sync: boolean }[],
-): Promise<FrameType[]> {
+  fallbackSamples: { cts: number; is_sync: boolean; data?: { byteLength: number } | null }[],
+): Promise<GopFrame[]> {
   if (!activeInitData || activeSegments.length === 0) {
     return classifyFrameTypes(fallbackSamples);
   }
@@ -271,7 +278,7 @@ async function handleGenerateIntra(segIdx: number, count: number) {
           bitmapPromises.push({
             outputIdx: currentOutputIdx,
             promise: createImageBitmap(captureCanvas),
-            frameType: thumbDisplayTypes[currentOutputIdx] ?? "P",
+            frameType: thumbDisplayTypes[currentOutputIdx]?.type ?? "P",
           });
         } else {
           frame.close();
@@ -329,10 +336,11 @@ async function handleGenerateIntra(segIdx: number, count: number) {
     // Map frame types from the active stream to captured bitmap positions.
     // The active stream may have a different frame count, so we sample
     // evenly from its display-order types.
+    const activeTypesList = gopTypes(activeDisplayTypes);
     const frameTypes = bitmapPromises.map((_p, i) => {
-      if (activeDisplayTypes.length === 0) return _p.frameType;
-      const idx = Math.round((i / (bitmapPromises.length - 1 || 1)) * (activeDisplayTypes.length - 1));
-      return activeDisplayTypes[idx] ?? _p.frameType;
+      if (activeTypesList.length === 0) return _p.frameType;
+      const idx = Math.round((i / (bitmapPromises.length - 1 || 1)) * (activeTypesList.length - 1));
+      return activeTypesList[idx] ?? _p.frameType;
     });
 
     if (aborted) {
@@ -340,7 +348,7 @@ async function handleGenerateIntra(segIdx: number, count: number) {
       return;
     }
 
-    post({ type: "intraFrames", segmentIndex: segIdx, bitmaps, frameTypes }, bitmaps);
+    post({ type: "intraFrames", segmentIndex: segIdx, bitmaps, frameTypes, gopStructure: activeDisplayTypes }, bitmaps);
   } catch (e) {
     if (!aborted) {
       post({ type: "error", message: `Intra-frame error: ${e}` });
@@ -704,6 +712,33 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     handleSaveFrame(msg).catch(() => {
       post({ type: "saveFrameResult", bitmap: null });
     });
+    return;
+  }
+
+  if (msg.type === "requestGop") {
+    // Lightweight: classify frame types without decoding video frames.
+    // Fetches the active stream segment (or thumbnail stream as fallback)
+    // and parses sample metadata for I/P/B classification.
+    const segIdx = msg.segmentIndex;
+    if (segIdx >= 0 && segIdx < segments.length && initData) {
+      const seg = segments[segIdx];
+      (async () => {
+        // Try active stream first
+        let types = await getActiveFrameTypes(seg.startTime, []);
+        // Fallback: classify from the thumbnail stream
+        if (types.length === 0) {
+          try {
+            const mediaData = await fetchBuffer(seg.url);
+            if (aborted) return;
+            const samples = await extractAllSamplesFromSegment(initData!, mediaData);
+            types = classifyFrameTypes(samples);
+          } catch { /* best-effort */ }
+        }
+        if (!aborted && types.length > 0) {
+          post({ type: "gopStructure", segmentIndex: segIdx, gopStructure: types });
+        }
+      })().catch(() => { /* best-effort */ });
+    }
     return;
   }
 

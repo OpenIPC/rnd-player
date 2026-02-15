@@ -976,3 +976,48 @@ video::-webkit-media-text-track-container {
   cursor: pointer;
   white-space: nowrap;
 }
+
+/* ── GOP structure tooltip ── */
+.vp-gop-tooltip {
+  position: fixed;
+  z-index: 20;
+  background: rgba(20, 20, 20, 0.95);
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 10px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  transform: translate(12px, -100%);
+}
+
+.vp-gop-tooltip-label {
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 4px;
+}
+
+.vp-gop-tooltip-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  height: 32px;
+}
+
+.vp-gop-bar {
+  width: 1px;
+  min-height: 2px;
+}
+
+.vp-gop-bar-I {
+  background: rgb(255, 50, 50);
+}
+
+.vp-gop-bar-P {
+  background: rgb(60, 130, 255);
+}
+
+.vp-gop-bar-B {
+  background: rgb(50, 200, 50);
+}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type shaka from "shaka-player";
-import type { WorkerRequest, WorkerResponse, FrameType } from "../types/thumbnailWorker.types";
+import type { WorkerRequest, WorkerResponse, FrameType, GopFrame } from "../types/thumbnailWorker.types";
 import { extractInitSegmentUrl } from "../utils/extractInitSegmentUrl";
 
 const THUMBNAIL_WIDTH = 160;
@@ -23,6 +23,8 @@ export interface ThumbnailGeneratorResult {
   saveFrame: SaveFrameFn;
   intraFrames: Map<number, ImageBitmap[]>;
   intraFrameTypes: Map<number, FrameType[]>;
+  gopStructures: Map<number, GopFrame[]>;
+  requestGop: (segmentIndex: number) => void;
   requestIntraBatch: RequestIntraBatchFn;
 }
 
@@ -72,6 +74,7 @@ export function useThumbnailGenerator(
   const [segmentTimes, setSegmentTimes] = useState<number[]>([]);
   const [intraFrames, setIntraFrames] = useState<Map<number, ImageBitmap[]>>(new Map());
   const [intraFrameTypes, setIntraFrameTypes] = useState<Map<number, FrameType[]>>(new Map());
+  const [gopStructures, setGopStructures] = useState<Map<number, GopFrame[]>>(new Map());
 
   const workerRef = useRef<Worker | null>(null);
   const thumbnailsRef = useRef<Map<number, ImageBitmap>>(new Map());
@@ -80,6 +83,7 @@ export function useThumbnailGenerator(
   const supported = isWebCodecsSupported();
   const intraFramesRef = useRef<Map<number, ImageBitmap[]>>(new Map());
   const intraFrameTypesRef = useRef<Map<number, FrameType[]>>(new Map());
+  const gopStructuresRef = useRef<Map<number, GopFrame[]>>(new Map());
   const lastSentIntraRef = useRef<string>("");
 
   // Track visible range for eviction
@@ -123,11 +127,13 @@ export function useThumbnailGenerator(
     }
     intraFramesRef.current = new Map();
     intraFrameTypesRef.current = new Map();
+    gopStructuresRef.current = new Map();
     lastSentIntraRef.current = "";
     setThumbnails(new Map());
     setSegmentTimes([]);
     setIntraFrames(new Map());
     setIntraFrameTypes(new Map());
+    setGopStructures(new Map());
   }, []);
 
   // requestRange: called from paint loop, throttled to avoid flooding worker
@@ -217,6 +223,15 @@ export function useThumbnailGenerator(
       type: "updateIntraQueue",
       items: needed,
     } satisfies WorkerRequest);
+  }, []);
+
+  // requestGop: ask the worker to classify frame types for a segment (no decode)
+  const requestGop = useCallback((segmentIndex: number) => {
+    const worker = workerRef.current;
+    if (!worker || !workerReadyRef.current) return;
+    // Already have it cached
+    if (gopStructuresRef.current.has(segmentIndex)) return;
+    worker.postMessage({ type: "requestGop", segmentIndex } satisfies WorkerRequest);
   }, []);
 
   // saveFrame: sends a one-shot decode request to the worker for the active stream
@@ -374,6 +389,7 @@ export function useThumbnailGenerator(
               arr.forEach((b) => b.close());
               intraFramesRef.current.delete(segIdx);
               intraFrameTypesRef.current.delete(segIdx);
+              gopStructuresRef.current.delete(segIdx);
               intraEvicted = true;
             }
           }
@@ -398,9 +414,18 @@ export function useThumbnailGenerator(
               if (old) old.forEach((b) => b.close());
               intraFramesRef.current.set(msg.segmentIndex, msg.bitmaps);
               intraFrameTypesRef.current.set(msg.segmentIndex, msg.frameTypes);
+              if (msg.gopStructure.length > 0) {
+                gopStructuresRef.current.set(msg.segmentIndex, msg.gopStructure);
+              }
               evictOutOfRange();
               setIntraFrames(new Map(intraFramesRef.current));
               setIntraFrameTypes(new Map(intraFrameTypesRef.current));
+              setGopStructures(new Map(gopStructuresRef.current));
+              break;
+            }
+            case "gopStructure": {
+              gopStructuresRef.current.set(msg.segmentIndex, msg.gopStructure);
+              setGopStructures(new Map(gopStructuresRef.current));
               break;
             }
             case "ready":
@@ -467,5 +492,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, requestIntraBatch };
+  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, gopStructures, requestGop, requestIntraBatch };
 }
