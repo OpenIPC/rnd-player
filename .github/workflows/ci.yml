@@ -67,9 +67,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Install ffmpeg (macOS)
+      - name: Install ffmpeg with drawtext (macOS)
         if: matrix.os == 'macos-latest'
-        run: brew install ffmpeg
+        run: |
+          brew tap homebrew-ffmpeg/ffmpeg
+          brew install homebrew-ffmpeg/ffmpeg/ffmpeg --with-freetype
 
       - name: Install ffmpeg (Windows)
         if: matrix.os == 'windows-latest'
