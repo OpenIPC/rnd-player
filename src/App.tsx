@@ -60,6 +60,9 @@ function App() {
             Demo
           </button>
         </form>
+        <span className="url-version">
+          v{__APP_VERSION__} ({__BUILD_DATE__})
+        </span>
       </div>
     );
   }

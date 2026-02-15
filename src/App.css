@@ -69,3 +69,9 @@
 .url-demo:hover {
   background: rgba(33, 150, 243, 0.1);
 }
+
+.url-version {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #555;
+}
