@@ -25,11 +25,17 @@ jobs:
       - run: npm run build
 
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         browser: [chromium, firefox, webkit]
+        include:
+          - os: macos-latest
+            browser: webkit
+          - os: windows-latest
+            browser: edge
 
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +47,17 @@ jobs:
 
       - run: npm ci
 
-      - name: Install Playwright browser
+      - name: Install Playwright browser (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Install Playwright browser (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npx playwright install --with-deps webkit
+
+      - name: Install Playwright browser (Windows)
+        if: matrix.os == 'windows-latest'
+        run: npx playwright install --with-deps chromium
 
       - name: Install H.264 codecs for Firefox
         if: matrix.browser == 'firefox'
@@ -54,6 +69,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: blob-report-${{ matrix.browser }}
+          name: blob-report-${{ matrix.os }}-${{ matrix.browser }}
           path: blob-report/
           retention-days: 14
