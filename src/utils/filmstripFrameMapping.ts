@@ -183,6 +183,32 @@ export function noSnap(clickTime: number): number {
   return clickTime;
 }
 
+// ── Frame position (stream-independent save) ────────────────────────
+
+/**
+ * Compute the normalized frame position (0..1) for the bitmap at arrIdx.
+ * This is what the component sends to the worker for saving, so the
+ * worker can map it to a display-order frame index in ANY stream.
+ */
+export function arrIdxToPosition(
+  arrIdx: number,
+  intraCount: number,
+): number {
+  if (intraCount <= 1) return 0;
+  return arrIdx / (intraCount - 1);
+}
+
+/**
+ * Map a normalized frame position (0..1) to a display-order frame index
+ * in a stream with `totalFrames` frames. This is what the worker does.
+ */
+export function positionToFrameIndex(
+  position: number,
+  totalFrames: number,
+): number {
+  return Math.round(position * (totalFrames - 1));
+}
+
 // ── Full pipeline check ─────────────────────────────────────────────
 
 export interface PipelineParams {
@@ -296,6 +322,133 @@ export function checkAllSlots(
       savedFrame,
       match: savedFrame === displayedFrame,
       rawSavedFrame: rawSaved,
+    });
+  }
+
+  return results;
+}
+
+// ── Cross-stream pipeline check ─────────────────────────────────────
+
+export interface CrossStreamParams extends PipelineParams {
+  /**
+   * CTS offset for the thumbnail stream (used for display + snap).
+   * Default: same as ctsOffsetFrames.
+   */
+  thumbCtsOffset?: number;
+  /**
+   * CTS offset for the active stream (used for save).
+   * Default: same as ctsOffsetFrames.
+   */
+  activeCtsOffset?: number;
+}
+
+export interface CrossStreamSlotResult extends SlotResult {
+  /** Frame index the position-based save would capture in the active stream */
+  positionSavedFrame: number;
+  /** Whether position-based save matches the displayed frame */
+  positionMatch: boolean;
+}
+
+/**
+ * Run the full pipeline modeling a cross-stream mismatch:
+ * - The thumbnail stream (used for intra-frame capture and CTS snap)
+ *   has `thumbCtsOffset` composition time offset
+ * - The active stream (used by handleSaveFrame) has `activeCtsOffset`
+ *
+ * This catches the bug where the component snaps to a CTS from the
+ * thumbnail stream but the worker searches for that CTS in the active
+ * stream, which has different CTS values due to different B-frame
+ * reordering.
+ */
+export function checkAllSlotsCrossStream(
+  params: CrossStreamParams,
+  snapFn: (p: SnapParams) => number = snapClickTimeWithCts,
+): CrossStreamSlotResult[] {
+  const {
+    segStart, segEnd, fps, totalFrames, pxPerSec, thumbW,
+    thumbCtsOffset = params.ctsOffsetFrames ?? 0,
+    activeCtsOffset = params.ctsOffsetFrames ?? 0,
+  } = params;
+  const segDuration = segEnd - segStart;
+  const segWidth = segDuration * pxPerSec;
+
+  // CTS for the thumbnail stream (snap source)
+  const thumbCts = Array.from(
+    { length: totalFrames },
+    (_, i) => segStart + (i + thumbCtsOffset) / fps,
+  );
+
+  // CTS for the active stream (save target)
+  const activeCts = Array.from(
+    { length: totalFrames },
+    (_, i) => segStart + (i + activeCtsOffset) / fps,
+  );
+
+  if (segWidth <= thumbW) {
+    // Packed mode
+    const clickTime = (segStart + segEnd) / 2;
+    const snapped = snapFn({
+      clickTime, segStart, segEnd, pxPerSec, thumbW, fps, intraCount: 0,
+    });
+    // CTS-based save: match snapped time against active stream CTS
+    const savedFrame = findClosestFrameIndex(snapped, activeCts);
+    const rawSaved = findClosestFrameIndex(clickTime, activeCts);
+    // Position-based save: frame 0 (I-frame) regardless of stream
+    const positionSavedFrame = 0;
+    return [{
+      slotJ: 0,
+      displayedFrame: 0,
+      clickTime,
+      snappedTime: snapped,
+      savedFrame,
+      match: savedFrame === 0,
+      rawSavedFrame: rawSaved,
+      positionSavedFrame,
+      positionMatch: positionSavedFrame === 0,
+    }];
+  }
+
+  // Gap mode
+  const count = Math.max(2, Math.ceil(segWidth / thumbW));
+  const capturedIndices = computeCaptureIndices(count, totalFrames);
+  const intraCount = capturedIndices.length;
+
+  // Snap uses thumbnail stream CTS
+  const intraCtsSeconds = capturedIndices.map((idx) => thumbCts[idx]);
+
+  const results: CrossStreamSlotResult[] = [];
+  for (let j = 0; j < count; j++) {
+    const displayedFrame = getDisplayedFrameIndex(j, count, capturedIndices);
+    const arrIdx = slotToArrIdx(j, count, intraCount);
+
+    const slotW = segWidth / count;
+    const clickTime = segStart + (j + 0.5) * slotW / pxPerSec;
+
+    const snapped = snapFn({
+      clickTime, segStart, segEnd, pxPerSec, thumbW, fps,
+      intraCount, intraCtsSeconds,
+    });
+
+    // CTS-based save: match snapped time against ACTIVE stream CTS
+    const savedFrame = findClosestFrameIndex(snapped, activeCts);
+    const rawSaved = findClosestFrameIndex(clickTime, activeCts);
+
+    // Position-based save: compute normalized position from arrIdx,
+    // then map to frame index in the active stream
+    const position = arrIdxToPosition(arrIdx, intraCount);
+    const positionSavedFrame = positionToFrameIndex(position, totalFrames);
+
+    results.push({
+      slotJ: j,
+      displayedFrame,
+      clickTime,
+      snappedTime: snapped,
+      savedFrame,
+      match: savedFrame === displayedFrame,
+      rawSavedFrame: rawSaved,
+      positionSavedFrame,
+      positionMatch: positionSavedFrame === displayedFrame,
     });
   }
 

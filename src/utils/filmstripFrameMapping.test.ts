@@ -12,11 +12,14 @@
 import { describe, it, expect } from "vitest";
 import {
   checkAllSlots,
+  checkAllSlotsCrossStream,
   snapClickTimeCurrent,
   snapClickTimeWithCts,
   computeCaptureIndices,
   type PipelineParams,
+  type CrossStreamParams,
   type SlotResult,
+  type CrossStreamSlotResult,
 } from "./filmstripFrameMapping";
 
 // ── Video parameters ────────────────────────────────────────────────
@@ -24,7 +27,6 @@ const FPS = 30;
 const SEG_DURATION = 2; // seconds
 const TOTAL_FRAMES = SEG_DURATION * FPS; // 60
 const THUMB_W = 80;
-const MIN_PX = 4;
 const MAX_PX = FPS * THUMB_W; // 2400
 
 function summarize(
@@ -434,6 +436,159 @@ describe("Filmstrip save-frame mapping diagnostic", () => {
         };
         const results = checkAllSlots(params, snapClickTimeWithCts);
         totalMismatches += results.filter((r) => !r.match).length;
+      }
+
+      expect(totalMismatches).toBe(0);
+    });
+  }
+
+  // ── Test 10: Cross-stream CTS mismatch ──────────────────────────────
+  // This is the key test: the thumbnail stream (used for display + snap)
+  // may have a different CTTS offset than the active stream (used for
+  // save). For example, thumbnail 240p may have no B-frames (offset=0)
+  // while the active 1080p stream has IBBP (offset=2). The CTS-based
+  // snap sends a time from the thumbnail CTS space, but the worker
+  // searches for it in the active CTS space → systematic off-by-N.
+  describe("Cross-stream CTS mismatch (thumbnail vs active stream)", () => {
+    function summarizeCrossStream(
+      label: string,
+      results: CrossStreamSlotResult[],
+    ) {
+      const ctsMismatches = results.filter((r) => !r.match);
+      const posMismatches = results.filter((r) => !r.positionMatch);
+      console.log(
+        `  ${label}: CTS-save=${ctsMismatches.length}/${results.length} mismatches, ` +
+          `position-save=${posMismatches.length}/${results.length} mismatches`,
+      );
+      if (ctsMismatches.length > 0) {
+        for (const m of ctsMismatches.slice(0, 5)) {
+          console.log(
+            `    slot ${m.slotJ}: displayed=frame${m.displayedFrame} ` +
+              `cts-saved=frame${m.savedFrame} pos-saved=frame${m.positionSavedFrame}`,
+          );
+        }
+      }
+      return {
+        ctsMismatches: ctsMismatches.length,
+        posMismatches: posMismatches.length,
+        total: results.length,
+      };
+    }
+
+    // Scenario: thumbnail=0 (no B-frames), active=2 (IBBP) — the user's exact case
+    describe("thumb offset=0, active offset=2", () => {
+      let totalCtsMismatches = 0;
+      let totalPosMismatches = 0;
+      let totalSlots = 0;
+
+      for (const pxPerSec of [100, 500, 1000, MAX_PX]) {
+        it(`pxPerSec=${pxPerSec}`, () => {
+          const params: CrossStreamParams = {
+            segStart: 0,
+            segEnd: SEG_DURATION,
+            fps: FPS,
+            totalFrames: TOTAL_FRAMES,
+            pxPerSec,
+            thumbW: THUMB_W,
+            thumbCtsOffset: 0,
+            activeCtsOffset: 2,
+          };
+          const results = checkAllSlotsCrossStream(params);
+          const { ctsMismatches, posMismatches, total } =
+            summarizeCrossStream(`pxPerSec=${pxPerSec}`, results);
+          totalCtsMismatches += ctsMismatches;
+          totalPosMismatches += posMismatches;
+          totalSlots += total;
+        });
+      }
+
+      it("SUMMARY", () => {
+        console.log(
+          `\n  thumb=0, active=2: CTS-save has ${totalCtsMismatches}/${totalSlots} mismatches, ` +
+            `position-save has ${totalPosMismatches}/${totalSlots} mismatches`,
+        );
+        if (totalCtsMismatches > 0 && totalPosMismatches === 0) {
+          console.log(
+            `  ✅ Position-based save fixes ALL cross-stream mismatches!`,
+          );
+        }
+      });
+    });
+
+    // Scenario: both streams have B-frames but different offsets
+    describe("thumb offset=1, active offset=3", () => {
+      let totalCtsMismatches = 0;
+      let totalPosMismatches = 0;
+      let totalSlots = 0;
+
+      for (const pxPerSec of [100, 500, 1000, MAX_PX]) {
+        it(`pxPerSec=${pxPerSec}`, () => {
+          const params: CrossStreamParams = {
+            segStart: 0,
+            segEnd: SEG_DURATION,
+            fps: FPS,
+            totalFrames: TOTAL_FRAMES,
+            pxPerSec,
+            thumbW: THUMB_W,
+            thumbCtsOffset: 1,
+            activeCtsOffset: 3,
+          };
+          const results = checkAllSlotsCrossStream(params);
+          const { ctsMismatches, posMismatches, total } =
+            summarizeCrossStream(`pxPerSec=${pxPerSec}`, results);
+          totalCtsMismatches += ctsMismatches;
+          totalPosMismatches += posMismatches;
+          totalSlots += total;
+        });
+      }
+
+      it("SUMMARY", () => {
+        console.log(
+          `\n  thumb=1, active=3: CTS-save has ${totalCtsMismatches}/${totalSlots} mismatches, ` +
+            `position-save has ${totalPosMismatches}/${totalSlots} mismatches`,
+        );
+      });
+    });
+
+    // Non-zero segment start
+    describe("thumb offset=0, active offset=2, segment at 10s", () => {
+      for (const pxPerSec of [500, MAX_PX]) {
+        it(`pxPerSec=${pxPerSec}`, () => {
+          const params: CrossStreamParams = {
+            segStart: 10,
+            segEnd: 12,
+            fps: FPS,
+            totalFrames: TOTAL_FRAMES,
+            pxPerSec,
+            thumbW: THUMB_W,
+            thumbCtsOffset: 0,
+            activeCtsOffset: 2,
+          };
+          const results = checkAllSlotsCrossStream(params);
+          summarizeCrossStream(`seg@10s pxPerSec=${pxPerSec}`, results);
+        });
+      }
+    });
+  });
+
+  // ── Test 11: Position-based save must have zero cross-stream mismatches ─
+  for (const [thumbOff, activeOff] of [[0, 0], [0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]] as const) {
+    it(`Position-based save: zero mismatches (thumb=${thumbOff}, active=${activeOff})`, () => {
+      let totalMismatches = 0;
+
+      for (const pxPerSec of PX_PER_SEC_VALUES) {
+        const params: CrossStreamParams = {
+          segStart: 0,
+          segEnd: SEG_DURATION,
+          fps: FPS,
+          totalFrames: TOTAL_FRAMES,
+          pxPerSec,
+          thumbW: THUMB_W,
+          thumbCtsOffset: thumbOff,
+          activeCtsOffset: activeOff,
+        };
+        const results = checkAllSlotsCrossStream(params);
+        totalMismatches += results.filter((r) => !r.positionMatch).length;
       }
 
       expect(totalMismatches).toBe(0);

@@ -29,6 +29,14 @@ export type WorkerRequest =
       codec: string;
       width: number;
       height: number;
+      /**
+       * Normalized frame position within the segment (0.0 = first frame,
+       * 1.0 = last frame). When provided, the worker selects the frame by
+       * display-order index rather than CTS matching. This avoids cross-stream
+       * CTS mismatches when the thumbnail stream and active stream have
+       * different composition time offsets.
+       */
+      framePosition?: number;
     }
   | { type: "updateIntraQueue"; items: { segmentIndex: number; count: number }[] }
   | { type: "requestGop"; segmentIndex: number }

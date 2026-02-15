@@ -43,7 +43,7 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - Two rendering modes: *packed* (one I-frame thumbnail per segment, segment width ≤ thumbnail width) and *gap* (multiple intra-frame thumbnails per segment when zoomed in)
 - Per-segment bitrate graph drawn below thumbnails with colored bars (measured vs estimated)
 - GOP tooltip on hover over bitrate bars showing per-frame size bars and per-type stats
-- Save frame via right-click context menu with CTS-based time snapping
+- Save frame via right-click context menu with position-based frame targeting (see Save Frame Pipeline below)
 - Color-coded frame borders: red=I, blue=P, green=B
 
 **useThumbnailGenerator** (`src/hooks/useThumbnailGenerator.ts`) — Hook that manages the thumbnail worker lifecycle. Extracts segment URLs from Shaka's manifest, spawns the worker, and handles lazy-loading based on visible viewport. When `clearKey` is provided for encrypted streams, passes the hex key to the worker for self-decryption. Exposes:
@@ -52,7 +52,7 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - `intraFrameTypes` — `Map<number, FrameType[]>`: I/P/B types for each intra bitmap
 - `intraTimestamps` — `Map<number, number[]>`: exact CTS seconds for each intra bitmap (from mp4box, includes composition time offsets)
 - `gopStructures` — `Map<number, GopFrame[]>`: frame types + byte sizes for GOP tooltip
-- `saveFrame(time)` — one-shot full-resolution frame decode from the active stream
+- `saveFrame(time, framePosition?)` — one-shot full-resolution frame decode from the active stream; `framePosition` (0..1) identifies the frame by display-order index to avoid cross-stream CTS mismatches
 - Memory eviction: bitmaps outside 3× the visible viewport span are closed and removed
 
 **thumbnailWorker** (`src/workers/thumbnailWorker.ts`) — Web Worker that fetches media segments, extracts samples via mp4box, decodes frames with VideoDecoder, and posts back ImageBitmaps. For CENC-encrypted content, integrates with `cencDecrypt` to decrypt samples before decoding. Key subsystems:
@@ -61,7 +61,7 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - **Intra-frame generation** (`handleGenerateIntra`): decodes ALL frames in a segment, captures N evenly-spaced bitmaps for gap mode. Returns exact CTS timestamps alongside bitmaps so the component can snap to real presentation times
 - **Frame type classification** (`classifyFrameTypes`): max-CTS heuristic — iterates samples in decode order tracking the highest CTS seen; sync samples → I, non-sync with CTS ≥ maxCts → P, non-sync with CTS < maxCts → B. Returns `GopFrame[]` in display (CTS) order with byte sizes
 - **Active stream frame types** (`getActiveFrameTypes`): classifies from the watched rendition (e.g. 1080p) rather than the lowest-quality thumbnail stream, since different renditions may have different GOP structures. Results are cached by segment URL
-- **Save frame** (`handleSaveFrame`): decodes all frames in the target segment at full resolution, captures the one whose `frame.timestamp` matches the target CTS within half a frame duration tolerance. Uses timestamp matching (not output counting) for robustness against decoder reordering
+- **Save frame** (`handleSaveFrame`): decodes all frames in the target segment at full resolution. When `framePosition` is provided (0..1), captures by display-order output index (`Math.round(position * (totalFrames - 1))`), which is immune to cross-stream CTS mismatches. Falls back to CTS-based timestamp matching when no position is given
 - **GOP structure** (`requestGop`): lightweight handler that classifies frame types without video decoding, used for the GOP tooltip on hover
 
 **useBitrateGraph** (`src/hooks/useBitrateGraph.ts`) — Hook that computes per-segment bitrate for the filmstrip graph. Data sources in priority order:
@@ -73,10 +73,10 @@ Formula: `bitrateBps = (bytes × 8) / segmentDuration`. Listens to `variantchang
 
 **filmstripFrameMapping** (`src/utils/filmstripFrameMapping.ts`) — Pure functions modeling the save-frame pipeline for testability. Three stages that must agree:
 1. Paint loop frame assignment: slot index → `captureIndices[arrIdx]` → which frame is displayed
-2. Context-menu snap: click pixel → snapped time (using exact CTS timestamps or FPS approximation)
-3. Worker CTS match: snapped time → closest frame CTS → decoded frame
+2. Context-menu snap: click pixel → slot → `arrIdx` → normalized `framePosition` (0..1)
+3. Worker frame capture: `framePosition` → `Math.round(position * (totalFrames - 1))` → display-order output index
 
-The diagnostic test (`filmstripFrameMapping.test.ts`) runs the full pipeline at every zoom level (packed through max) with composition time offsets (0–3 frames) and reports mismatches. Run with `npx vitest run src/utils/filmstripFrameMapping.test.ts`.
+The diagnostic test (`filmstripFrameMapping.test.ts`) runs the full pipeline at every zoom level (packed through max) with composition time offsets (0–3 frames) and cross-stream CTS mismatches. Run with `npx vitest run src/utils/filmstripFrameMapping.test.ts`.
 
 **cencDecrypt** (`src/workers/cencDecrypt.ts`) — CENC decryption utility for ClearKey DRM in the thumbnail worker. Parses `tenc` and `schm` boxes from mp4box's tree, manually parses `senc` boxes from raw segment bytes (mp4box's senc parser is disabled), and performs AES-128-CTR decryption via Web Crypto API with subsample support. Key details:
 - Only supports `cenc` scheme (AES-CTR); bails on `cbcs`/`cbc1`
@@ -86,16 +86,32 @@ The diagnostic test (`filmstripFrameMapping.test.ts`) runs the full pipeline at 
 
 **Utilities** in `src/utils/`: `formatTime`, `formatTrackRes`, `safeNum`, `formatBitrate` — small pure functions.
 
+## Save Frame Pipeline
+
+The "Save frame" feature must capture the exact frame the user sees in the filmstrip. This is non-trivial because the filmstrip thumbnails come from the **lowest-quality** stream (e.g. 240p) while saving uses the **active** stream (e.g. 1080p), and these streams can have different composition time offsets.
+
+**The problem**: CTS-based matching fails across streams. If the 240p stream has no B-frames (CTTS offset=0) and the 1080p stream uses IBBP (CTTS offset=2), frame N has CTS `N/fps` in one stream but `(N+2)/fps` in the other. Sending a CTS time from the thumbnail stream to the active stream produces systematic off-by-N errors.
+
+**The solution**: Position-based frame identification. Instead of sending a CTS timestamp, the component computes a **normalized frame position** (0.0 = first frame, 1.0 = last frame) from the bitmap array index, and the worker maps it to a display-order output index in whatever stream it decodes from. Display-order frame indices are consistent across renditions of the same segment.
+
+Pipeline steps:
+1. **Paint loop** draws bitmap at `arrIdx = round(slotJ / (slotCount-1) * (intraCount-1))`
+2. **Context menu** computes `framePosition = arrIdx / (intraCount-1)` — a stream-independent 0..1 value
+3. **Worker** receives `framePosition`, computes `targetIdx = round(position * (totalFrames-1))`, captures the Nth VideoDecoder output
+
+For **packed mode** (one thumbnail per segment), `framePosition = 0` (the I-frame / first frame).
+
 ## Frame Analysis Pitfalls
 
 Things to watch out for when working with frame-level video data:
 
 - **Composition time offsets (CTTS)**: With B-frame reordering, mp4box CTS values are shifted by N frame durations past the segment start time. Never compute frame CTS as `segStart + frameIdx / fps` — always use actual CTS from mp4box samples. This shift varies by encoder and GOP structure.
+- **Cross-stream CTS mismatch**: The thumbnail stream and active stream may have different CTTS offsets (e.g. 240p IPP offset=0 vs 1080p IBBP offset=2). Never use CTS from one stream to identify frames in another. Use normalized frame position (0..1) instead — display-order frame indices are consistent across renditions.
 - **Decode order ≠ display order**: mp4box returns samples in decode (DTS) order. VideoDecoder outputs in display (CTS) order. The `classifyFrameTypes` heuristic works on decode order but returns results sorted by CTS.
 - **Different renditions, different GOPs**: A 240p stream may use IPP structure while the 1080p stream uses IBBP. Always classify frame types from the active (watched) stream, not the thumbnail stream.
-- **VideoDecoder output counting is fragile**: Don't rely on output frame count matching input sample count. Match decoded frames by `frame.timestamp` against the target CTS instead.
-- **Filmstrip click time ≠ frame CTS**: The pixel-to-time conversion from a filmstrip click gives a timeline position, not a frame's actual CTS. Use exact CTS timestamps from the worker (stored in `intraTimestamps`) to snap click times to real frame positions.
-- **Packed vs gap mode**: At low zoom the filmstrip shows one I-frame per segment (packed); zoomed in it shows multiple intra-frames per segment (gap). The save-frame context menu must snap differently for each mode.
+- **VideoDecoder output counting**: When feeding ALL samples to a one-shot decoder for save-frame, output counting by display-order index is reliable and preferred over CTS matching (which breaks across streams). For partial feeds or streaming decode, use timestamp matching instead.
+- **Filmstrip click time ≠ frame CTS**: The pixel-to-time conversion from a filmstrip click gives a timeline position, not a frame's actual CTS. The context menu maps click position → slot → arrIdx → framePosition, bypassing CTS entirely for the save path.
+- **Packed vs gap mode**: At low zoom the filmstrip shows one I-frame per segment (packed); zoomed in it shows multiple intra-frames per segment (gap). Packed mode always saves the first frame (position=0); gap mode computes position from the slot's bitmap array index.
 
 ## Testing
 

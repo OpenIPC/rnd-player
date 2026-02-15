@@ -8,7 +8,7 @@ const THROTTLE_MS = 200;
 
 export type RequestRangeFn = (startTime: number, endTime: number, priorityTime: number) => void;
 
-export type SaveFrameFn = (time: number) => Promise<ImageBitmap | null>;
+export type SaveFrameFn = (time: number, framePosition?: number) => Promise<ImageBitmap | null>;
 
 export type RequestIntraBatchFn = (
   items: { segmentIndex: number; count: number }[],
@@ -241,7 +241,7 @@ export function useThumbnailGenerator(
 
   // saveFrame: sends a one-shot decode request to the worker for the active stream
   const saveFrame = useCallback<SaveFrameFn>(
-    async (time: number) => {
+    async (time: number, framePosition?: number) => {
       const worker = workerRef.current;
       if (!worker || !player) return null;
 
@@ -304,6 +304,7 @@ export function useThumbnailGenerator(
           codec,
           width,
           height,
+          framePosition,
         } satisfies WorkerRequest);
       });
     },

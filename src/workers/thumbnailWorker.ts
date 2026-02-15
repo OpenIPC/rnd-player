@@ -575,7 +575,7 @@ async function processQueue() {
  */
 async function handleSaveFrame(msg: Extract<WorkerRequest, { type: "saveFrame" }>) {
   try {
-    const { time, initSegmentUrl, segments: segs, codec, width, height } = msg;
+    const { time, initSegmentUrl, segments: segs, codec, width, height, framePosition } = msg;
 
     // 1. Find the segment containing the requested time (or nearest)
     let targetSeg = segs[0];
@@ -615,21 +615,38 @@ async function handleSaveFrame(msg: Extract<WorkerRequest, { type: "saveFrame" }
       return;
     }
 
-    // 4. Build display-order list to find the sample closest to requested time.
-    //    VideoDecoder outputs in CTS (display) order, so we need the display-order
-    //    index of the target frame.
-    const displayOrder = allSamples
-      .map((s, i) => ({ decodeIdx: i, cts: s.cts, timescale: s.timescale }))
-      .sort((a, b) => a.cts - b.cts);
+    // 4. Determine which output frame to capture.
+    //    VideoDecoder outputs in CTS (display) order.
+    //
+    //    When framePosition is provided (0.0 = first, 1.0 = last), use it
+    //    to compute the display-order index directly. This avoids cross-stream
+    //    CTS mismatches: the thumbnail stream (which determines what the user
+    //    sees) may have a different CTTS offset than the active stream (which
+    //    we decode here for saving).
+    //
+    //    When framePosition is not provided, fall back to CTS matching.
+    const totalFrames = allSamples.length;
+    let targetDisplayIdx: number;
 
-    let targetDisplayIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < displayOrder.length; i++) {
-      const sampleTime = displayOrder[i].cts / displayOrder[i].timescale;
-      const dist = Math.abs(sampleTime - time);
-      if (dist < bestDist) {
-        bestDist = dist;
-        targetDisplayIdx = i;
+    if (framePosition != null) {
+      // Position-based: map normalized position to display-order frame index
+      targetDisplayIdx = Math.round(framePosition * (totalFrames - 1));
+      targetDisplayIdx = Math.max(0, Math.min(totalFrames - 1, targetDisplayIdx));
+    } else {
+      // CTS-based fallback
+      const displayOrder = allSamples
+        .map((s, i) => ({ decodeIdx: i, cts: s.cts, timescale: s.timescale }))
+        .sort((a, b) => a.cts - b.cts);
+
+      targetDisplayIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < displayOrder.length; i++) {
+        const sampleTime = displayOrder[i].cts / displayOrder[i].timescale;
+        const dist = Math.abs(sampleTime - time);
+        if (dist < bestDist) {
+          bestDist = dist;
+          targetDisplayIdx = i;
+        }
       }
     }
 
@@ -645,25 +662,17 @@ async function handleSaveFrame(msg: Extract<WorkerRequest, { type: "saveFrame" }
     }
 
     // 6. One-shot VideoDecoder at full resolution — feed ALL samples,
-    //    capture only the output whose timestamp matches the target.
-    //    Match by timestamp rather than counting outputs, because the
-    //    decoder may reorder or skip frames unpredictably.
-    const targetTimestampUs =
-      (displayOrder[targetDisplayIdx].cts / displayOrder[targetDisplayIdx].timescale) * 1_000_000;
-    // Half a frame duration as tolerance for timestamp comparison
-    const frameDurUs = allSamples.length > 1
-      ? Math.abs(displayOrder[1].cts - displayOrder[0].cts) / displayOrder[0].timescale * 1_000_000
-      : 1_000_000;
-    const tolerance = frameDurUs / 2;
-
+    //    capture the Nth output frame (display-order index).
     const bitmap = await new Promise<ImageBitmap | null>((resolve) => {
       const canvas = new OffscreenCanvas(width, height);
       const ctx2d = canvas.getContext("2d")!;
       let resolved = false;
+      let outputCount = 0;
 
       const dec = new VideoDecoder({
         output: (frame: VideoFrame) => {
-          if (!resolved && Math.abs(frame.timestamp - targetTimestampUs) < tolerance) {
+          const currentIdx = outputCount++;
+          if (!resolved && currentIdx === targetDisplayIdx) {
             ctx2d.drawImage(frame, 0, 0, width, height);
             frame.close();
             resolved = true;

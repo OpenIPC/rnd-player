@@ -60,6 +60,8 @@ export default function FilmstripTimeline({
   showBitrateGraphRef.current = showBitrateGraph;
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; time: number } | null>(null);
   const ctxMenuTimeRef = useRef(0);
+  /** Normalized frame position (0..1) for position-based save, or undefined for packed mode */
+  const ctxMenuFramePositionRef = useRef<number | undefined>(undefined);
   const [gopTooltip, setGopTooltip] = useState<{ x: number; y: number; segIdx: number } | null>(null);
   const gopTooltipRef = useRef<{ x: number; y: number; segIdx: number } | null>(null);
 
@@ -204,7 +206,7 @@ export default function FilmstripTimeline({
 
     // Worker-based decode: works for any time and handles DRM
     try {
-      const bitmap = await workerSaveFrame(secs);
+      const bitmap = await workerSaveFrame(secs, ctxMenuFramePositionRef.current);
       if (!bitmap) return;
       const canvas = document.createElement("canvas");
       canvas.width = bitmap.width;
@@ -962,15 +964,15 @@ export default function FilmstripTimeline({
       let clampedTime = Math.max(0, Math.min(dur, clickTime));
 
       // Snap to the actual frame displayed at this pixel position.
-      // Without snapping, the raw click time maps to the segment midpoint
-      // (packed mode) or an interpolated position that doesn't match any
-      // real frame CTS, causing the wrong frame to be saved.
-      // We use exact CTS timestamps from the worker (which include
-      // composition time offsets from B-frame reordering) to avoid
-      // systematic off-by-N errors.
+      // We compute two things:
+      // 1. clampedTime — snapped to the segment start for segment lookup
+      // 2. framePosition — normalized position (0..1) within the segment's
+      //    frames, so the worker can capture the correct frame by display-order
+      //    index regardless of CTS offset differences between streams
       const times = segmentTimesRef.current;
       const pxPerSec = pxPerSecRef.current;
       const thumbW = thumbWRef.current;
+      let framePosition: number | undefined;
 
       if (times.length > 0 && thumbW > 0) {
         // Find which segment the click falls in
@@ -989,34 +991,36 @@ export default function FilmstripTimeline({
         const segWidth = segDuration * pxPerSec;
 
         if (segWidth <= thumbW) {
-          // Packed mode: the displayed frame is the I-frame at segment start
+          // Packed mode: the displayed frame is the I-frame (first frame)
           clampedTime = segStart;
+          framePosition = 0;
         } else {
-          // Gap mode: find which slot the click falls in and map to the
-          // exact CTS of the intra-frame bitmap displayed at that slot
+          // Gap mode: find which slot the click falls in and compute
+          // the normalized frame position for position-based save
           const count = Math.max(2, Math.ceil(segWidth / thumbW));
           const slotW = segWidth / count;
           const relPx = (clampedTime - segStart) * pxPerSec;
           const j = Math.min(count - 1, Math.max(0, Math.floor(relPx / slotW)));
 
-          const ctsList = intraTimestampsRef.current.get(segIdx);
+          const intraArr = intraFramesMapRef.current.get(segIdx);
+          const intraCount = intraArr?.length ?? 0;
 
-          if (ctsList && ctsList.length > 1) {
-            // Use exact CTS from the worker — accounts for composition
-            // time offsets and avoids fps-based approximation errors
-            const arrIdx = Math.round((j / (count - 1)) * (ctsList.length - 1));
-            const clampedIdx = Math.min(arrIdx, ctsList.length - 1);
-            clampedTime = ctsList[clampedIdx];
-          } else if (ctsList && ctsList.length === 1) {
-            clampedTime = ctsList[0];
+          if (intraCount > 1) {
+            // Compute arrIdx (same formula as paint loop)
+            const arrIdx = Math.round((j / (count - 1)) * (intraCount - 1));
+            // Normalized position: arrIdx / (intraCount - 1) → 0..1
+            framePosition = arrIdx / (intraCount - 1);
           } else {
-            // No CTS data yet: snap to segment start (I-frame)
-            clampedTime = segStart;
+            framePosition = 0;
           }
+
+          // Also snap clampedTime for segment lookup by the worker
+          clampedTime = segStart + (segDuration * (j + 0.5)) / count;
         }
       }
 
       ctxMenuTimeRef.current = clampedTime;
+      ctxMenuFramePositionRef.current = framePosition;
       setCtxMenu({ x: e.clientX, y: e.clientY, time: clampedTime });
     };
     wrapper.addEventListener("contextmenu", onContextMenu);
