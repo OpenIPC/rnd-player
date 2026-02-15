@@ -23,7 +23,7 @@ interface FilmstripTimelineProps {
 const RULER_HEIGHT = 22;
 const THUMB_ROW_TOP = RULER_HEIGHT;
 const GRAPH_HEIGHT = 48;
-const MIN_PX_PER_SEC = 4;
+const MIN_PX_PER_SEC_ABSOLUTE = 4;
 const DEFAULT_PX_PER_SEC = 16;
 const PLAYHEAD_COLOR_CANVAS = "rgb(71, 13, 179)";
 const MARKER_COLOR = "#f5c518";
@@ -273,10 +273,8 @@ export default function FilmstripTimeline({
       const rect = wrapper!.getBoundingClientRect();
       const w = rect.width;
       const h = rect.height;
-      const pxPerSec = pxPerSecRef.current;
       const dur = durationRef.current;
       const time = currentTimeRef.current;
-      const scrollLeft = scrollLeftRef.current;
 
       ctx.clearRect(0, 0, w, h);
 
@@ -284,6 +282,15 @@ export default function FilmstripTimeline({
         rafRef.current = requestAnimationFrame(paint);
         return;
       }
+
+      // Clamp zoom so the video always fills the viewport at max zoom-out
+      const minPxPerSec = w > 0 && dur > 0 ? Math.max(MIN_PX_PER_SEC_ABSOLUTE, w / dur) : MIN_PX_PER_SEC_ABSOLUTE;
+      if (pxPerSecRef.current < minPxPerSec) {
+        pxPerSecRef.current = minPxPerSec;
+      }
+
+      const pxPerSec = pxPerSecRef.current;
+      const scrollLeft = scrollLeftRef.current;
 
       // Auto-follow playhead
       if (followModeRef.current && !isDraggingRef.current) {
@@ -495,17 +502,20 @@ export default function FilmstripTimeline({
             let bmp: ImageBitmap | undefined;
             let frameType: FrameType = "I";
 
-            if (j === 0) {
-              bmp = thumbnailsRef.current.get(thumbSegTime);
-              frameType = "I";
-            } else if (intraArr.length > 0) {
-              const arrIdx = count > 2
-                ? Math.round(((j - 1) / (count - 2)) * (intraArr.length - 1))
+            if (intraArr.length > 0) {
+              // Intra-frames are in display (CTS) order — use them for all
+              // slots so B-frames at the segment start are shown correctly.
+              const arrIdx = count > 1
+                ? Math.round((j / (count - 1)) * (intraArr.length - 1))
                 : 0;
               if (arrIdx >= 0 && arrIdx < intraArr.length) {
                 bmp = intraArr[arrIdx];
                 frameType = intraTypes[arrIdx] ?? "P";
               }
+            } else if (j === 0) {
+              // Fallback: only have the I-frame thumbnail (intra not loaded yet)
+              bmp = thumbnailsRef.current.get(thumbSegTime);
+              frameType = "I";
             }
 
             if (bmp && bmp.width > 0) {
@@ -550,8 +560,8 @@ export default function FilmstripTimeline({
           }
 
           // Only request intra-frames for visible segments
-          if (segVisible && count > 1 && intraArr.length < count - 1) {
-            neededIntra.push({ segmentIndex: thumbSegIdx, count: count - 1 });
+          if (segVisible && intraArr.length < count) {
+            neededIntra.push({ segmentIndex: thumbSegIdx, count });
           }
         }
       }
@@ -783,9 +793,11 @@ export default function FilmstripTimeline({
         const mouseX = e.clientX - rect.left;
         const timeBefore = (mouseX + scrollLeftRef.current) / pxPerSecRef.current;
 
+        const dur = durationRef.current;
+        const minPxPerSec = w > 0 && dur > 0 ? Math.max(MIN_PX_PER_SEC_ABSOLUTE, w / dur) : MIN_PX_PER_SEC_ABSOLUTE;
         const maxPxPerSec = thumbWRef.current > 0 ? fpsRef.current * thumbWRef.current : 5000;
         pxPerSecRef.current = Math.max(
-          MIN_PX_PER_SEC,
+          minPxPerSec,
           Math.min(maxPxPerSec, pxPerSecRef.current * zoomFactor),
         );
 
@@ -829,9 +841,11 @@ export default function FilmstripTimeline({
 
       const timeBefore = (anchorX + scrollLeftRef.current) / pxPerSecRef.current;
 
+      const dur = durationRef.current;
+      const minPxPerSec = w > 0 && dur > 0 ? Math.max(MIN_PX_PER_SEC_ABSOLUTE, w / dur) : MIN_PX_PER_SEC_ABSOLUTE;
       const maxPxPerSec = thumbWRef.current > 0 ? fpsRef.current * thumbWRef.current : 5000;
       pxPerSecRef.current = Math.max(
-        MIN_PX_PER_SEC,
+        minPxPerSec,
         Math.min(maxPxPerSec, pxPerSecRef.current * zoomFactor),
       );
 

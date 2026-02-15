@@ -192,13 +192,15 @@ async function handleGenerateIntra(segIdx: number, count: number) {
       .map((s, i) => ({ cts: s.cts, type: decodeTypes[i] }))
       .sort((a, b) => a.cts - b.cts);
 
-    // Determine which output frames to capture (skip the first one — it's the I-frame thumbnail)
+    // Determine which output frames to capture — evenly spaced across all
+    // frames in display order. VideoDecoder outputs in CTS (display) order,
+    // so index 0 is the first frame in presentation order (a B-frame when
+    // B-frames are present), NOT the I-frame.
     const totalFrames = allSamples.length;
     const captureIndices = new Set<number>();
     for (let i = 0; i < count; i++) {
-      // Evenly space captures across the non-sync range (indices 1..totalFrames-1)
-      const idx = Math.round(((i + 1) / (count + 1)) * (totalFrames - 1));
-      if (idx > 0 && idx < totalFrames) captureIndices.add(idx);
+      const idx = Math.round((i / (count - 1 || 1)) * (totalFrames - 1));
+      if (idx >= 0 && idx < totalFrames) captureIndices.add(idx);
     }
 
     // Reuse a single canvas for all captures in this segment
