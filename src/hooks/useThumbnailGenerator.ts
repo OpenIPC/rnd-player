@@ -10,6 +10,22 @@ export type RequestRangeFn = (startTime: number, endTime: number, priorityTime: 
 
 export type SaveFrameFn = (time: number, framePosition?: number) => Promise<ImageBitmap | null>;
 
+export interface SegmentFrame {
+  frameIndex: number;
+  totalFrames: number;
+  bitmap: ImageBitmap;
+  frameType: FrameType;
+  sizeBytes: number;
+}
+
+export type DecodeSegmentFramesFn = (
+  time: number,
+  onFrame: (frame: SegmentFrame) => void,
+  onDone: (totalFrames: number) => void,
+) => string | null;
+
+export type CancelDecodeSegmentFn = (requestId: string) => void;
+
 export type RequestIntraBatchFn = (
   items: { segmentIndex: number; count: number }[],
   priorityTime: number,
@@ -28,6 +44,8 @@ export interface ThumbnailGeneratorResult {
   gopStructures: Map<number, GopFrame[]>;
   requestGop: (segmentIndex: number) => void;
   requestIntraBatch: RequestIntraBatchFn;
+  decodeSegmentFrames: DecodeSegmentFramesFn;
+  cancelDecodeSegment: CancelDecodeSegmentFn;
 }
 
 function isWebCodecsSupported(): boolean {
@@ -89,6 +107,7 @@ export function useThumbnailGenerator(
   const intraTimestampsRef = useRef<Map<number, number[]>>(new Map());
   const gopStructuresRef = useRef<Map<number, GopFrame[]>>(new Map());
   const lastSentIntraRef = useRef<string>("");
+  const decodeCallbacksRef = useRef<Map<string, { onFrame: (frame: SegmentFrame) => void; onDone: (totalFrames: number) => void }>>(new Map());
 
   // Track visible range for eviction
   const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
@@ -311,6 +330,74 @@ export function useThumbnailGenerator(
     [player],
   );
 
+  const decodeSegmentFrames = useCallback<DecodeSegmentFramesFn>(
+    (time, onFrame, onDone) => {
+      const worker = workerRef.current;
+      if (!worker || !player) return null;
+
+      const stream = getActiveVideoStream(player);
+      if (!stream) return null;
+
+      const codec = stream.codecs;
+      const width = stream.width ?? 0;
+      const height = stream.height ?? 0;
+      if (!codec || !width || !height) return null;
+
+      const segmentIndex = stream.segmentIndex;
+      if (!segmentIndex) return null;
+
+      const iter = segmentIndex[Symbol.iterator]();
+      const firstResult = iter.next();
+      if (firstResult.done) return null;
+      const firstRef = firstResult.value;
+      if (!firstRef) return null;
+
+      const initSegmentUrl = extractInitSegmentUrl(firstRef);
+      if (!initSegmentUrl) return null;
+
+      const segs: { url: string; startTime: number; endTime: number }[] = [];
+      for (const ref of segmentIndex) {
+        if (!ref) continue;
+        const uris = ref.getUris();
+        if (uris.length === 0) continue;
+        segs.push({
+          url: uris[0],
+          startTime: ref.getStartTime(),
+          endTime: ref.getEndTime(),
+        });
+      }
+      if (segs.length === 0) return null;
+
+      const requestId = crypto.randomUUID();
+      decodeCallbacksRef.current.set(requestId, { onFrame, onDone });
+
+      worker.postMessage({
+        type: "decodeSegmentFrames",
+        requestId,
+        time,
+        initSegmentUrl,
+        segments: segs,
+        codec,
+        width,
+        height,
+      } satisfies WorkerRequest);
+
+      return requestId;
+    },
+    [player],
+  );
+
+  const cancelDecodeSegment = useCallback<CancelDecodeSegmentFn>(
+    (requestId) => {
+      const worker = workerRef.current;
+      if (worker) {
+        worker.postMessage({ type: "cancelDecodeSegment", requestId } satisfies WorkerRequest);
+      }
+      decodeCallbacksRef.current.delete(requestId);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!enabled || !player || !videoEl || !supported || encrypted) {
       return cleanup;
@@ -437,6 +524,27 @@ export function useThumbnailGenerator(
               setGopStructures(new Map(gopStructuresRef.current));
               break;
             }
+            case "segmentFrame": {
+              const cb = decodeCallbacksRef.current.get(msg.requestId);
+              if (cb) {
+                cb.onFrame({
+                  frameIndex: msg.frameIndex,
+                  totalFrames: msg.totalFrames,
+                  bitmap: msg.bitmap,
+                  frameType: msg.frameType,
+                  sizeBytes: msg.sizeBytes,
+                });
+              }
+              break;
+            }
+            case "segmentFramesDone": {
+              const cb = decodeCallbacksRef.current.get(msg.requestId);
+              if (cb) {
+                cb.onDone(msg.totalFrames);
+                decodeCallbacksRef.current.delete(msg.requestId);
+              }
+              break;
+            }
             case "ready":
               workerReadyRef.current = true;
               break;
@@ -501,5 +609,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch };
+  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch, decodeSegmentFrames, cancelDecodeSegment };
 }

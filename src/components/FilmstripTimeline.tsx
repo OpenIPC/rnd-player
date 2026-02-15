@@ -8,6 +8,7 @@ import type { TimecodeMode } from "../utils/formatTime";
 import { formatBitrate } from "../utils/formatBitrate";
 import { SaveSegmentIcon } from "./icons";
 import type { FrameType } from "../types/thumbnailWorker.types";
+import SegmentFramesModal from "./SegmentFramesModal";
 
 interface FilmstripTimelineProps {
   videoEl: HTMLVideoElement;
@@ -65,6 +66,7 @@ export default function FilmstripTimeline({
   const ctxMenuFramePositionRef = useRef<number | undefined>(undefined);
   const [gopTooltip, setGopTooltip] = useState<{ x: number; y: number; segIdx: number; segDuration: number } | null>(null);
   const gopTooltipRef = useRef<{ x: number; y: number; segIdx: number; segDuration: number } | null>(null);
+  const [segmentModal, setSegmentModal] = useState<{ startTime: number; endTime: number } | null>(null);
 
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
@@ -74,7 +76,7 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch } =
+  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch, decodeSegmentFrames, cancelDecodeSegment } =
     useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
@@ -764,6 +766,29 @@ export default function FilmstripTimeline({
     const onPointerDown = (e: PointerEvent) => {
       // Ignore right-click
       if (e.button !== 0) return;
+
+      // Check if click is in bitrate graph region — open segment modal instead of seeking
+      if (showBitrateGraphRef.current) {
+        const rect = canvas.getBoundingClientRect();
+        const localY = e.clientY - rect.top;
+        const localX = e.clientX - rect.left;
+        const h = rect.height;
+        const thumbH = h - RULER_HEIGHT - GRAPH_HEIGHT;
+        const graphTop = RULER_HEIGHT + thumbH;
+
+        if (localY >= graphTop && localY <= h) {
+          const time = (localX + scrollLeftRef.current) / pxPerSecRef.current;
+          const bd = bitrateDataRef.current;
+          const segs = bd.segments;
+          for (let i = 0; i < segs.length; i++) {
+            if (time >= segs[i].startTime && time < segs[i].endTime) {
+              setSegmentModal({ startTime: segs[i].startTime, endTime: segs[i].endTime });
+              return;
+            }
+          }
+        }
+      }
+
       isDraggingRef.current = true;
       setFollowMode(false);
       canvas.setPointerCapture(e.pointerId);
@@ -795,6 +820,7 @@ export default function FilmstripTimeline({
       // Only show tooltip when hovering over the bitrate graph region
       if (localY < graphTop || localY > h) {
         if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
+        canvas.style.cursor = "crosshair";
         return;
       }
 
@@ -811,8 +837,11 @@ export default function FilmstripTimeline({
 
       if (hitIdx < 0) {
         if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
+        canvas.style.cursor = "crosshair";
         return;
       }
+
+      canvas.style.cursor = "pointer";
 
       // Map bitrate-graph segment index to nearest thumbnail segment index
       const times = segmentTimesRef.current;
@@ -1145,6 +1174,15 @@ export default function FilmstripTimeline({
           </div>
         );
       })()}
+      {segmentModal && (
+        <SegmentFramesModal
+          segmentStartTime={segmentModal.startTime}
+          segmentEndTime={segmentModal.endTime}
+          decodeSegmentFrames={decodeSegmentFrames}
+          cancelDecodeSegment={cancelDecodeSegment}
+          onClose={() => setSegmentModal(null)}
+        />
+      )}
     </div>
   );
 }

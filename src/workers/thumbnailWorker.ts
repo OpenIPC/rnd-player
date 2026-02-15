@@ -33,6 +33,8 @@ let activeInitData: ArrayBuffer | null = null;
 let activeSegments: { url: string; startTime: number; endTime: number }[] = [];
 /** Cache of frame types per active-stream segment URL to avoid re-fetching */
 const activeFrameTypeCache = new Map<string, GopFrame[]>();
+/** Active decode-segment request IDs for cancellation */
+const cancelledDecodeRequests = new Set<string>();
 
 function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefined {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -570,6 +572,160 @@ async function processQueue() {
 }
 
 /**
+ * Decode ALL frames from the active stream at full resolution for a given
+ * segment, posting each frame progressively as a `segmentFrame` message.
+ */
+async function handleDecodeSegmentFrames(msg: Extract<WorkerRequest, { type: "decodeSegmentFrames" }>) {
+  const { requestId, time, initSegmentUrl, segments: segs, codec, width, height } = msg;
+
+  try {
+    // 1. Find segment containing the requested time
+    let targetSeg = segs[0];
+    for (const seg of segs) {
+      if (time >= seg.startTime && time < seg.endTime) {
+        targetSeg = seg;
+        break;
+      }
+      if (Math.abs(seg.startTime - time) < Math.abs(targetSeg.startTime - time)) {
+        targetSeg = seg;
+      }
+    }
+
+    // 2. Fetch init segment and extract codec description
+    const initBuf = await fetchBuffer(initSegmentUrl);
+    if (cancelledDecodeRequests.has(requestId)) { cancelledDecodeRequests.delete(requestId); return; }
+
+    let description: Uint8Array | undefined;
+    {
+      const mp4 = createFile();
+      const buf = MP4BoxBuffer.fromArrayBuffer(initBuf.slice(0), 0);
+      mp4.onReady = (info) => {
+        const vt = info.videoTracks[0];
+        if (vt) description = extractDescription(mp4, vt.id);
+      };
+      mp4.appendBuffer(buf);
+      mp4.flush();
+      mp4.stop();
+    }
+
+    // 3. Fetch media segment, extract ALL samples
+    const mediaData = await fetchBuffer(targetSeg.url);
+    if (cancelledDecodeRequests.has(requestId)) { cancelledDecodeRequests.delete(requestId); return; }
+
+    const allSamples = await extractAllSamplesFromSegment(initBuf, mediaData);
+    if (allSamples.length === 0) {
+      post({ type: "segmentFramesDone", requestId, totalFrames: 0 });
+      return;
+    }
+
+    // 4. Classify frame types (display order)
+    const gopStructure = classifyFrameTypes(allSamples);
+    const totalFrames = allSamples.length;
+
+    // 5. Parse SENC if encrypted
+    let sencSamples: Awaited<ReturnType<typeof parseSencFromSegment>> | null = null;
+    if (cryptoKey && tencInfo) {
+      try {
+        sencSamples = parseSencFromSegment(mediaData, tencInfo.defaultPerSampleIVSize);
+      } catch {
+        post({ type: "segmentFramesDone", requestId, totalFrames: 0 });
+        return;
+      }
+    }
+
+    // 6. One-shot VideoDecoder at full resolution — capture every output
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx2d = canvas.getContext("2d")!;
+    let outputCount = 0;
+
+    const bitmapQueue: Promise<void>[] = [];
+
+    const dec = new VideoDecoder({
+      output: (frame: VideoFrame) => {
+        const currentIdx = outputCount++;
+        ctx2d.drawImage(frame, 0, 0, width, height);
+        frame.close();
+
+        if (cancelledDecodeRequests.has(requestId)) return;
+
+        const frameType = gopStructure[currentIdx]?.type ?? "P";
+        const sizeBytes = gopStructure[currentIdx]?.size ?? 0;
+        const idx = currentIdx;
+
+        const p = createImageBitmap(canvas).then((bitmap) => {
+          if (cancelledDecodeRequests.has(requestId)) {
+            bitmap.close();
+            return;
+          }
+          post(
+            { type: "segmentFrame", requestId, frameIndex: idx, totalFrames, bitmap, frameType, sizeBytes },
+            [bitmap],
+          );
+        });
+        bitmapQueue.push(p);
+      },
+      error: () => { /* best-effort */ },
+    });
+
+    const config: VideoDecoderConfig = {
+      codec,
+      codedWidth: width,
+      codedHeight: height,
+      ...(description ? { description } : {}),
+    };
+
+    dec.configure(config);
+
+    // Feed all samples
+    for (let i = 0; i < allSamples.length; i++) {
+      if (cancelledDecodeRequests.has(requestId)) break;
+
+      const sample = allSamples[i];
+      let sampleBytes: Uint8Array = new Uint8Array(sample.data!);
+
+      if (cryptoKey && tencInfo && sencSamples && sencSamples.length > 0) {
+        try {
+          const sencIdx = sample.number_in_traf ?? sample.number;
+          const sencEntry = sencSamples[sencIdx];
+          if (sencEntry) {
+            const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
+            if (iv && iv.length > 0) {
+              sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      dec.decode(
+        new EncodedVideoChunk({
+          type: sample.is_sync ? "key" : "delta",
+          timestamp: (sample.cts / sample.timescale) * 1_000_000,
+          data: sampleBytes,
+        }),
+      );
+    }
+
+    if (!cancelledDecodeRequests.has(requestId)) {
+      await dec.flush();
+    }
+    try { dec.close(); } catch { /* */ }
+
+    // Wait for all bitmap posts to complete
+    await Promise.all(bitmapQueue);
+
+    if (!cancelledDecodeRequests.has(requestId)) {
+      post({ type: "segmentFramesDone", requestId, totalFrames });
+    }
+    cancelledDecodeRequests.delete(requestId);
+  } catch {
+    cancelledDecodeRequests.delete(requestId);
+    post({ type: "segmentFramesDone", requestId, totalFrames: 0 });
+  }
+}
+
+/**
  * One-shot frame capture at the requested time using the active stream's
  * segments. Reuses module-level cryptoKey/tencInfo for DRM decryption.
  */
@@ -771,6 +927,18 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     handleSaveFrame(msg).catch(() => {
       post({ type: "saveFrameResult", bitmap: null });
     });
+    return;
+  }
+
+  if (msg.type === "decodeSegmentFrames") {
+    handleDecodeSegmentFrames(msg).catch(() => {
+      post({ type: "segmentFramesDone", requestId: msg.requestId, totalFrames: 0 });
+    });
+    return;
+  }
+
+  if (msg.type === "cancelDecodeSegment") {
+    cancelledDecodeRequests.add(msg.requestId);
     return;
   }
 

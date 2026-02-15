@@ -40,6 +40,17 @@ export type WorkerRequest =
     }
   | { type: "updateIntraQueue"; items: { segmentIndex: number; count: number }[] }
   | { type: "requestGop"; segmentIndex: number }
+  | {
+      type: "decodeSegmentFrames";
+      requestId: string;
+      time: number;
+      initSegmentUrl: string;
+      segments: { url: string; startTime: number; endTime: number }[];
+      codec: string;
+      width: number;
+      height: number;
+    }
+  | { type: "cancelDecodeSegment"; requestId: string }
   | { type: "abort" };
 
 /** Messages from thumbnail worker to main thread */
@@ -49,4 +60,6 @@ export type WorkerResponse =
   | { type: "ready" }
   | { type: "saveFrameResult"; bitmap: ImageBitmap | null }
   | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[]; gopStructure: GopFrame[]; timestamps: number[] }
-  | { type: "gopStructure"; segmentIndex: number; gopStructure: GopFrame[] };
+  | { type: "gopStructure"; segmentIndex: number; gopStructure: GopFrame[] }
+  | { type: "segmentFrame"; requestId: string; frameIndex: number; totalFrames: number; bitmap: ImageBitmap; frameType: FrameType; sizeBytes: number }
+  | { type: "segmentFramesDone"; requestId: string; totalFrames: number };
