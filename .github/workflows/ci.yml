@@ -205,11 +205,11 @@ jobs:
           path: site/screenshots/
           merge-multiple: true
 
-      - name: Upload site archive
+      - name: Upload site archive (versioned builds only)
         uses: actions/upload-artifact@v4
         with:
           name: site-archive
-          path: site/
+          path: site/v*/
           retention-days: 90
 
       - uses: actions/configure-pages@v5
