@@ -16,7 +16,7 @@ OUT_DIR="${OUT_DIR//\\//}"
 
 mkdir -p "$OUT_DIR"
 
-DURATION=10
+DURATION=60
 FPS=30
 SOURCE="$OUT_DIR/source_1080p.mp4"
 
