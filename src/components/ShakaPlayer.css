@@ -524,7 +524,7 @@ video::-webkit-media-text-track-container {
 /* ── Context menu (right-click) ── */
 .vp-context-menu {
   position: fixed;
-  z-index: 20;
+  z-index: 10001;
   background: rgba(20, 20, 20, 0.95);
   border-radius: 4px;
   padding: 4px 0;
