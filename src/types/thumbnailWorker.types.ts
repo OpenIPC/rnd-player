@@ -11,6 +11,9 @@ export type WorkerRequest =
       height: number;
       thumbnailWidth: number;
       clearKeyHex?: string;
+      /** Active (watched) stream info for frame type classification */
+      activeInitSegmentUrl?: string;
+      activeSegments?: { url: string; startTime: number; endTime: number }[];
     }
   | { type: "updateQueue"; segmentIndices: number[] }
   | {

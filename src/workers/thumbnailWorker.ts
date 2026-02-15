@@ -29,6 +29,10 @@ let tencInfo: TencInfo | null = null;
 let decoderConfig: VideoDecoderConfig | null = null;
 let currentIntraQueue: { segmentIndex: number; count: number }[] = [];
 let intraProcessing = false;
+let activeInitData: ArrayBuffer | null = null;
+let activeSegments: { url: string; startTime: number; endTime: number }[] = [];
+/** Cache of frame types per active-stream segment URL to avoid re-fetching */
+const activeFrameTypeCache = new Map<string, FrameType[]>();
 
 function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefined {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -145,6 +149,66 @@ function extractAllSamplesFromSegment(
 }
 
 /**
+ * Classify an array of samples (in decode order) into I/P/B frame types,
+ * returning the types in display (CTS) order.
+ */
+function classifyFrameTypes(samples: { cts: number; is_sync: boolean }[]): FrameType[] {
+  const decodeTypes: FrameType[] = [];
+  let maxCts = -Infinity;
+  for (const s of samples) {
+    if (s.is_sync) {
+      decodeTypes.push("I");
+    } else if (s.cts >= maxCts) {
+      decodeTypes.push("P");
+    } else {
+      decodeTypes.push("B");
+    }
+    if (s.cts > maxCts) maxCts = s.cts;
+  }
+  return samples
+    .map((s, i) => ({ cts: s.cts, type: decodeTypes[i] }))
+    .sort((a, b) => a.cts - b.cts)
+    .map((x) => x.type);
+}
+
+/**
+ * Get frame types for a segment from the active (watched) stream.
+ * Falls back to classifying from the provided thumbnail-stream samples.
+ */
+async function getActiveFrameTypes(
+  thumbSegStartTime: number,
+  fallbackSamples: { cts: number; is_sync: boolean }[],
+): Promise<FrameType[]> {
+  if (!activeInitData || activeSegments.length === 0) {
+    return classifyFrameTypes(fallbackSamples);
+  }
+
+  // Find the active segment covering the same time
+  const activeSeg = activeSegments.find(
+    (as) => thumbSegStartTime >= as.startTime - 0.5 && thumbSegStartTime < as.endTime + 0.5,
+  );
+  if (!activeSeg) {
+    return classifyFrameTypes(fallbackSamples);
+  }
+
+  // Check cache
+  const cached = activeFrameTypeCache.get(activeSeg.url);
+  if (cached) return cached;
+
+  try {
+    const mediaData = await fetchBuffer(activeSeg.url);
+    if (aborted) return classifyFrameTypes(fallbackSamples);
+
+    const activeSamples = await extractAllSamplesFromSegment(activeInitData, mediaData);
+    const types = classifyFrameTypes(activeSamples);
+    activeFrameTypeCache.set(activeSeg.url, types);
+    return types;
+  } catch {
+    return classifyFrameTypes(fallbackSamples);
+  }
+}
+
+/**
  * Decode all frames in a segment and capture N evenly-spaced ones as thumbnails.
  */
 async function handleGenerateIntra(segIdx: number, count: number) {
@@ -172,25 +236,13 @@ async function handleGenerateIntra(segIdx: number, count: number) {
       }
     }
 
-    // Classify frame types in decode order using max-CTS heuristic:
-    // Reference frames (I/P) advance the max CTS; B-frames fall below it.
-    const decodeTypes: FrameType[] = [];
-    let maxCts = -Infinity;
-    for (const s of allSamples) {
-      if (s.is_sync) {
-        decodeTypes.push("I");
-      } else if (s.cts >= maxCts) {
-        decodeTypes.push("P");
-      } else {
-        decodeTypes.push("B");
-      }
-      if (s.cts > maxCts) maxCts = s.cts;
-    }
+    // Classify frame types from the active (watched) stream, which may have
+    // a different GOP structure than the lowest-quality thumbnail stream.
+    const activeDisplayTypes = await getActiveFrameTypes(seg.startTime, allSamples);
+    if (aborted) return;
 
-    // VideoDecoder outputs in display (CTS) order, so map decode→display
-    const displayOrder = allSamples
-      .map((s, i) => ({ cts: s.cts, type: decodeTypes[i] }))
-      .sort((a, b) => a.cts - b.cts);
+    // Also classify from the thumbnail stream for VideoDecoder output mapping
+    const thumbDisplayTypes = classifyFrameTypes(allSamples);
 
     // Determine which output frames to capture — evenly spaced across all
     // frames in display order. VideoDecoder outputs in CTS (display) order,
@@ -219,7 +271,7 @@ async function handleGenerateIntra(segIdx: number, count: number) {
           bitmapPromises.push({
             outputIdx: currentOutputIdx,
             promise: createImageBitmap(captureCanvas),
-            frameType: displayOrder[currentOutputIdx]?.type ?? "P",
+            frameType: thumbDisplayTypes[currentOutputIdx] ?? "P",
           });
         } else {
           frame.close();
@@ -273,7 +325,15 @@ async function handleGenerateIntra(segIdx: number, count: number) {
     // Collect all captured bitmaps in order
     bitmapPromises.sort((a, b) => a.outputIdx - b.outputIdx);
     const bitmaps = await Promise.all(bitmapPromises.map((p) => p.promise));
-    const frameTypes = bitmapPromises.map((p) => p.frameType);
+
+    // Map frame types from the active stream to captured bitmap positions.
+    // The active stream may have a different frame count, so we sample
+    // evenly from its display-order types.
+    const frameTypes = bitmapPromises.map((_p, i) => {
+      if (activeDisplayTypes.length === 0) return _p.frameType;
+      const idx = Math.round((i / (bitmapPromises.length - 1 || 1)) * (activeDisplayTypes.length - 1));
+      return activeDisplayTypes[idx] ?? _p.frameType;
+    });
 
     if (aborted) {
       bitmaps.forEach((b) => b.close());
@@ -365,6 +425,19 @@ async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
       cryptoKey = null;
       tencInfo = null;
     }
+  }
+
+  // Fetch active stream init segment for frame type classification
+  activeSegments = req.activeSegments ?? [];
+  activeInitData = null;
+  activeFrameTypeCache.clear();
+  if (req.activeInitSegmentUrl) {
+    try {
+      activeInitData = await fetchBuffer(req.activeInitSegmentUrl);
+    } catch {
+      // Non-critical: will fall back to thumbnail stream for classification
+    }
+    if (aborted) return;
   }
 
   // 2. Configure VideoDecoder

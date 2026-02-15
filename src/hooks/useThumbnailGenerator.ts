@@ -409,6 +409,40 @@ export function useThumbnailGenerator(
           }
         };
 
+        // Extract active (watched) stream segment info for frame type classification.
+        // The active stream may have a different GOP structure than the lowest-quality
+        // thumbnail stream (e.g. 1080p uses B-frames while 240p does not).
+        let activeInitSegmentUrl: string | undefined;
+        let activeStreamSegments: typeof segments | undefined;
+        const activeStream = getActiveVideoStream(player);
+        if (activeStream && activeStream !== stream) {
+          try {
+            await activeStream.createSegmentIndex();
+            if (cancelled) return;
+            const activeSegIdx = activeStream.segmentIndex;
+            if (activeSegIdx) {
+              const activeIter = activeSegIdx[Symbol.iterator]();
+              const activeFirst = activeIter.next();
+              if (!activeFirst.done && activeFirst.value) {
+                activeInitSegmentUrl = extractInitSegmentUrl(activeFirst.value) ?? undefined;
+                activeStreamSegments = [];
+                for (const ref of activeSegIdx) {
+                  if (!ref) continue;
+                  const uris = ref.getUris();
+                  if (uris.length === 0) continue;
+                  activeStreamSegments.push({
+                    url: uris[0],
+                    startTime: ref.getStartTime(),
+                    endTime: ref.getEndTime(),
+                  });
+                }
+              }
+            }
+          } catch {
+            // Non-critical: will fall back to thumbnail stream for classification
+          }
+        }
+
         const payload = {
           type: "generate" as const,
           initSegmentUrl,
@@ -418,6 +452,8 @@ export function useThumbnailGenerator(
           height,
           thumbnailWidth: THUMBNAIL_WIDTH,
           clearKeyHex: streamEncrypted ? clearKey : undefined,
+          activeInitSegmentUrl,
+          activeSegments: activeStreamSegments,
         };
         worker.postMessage(payload satisfies WorkerRequest);
       } catch {
