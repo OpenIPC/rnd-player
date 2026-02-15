@@ -34,6 +34,11 @@ describe("ShakaPlayer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    // Mock fetch to prevent real network requests (manifest DRM detection)
+    global.fetch = vi.fn(() =>
+      Promise.resolve(new Response("<MPD></MPD>", { status: 200 }))
+    );
+
     mockPlayerInstance = {
       attach: vi.fn(() => Promise.resolve()),
       load: vi.fn(() => Promise.resolve()),
