@@ -44,6 +44,10 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps ${{ matrix.browser }}
 
+      - name: Install H.264 codecs for Firefox
+        if: matrix.browser == 'firefox'
+        run: sudo apt-get install -y gstreamer1.0-libav
+
       - name: Run Playwright tests
         run: npx playwright test --project=${{ matrix.browser }}
 
