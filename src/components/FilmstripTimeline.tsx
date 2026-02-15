@@ -56,7 +56,7 @@ export default function FilmstripTimeline({
   const [followMode, setFollowMode] = useState(true);
   const followModeRef = useRef(followMode);
   followModeRef.current = followMode;
-  const [showBitrateGraph, setShowBitrateGraph] = useState(false);
+  const [showBitrateGraph, setShowBitrateGraph] = useState(true);
   const showBitrateGraphRef = useRef(showBitrateGraph);
   showBitrateGraphRef.current = showBitrateGraph;
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; time: number } | null>(null);
