@@ -63,8 +63,18 @@ jobs:
         if: matrix.browser == 'firefox'
         run: sudo apt-get install -y gstreamer1.0-libav
 
+      - name: Install fonts for DASH fixture (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y fonts-dejavu-core
+
+      - name: Generate DASH fixture
+        shell: bash
+        run: bash e2e/generate-dash-fixture.sh "${{ runner.temp }}/dash-fixture"
+
       - name: Run Playwright tests
         run: npx playwright test --project=${{ matrix.browser }}
+        env:
+          DASH_FIXTURE_DIR: ${{ runner.temp }}/dash-fixture
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}

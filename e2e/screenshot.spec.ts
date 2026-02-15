@@ -1,5 +1,5 @@
 import { test } from "@playwright/test";
-import { loadPlayerWithFixture } from "./helpers";
+import { isDashFixtureAvailable, loadPlayerWithDash } from "./helpers";
 
 const osName = (): string => {
   switch (process.platform) {
@@ -12,8 +12,13 @@ const osName = (): string => {
   }
 };
 
+test.skip(
+  !isDashFixtureAvailable(),
+  "DASH fixture not generated — run: bash e2e/generate-dash-fixture.sh",
+);
+
 test("capture player screenshot", async ({ page }) => {
-  await loadPlayerWithFixture(page);
+  await loadPlayerWithDash(page);
 
   // Hide dev-only debug panel so it doesn't appear in the screenshot
   await page.evaluate(() => {
