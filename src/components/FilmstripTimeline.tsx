@@ -6,6 +6,7 @@ import type { BitrateGraphData } from "../hooks/useBitrateGraph";
 import { formatTime, formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
 import { formatBitrate } from "../utils/formatBitrate";
+import { SaveSegmentIcon } from "./icons";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
 interface FilmstripTimelineProps {
@@ -1095,7 +1096,8 @@ export default function FilmstripTimeline({
             className="vp-context-menu-item"
             onClick={saveFrame}
           >
-            Save frame
+            <SaveSegmentIcon />
+            Save frame...
           </div>
         </div>
       )}
