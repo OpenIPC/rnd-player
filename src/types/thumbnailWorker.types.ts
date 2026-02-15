@@ -40,5 +40,5 @@ export type WorkerResponse =
   | { type: "error"; message: string }
   | { type: "ready" }
   | { type: "saveFrameResult"; bitmap: ImageBitmap | null }
-  | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[]; gopStructure: GopFrame[] }
+  | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[]; gopStructure: GopFrame[]; timestamps: number[] }
   | { type: "gopStructure"; segmentIndex: number; gopStructure: GopFrame[] };

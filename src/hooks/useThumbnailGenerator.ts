@@ -23,6 +23,8 @@ export interface ThumbnailGeneratorResult {
   saveFrame: SaveFrameFn;
   intraFrames: Map<number, ImageBitmap[]>;
   intraFrameTypes: Map<number, FrameType[]>;
+  /** Exact CTS timestamps (seconds) for each intra-frame bitmap */
+  intraTimestamps: Map<number, number[]>;
   gopStructures: Map<number, GopFrame[]>;
   requestGop: (segmentIndex: number) => void;
   requestIntraBatch: RequestIntraBatchFn;
@@ -74,6 +76,7 @@ export function useThumbnailGenerator(
   const [segmentTimes, setSegmentTimes] = useState<number[]>([]);
   const [intraFrames, setIntraFrames] = useState<Map<number, ImageBitmap[]>>(new Map());
   const [intraFrameTypes, setIntraFrameTypes] = useState<Map<number, FrameType[]>>(new Map());
+  const [intraTimestamps, setIntraTimestamps] = useState<Map<number, number[]>>(new Map());
   const [gopStructures, setGopStructures] = useState<Map<number, GopFrame[]>>(new Map());
 
   const workerRef = useRef<Worker | null>(null);
@@ -83,6 +86,7 @@ export function useThumbnailGenerator(
   const supported = isWebCodecsSupported();
   const intraFramesRef = useRef<Map<number, ImageBitmap[]>>(new Map());
   const intraFrameTypesRef = useRef<Map<number, FrameType[]>>(new Map());
+  const intraTimestampsRef = useRef<Map<number, number[]>>(new Map());
   const gopStructuresRef = useRef<Map<number, GopFrame[]>>(new Map());
   const lastSentIntraRef = useRef<string>("");
 
@@ -127,6 +131,7 @@ export function useThumbnailGenerator(
     }
     intraFramesRef.current = new Map();
     intraFrameTypesRef.current = new Map();
+    intraTimestampsRef.current = new Map();
     gopStructuresRef.current = new Map();
     lastSentIntraRef.current = "";
     setThumbnails(new Map());
@@ -389,6 +394,7 @@ export function useThumbnailGenerator(
               arr.forEach((b) => b.close());
               intraFramesRef.current.delete(segIdx);
               intraFrameTypesRef.current.delete(segIdx);
+              intraTimestampsRef.current.delete(segIdx);
               gopStructuresRef.current.delete(segIdx);
               intraEvicted = true;
             }
@@ -414,12 +420,14 @@ export function useThumbnailGenerator(
               if (old) old.forEach((b) => b.close());
               intraFramesRef.current.set(msg.segmentIndex, msg.bitmaps);
               intraFrameTypesRef.current.set(msg.segmentIndex, msg.frameTypes);
+              intraTimestampsRef.current.set(msg.segmentIndex, msg.timestamps);
               if (msg.gopStructure.length > 0) {
                 gopStructuresRef.current.set(msg.segmentIndex, msg.gopStructure);
               }
               evictOutOfRange();
               setIntraFrames(new Map(intraFramesRef.current));
               setIntraFrameTypes(new Map(intraFrameTypesRef.current));
+              setIntraTimestamps(new Map(intraTimestampsRef.current));
               setGopStructures(new Map(gopStructuresRef.current));
               break;
             }
@@ -492,5 +500,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, gopStructures, requestGop, requestIntraBatch };
+  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch };
 }

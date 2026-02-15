@@ -333,6 +333,18 @@ async function handleGenerateIntra(segIdx: number, count: number) {
     bitmapPromises.sort((a, b) => a.outputIdx - b.outputIdx);
     const bitmaps = await Promise.all(bitmapPromises.map((p) => p.promise));
 
+    // Build CTS timestamps (in seconds) for each captured bitmap.
+    // Sort samples by CTS to get display order, then map each captured
+    // output index to its CTS. This gives the exact presentation time
+    // of each bitmap, accounting for composition time offsets.
+    const displayOrderSamples = [...allSamples]
+      .map((s) => ({ cts: s.cts, timescale: s.timescale }))
+      .sort((a, b) => a.cts - b.cts);
+    const timestamps = bitmapPromises.map((p) => {
+      const s = displayOrderSamples[p.outputIdx];
+      return s ? s.cts / s.timescale : 0;
+    });
+
     // Map frame types from the active stream to captured bitmap positions.
     // The active stream may have a different frame count, so we sample
     // evenly from its display-order types.
@@ -348,7 +360,7 @@ async function handleGenerateIntra(segIdx: number, count: number) {
       return;
     }
 
-    post({ type: "intraFrames", segmentIndex: segIdx, bitmaps, frameTypes, gopStructure: activeDisplayTypes }, bitmaps);
+    post({ type: "intraFrames", segmentIndex: segIdx, bitmaps, frameTypes, gopStructure: activeDisplayTypes, timestamps }, bitmaps);
   } catch (e) {
     if (!aborted) {
       post({ type: "error", message: `Intra-frame error: ${e}` });
@@ -595,60 +607,72 @@ async function handleSaveFrame(msg: Extract<WorkerRequest, { type: "saveFrame" }
       mp4.stop();
     }
 
-    // 3. Fetch the media segment and extract sync samples
+    // 3. Fetch the media segment and extract ALL samples (not just sync)
     const mediaData = await fetchBuffer(targetSeg.url);
-    const syncSamples = await extractSamplesFromSegment(initBuf, mediaData);
-    if (syncSamples.length === 0) {
+    const allSamples = await extractAllSamplesFromSegment(initBuf, mediaData);
+    if (allSamples.length === 0) {
       post({ type: "saveFrameResult", bitmap: null });
       return;
     }
 
-    // 4. Pick the sync sample closest to the requested time
-    let bestSample = syncSamples[0];
+    // 4. Build display-order list to find the sample closest to requested time.
+    //    VideoDecoder outputs in CTS (display) order, so we need the display-order
+    //    index of the target frame.
+    const displayOrder = allSamples
+      .map((s, i) => ({ decodeIdx: i, cts: s.cts, timescale: s.timescale }))
+      .sort((a, b) => a.cts - b.cts);
+
+    let targetDisplayIdx = 0;
     let bestDist = Infinity;
-    for (const s of syncSamples) {
-      const sampleTime = s.cts / s.timescale;
+    for (let i = 0; i < displayOrder.length; i++) {
+      const sampleTime = displayOrder[i].cts / displayOrder[i].timescale;
       const dist = Math.abs(sampleTime - time);
       if (dist < bestDist) {
         bestDist = dist;
-        bestSample = s;
+        targetDisplayIdx = i;
       }
     }
 
-    // 5. Decrypt if CENC is configured
-    let sampleBytes: Uint8Array = new Uint8Array(bestSample.data!);
+    // 5. Parse SENC data once if CENC is configured
+    let sencSamples: Awaited<ReturnType<typeof parseSencFromSegment>> | null = null;
     if (cryptoKey && tencInfo) {
       try {
-        const ivSize = tencInfo.defaultPerSampleIVSize;
-        const sencSamples = parseSencFromSegment(mediaData, ivSize);
-        if (sencSamples.length > 0) {
-          const sencIdx = bestSample.number_in_traf ?? bestSample.number;
-          const sencEntry = sencSamples[sencIdx];
-          if (sencEntry) {
-            const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
-            if (iv && iv.length > 0) {
-              sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
-            }
-          }
-        }
+        sencSamples = parseSencFromSegment(mediaData, tencInfo.defaultPerSampleIVSize);
       } catch {
         post({ type: "saveFrameResult", bitmap: null });
         return;
       }
     }
 
-    // 6. One-shot VideoDecoder at full resolution
+    // 6. One-shot VideoDecoder at full resolution — feed ALL samples,
+    //    capture only the output whose timestamp matches the target.
+    //    Match by timestamp rather than counting outputs, because the
+    //    decoder may reorder or skip frames unpredictably.
+    const targetTimestampUs =
+      (displayOrder[targetDisplayIdx].cts / displayOrder[targetDisplayIdx].timescale) * 1_000_000;
+    // Half a frame duration as tolerance for timestamp comparison
+    const frameDurUs = allSamples.length > 1
+      ? Math.abs(displayOrder[1].cts - displayOrder[0].cts) / displayOrder[0].timescale * 1_000_000
+      : 1_000_000;
+    const tolerance = frameDurUs / 2;
+
     const bitmap = await new Promise<ImageBitmap | null>((resolve) => {
       const canvas = new OffscreenCanvas(width, height);
       const ctx2d = canvas.getContext("2d")!;
+      let resolved = false;
 
       const dec = new VideoDecoder({
         output: (frame: VideoFrame) => {
-          ctx2d.drawImage(frame, 0, 0, width, height);
-          frame.close();
-          createImageBitmap(canvas).then(resolve).catch(() => resolve(null));
+          if (!resolved && Math.abs(frame.timestamp - targetTimestampUs) < tolerance) {
+            ctx2d.drawImage(frame, 0, 0, width, height);
+            frame.close();
+            resolved = true;
+            createImageBitmap(canvas).then(resolve).catch(() => resolve(null));
+          } else {
+            frame.close();
+          }
         },
-        error: () => resolve(null),
+        error: () => { if (!resolved) resolve(null); },
       });
 
       const config: VideoDecoderConfig = {
@@ -660,16 +684,42 @@ async function handleSaveFrame(msg: Extract<WorkerRequest, { type: "saveFrame" }
 
       try {
         dec.configure(config);
-        dec.decode(
-          new EncodedVideoChunk({
-            type: "key",
-            timestamp: (bestSample.cts / bestSample.timescale) * 1_000_000,
-            data: sampleBytes,
-          }),
-        );
-        dec.flush().then(() => {
+
+        // Feed all samples in decode order (as stored)
+        (async () => {
+          for (let i = 0; i < allSamples.length; i++) {
+            const sample = allSamples[i];
+            let sampleBytes: Uint8Array = new Uint8Array(sample.data!);
+
+            // Decrypt if CENC is configured
+            if (cryptoKey && tencInfo && sencSamples && sencSamples.length > 0) {
+              try {
+                const sencIdx = sample.number_in_traf ?? sample.number;
+                const sencEntry = sencSamples[sencIdx];
+                if (sencEntry) {
+                  const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
+                  if (iv && iv.length > 0) {
+                    sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
+                  }
+                }
+              } catch {
+                continue;
+              }
+            }
+
+            dec.decode(
+              new EncodedVideoChunk({
+                type: sample.is_sync ? "key" : "delta",
+                timestamp: (sample.cts / sample.timescale) * 1_000_000,
+                data: sampleBytes,
+              }),
+            );
+          }
+
+          await dec.flush();
           try { dec.close(); } catch { /* */ }
-        }).catch(() => resolve(null));
+          if (!resolved) resolve(null);
+        })().catch(() => { if (!resolved) resolve(null); });
       } catch {
         resolve(null);
       }
