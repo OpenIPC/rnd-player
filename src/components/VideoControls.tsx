@@ -963,18 +963,6 @@ export default function VideoControls({
               <AudioLevelsIcon />
               {showAudioLevels ? "Hide audio levels" : "Audio levels"}
             </div>
-            {onToggleFilmstrip && (
-              <div
-                className="vp-context-menu-item"
-                onClick={() => {
-                  onToggleFilmstrip();
-                  setContextMenu(null);
-                }}
-              >
-                <FilmstripIcon />
-                {showFilmstrip ? "Hide filmstrip" : "Filmstrip timeline"}
-              </div>
-            )}
             {onToggleCompare && (
               <div
                 className="vp-context-menu-item"
@@ -985,6 +973,18 @@ export default function VideoControls({
               >
                 <CompareIcon />
                 {showCompare ? "Hide quality compare" : "Quality compare"}
+              </div>
+            )}
+            {onToggleFilmstrip && (
+              <div
+                className="vp-context-menu-item"
+                onClick={() => {
+                  onToggleFilmstrip();
+                  setContextMenu(null);
+                }}
+              >
+                <FilmstripIcon />
+                {showFilmstrip ? "Hide filmstrip" : "Filmstrip timeline"}
               </div>
             )}
           </div>,
