@@ -52,3 +52,20 @@
 .url-submit:hover {
   background: #1e88e5;
 }
+
+.url-demo {
+  padding: 10px 24px;
+  background: transparent;
+  color: #2196f3;
+  border: 1px solid #2196f3;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.url-demo:hover {
+  background: rgba(33, 150, 243, 0.1);
+}

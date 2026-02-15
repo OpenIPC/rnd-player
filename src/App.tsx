@@ -48,6 +48,17 @@ function App() {
           <button type="submit" className="url-submit">
             Load
           </button>
+          <button
+            type="button"
+            className="url-demo"
+            onClick={() =>
+              setSrc(
+                "https://openipc.github.io/rnd-player/fixtures/frames/manifest.mpd",
+              )
+            }
+          >
+            Demo
+          </button>
         </form>
       </div>
     );
