@@ -1040,11 +1040,25 @@ export default function FilmstripTimeline({
         if (!gop || gop.length === 0) return null;
         const maxSize = Math.max(...gop.map((f) => f.size), 1);
         const BAR_HEIGHT = 32;
+        const totalBytes = gop.reduce((s, f) => s + f.size, 0);
+        const fmtBytes = (b: number) => b >= 1048576 ? `${(b / 1048576).toFixed(2)} MB` : `${(b / 1024).toFixed(1)} KB`;
+
+        // Per-type min/max stats
+        const typeStats = (type: FrameType) => {
+          const sizes = gop.filter((f) => f.type === type).map((f) => f.size);
+          if (sizes.length === 0) return null;
+          return { count: sizes.length, min: Math.min(...sizes), max: Math.max(...sizes) };
+        };
+        const iStats = typeStats("I");
+        const pStats = typeStats("P");
+        const bStats = typeStats("B");
+
         return (
           <div
             className="vp-gop-tooltip"
             style={{ left: gopTooltip.x, top: gopTooltip.y }}
           >
+            <div className="vp-gop-tooltip-size">{fmtBytes(totalBytes)}</div>
             <div className="vp-gop-tooltip-label">GOP ({gop.length} frames)</div>
             <div className="vp-gop-tooltip-bars">
               {gop.map((f, i) => (
@@ -1054,6 +1068,11 @@ export default function FilmstripTimeline({
                   style={{ height: Math.max(2, (f.size / maxSize) * BAR_HEIGHT) }}
                 />
               ))}
+            </div>
+            <div className="vp-gop-tooltip-stats">
+              {iStats && <div><span className="vp-gop-stat-I">I</span> <span className="vp-gop-stat-dim">{iStats.count}x</span> {fmtBytes(iStats.min)}{iStats.count > 1 ? ` \u2013 ${fmtBytes(iStats.max)}` : ""}</div>}
+              {pStats && <div><span className="vp-gop-stat-P">P</span> <span className="vp-gop-stat-dim">{pStats.count}x</span> {fmtBytes(pStats.min)}{pStats.count > 1 ? ` \u2013 ${fmtBytes(pStats.max)}` : ""}</div>}
+              {bStats && <div><span className="vp-gop-stat-B">B</span> <span className="vp-gop-stat-dim">{bStats.count}x</span> {fmtBytes(bStats.min)}{bStats.count > 1 ? ` \u2013 ${fmtBytes(bStats.max)}` : ""}</div>}
             </div>
           </div>
         );

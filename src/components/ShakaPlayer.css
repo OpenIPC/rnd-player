@@ -993,6 +993,13 @@ video::-webkit-media-text-track-container {
   transform: translate(12px, -100%);
 }
 
+.vp-gop-tooltip-size {
+  color: #fff;
+  font-weight: bold;
+  font-size: 11px;
+  margin-bottom: 1px;
+}
+
 .vp-gop-tooltip-label {
   color: rgba(255, 255, 255, 0.5);
   margin-bottom: 4px;
@@ -1021,3 +1028,16 @@ video::-webkit-media-text-track-container {
 .vp-gop-bar-B {
   background: rgb(50, 200, 50);
 }
+
+.vp-gop-tooltip-stats {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: monospace;
+}
+
+.vp-gop-stat-I { color: rgb(255, 50, 50); font-weight: bold; }
+.vp-gop-stat-P { color: rgb(60, 130, 255); font-weight: bold; }
+.vp-gop-stat-B { color: rgb(50, 200, 50); font-weight: bold; }
+.vp-gop-stat-dim { color: rgba(255, 255, 255, 0.4); }
