@@ -72,3 +72,99 @@ jobs:
           name: blob-report-${{ matrix.os }}-${{ matrix.browser }}
           path: blob-report/
           retention-days: 14
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: [test, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      actions: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Read version from package.json
+        id: version
+        run: echo "value=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Build versioned
+        run: npm run build
+        env:
+          VITE_BASE_PATH: /rnd-player/${{ steps.version.outputs.value }}/
+
+      - run: mkdir -p site/${{ steps.version.outputs.value }}
+      - run: cp -r dist/* site/${{ steps.version.outputs.value }}/
+
+      - name: Build current
+        run: npm run build
+        env:
+          VITE_BASE_PATH: /rnd-player/current/
+
+      - run: mkdir -p site/current
+      - run: cp -r dist/* site/current/
+
+      - name: Restore previous versions
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/artifacts?name=site-archive --jq '.artifacts[0].id // empty')
+          if [ -n "$ARTIFACT_ID" ]; then
+            gh api repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip > archive.zip
+            unzip -o archive.zip -d old-site
+            for dir in old-site/v*/; do
+              dir_name=$(basename "$dir")
+              if [ ! -d "site/$dir_name" ]; then
+                cp -r "$dir" "site/$dir_name"
+              fi
+            done
+          fi
+
+      - name: Generate root redirect
+        run: |
+          cat > site/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head><meta http-equiv="refresh" content="0;url=current/"></head>
+          <body><a href="current/">Redirect</a></body>
+          </html>
+          EOF
+
+      - name: Generate versions.json
+        run: |
+          node -e "
+            const fs = require('fs');
+            const dirs = fs.readdirSync('site')
+              .filter(d => d.startsWith('v') && fs.statSync('site/' + d).isDirectory())
+              .sort();
+            fs.writeFileSync('site/versions.json', JSON.stringify(dirs, null, 2) + '\n');
+          "
+
+      - name: Upload site archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-archive
+          path: site/
+          retention-days: 90
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

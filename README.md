@@ -2,6 +2,8 @@
 
 A browser-based video stream analyzer for DASH and HLS. Think of it as a lightweight, instant-on alternative to tools like StreamEye — no install, no desktop app, just paste a manifest URL and start inspecting.
 
+**[Live demo](https://openipc.github.io/rnd-player/)**
+
 ![R&D Player — quality comparison with filmstrip, GOP tooltip, and bitrate graph](screenshot.png)
 
 ## What it does
