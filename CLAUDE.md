@@ -115,13 +115,88 @@ Things to watch out for when working with frame-level video data:
 
 ## Testing
 
-Tests use Vitest + React Testing Library + jsdom. Test files live alongside source: `src/**/*.test.{ts,tsx}`.
+Two separate test layers: **unit tests** (Vitest, jsdom) and **E2E tests** (Playwright, real browsers).
+
+### Unit Tests
+
+Vitest + React Testing Library + jsdom. Test files live alongside source: `src/**/*.test.{ts,tsx}`.
+
+```bash
+npm run test              # watch mode
+npm run test:run          # single run (CI)
+npm run test:coverage     # coverage report
+npx vitest run src/utils/formatTime.test.ts   # single file
+```
 
 Mock helpers in `src/test/helpers/`:
-- `createMockVideoElement.ts` — mock HTMLVideoElement with event listener tracking
-- `createMockShakaPlayer.ts` — mock Shaka Player instance with variant/audio/text tracks
+- `createMockVideoElement.ts` — mock HTMLVideoElement with event listener tracking and `_emit(event)` for simulating media events
+- `createMockShakaPlayer.ts` — mock Shaka Player instance with variant/audio/text tracks and `_emit(event)` for Shaka events
 
 Setup file: `src/test/setup.ts` (jest-dom matchers, automatic cleanup).
+
+Component tests (e.g. `ShakaPlayer.test.tsx`) mock the entire `shaka-player` module and `fetch` to prevent real network access. The `destroyed` safety flag and async lifecycle are tested by triggering unmount mid-load.
+
+### E2E Tests
+
+Playwright across 4 browser projects: Chromium, Firefox, WebKit, Edge. Test files in `e2e/`.
+
+```bash
+npm run test:e2e                            # all browsers
+npx playwright test --project=chromium      # specific browser
+npx playwright test --project=edge          # Edge (requires Edge installed)
+npx playwright test e2e/smoke.spec.ts       # specific file
+npx playwright test --project=chromium --headed   # headed for debugging
+npx playwright show-report                  # view HTML report after run
+```
+
+**Config** (`playwright.config.ts`): Vite dev server starts automatically via `webServer`. In CI: 1 worker, 2 retries, blob reporter. Locally: parallel workers, 0 retries, HTML reporter. Dev server is reused locally (`reuseExistingServer: !process.env.CI`).
+
+**Test suites:**
+- `e2e/smoke.spec.ts` — 7 tests. Page title, URL form, query parameter bypass, empty submission. No video loading needed.
+- `e2e/player-controls.spec.ts` — 13 tests. Play/pause, timecode, speed selector, volume mute/slider, seek bar, right-click context menu, stats panel toggle, keyboard shortcuts (Space, M), auto-hide (3s timer). All use `loadPlayerWithFixture()`.
+
+**Fixture approach** (`e2e/helpers.ts`): A 3.3 KB H.264 MP4 file (`e2e/fixtures/test-video.mp4`) is read into memory at module load time. `loadPlayerWithFixture(page)` intercepts requests via `page.route()` and serves the fixture bytes directly — no network requests, no CDN dependency, deterministic across environments. Navigates to `/?v=/test-video.mp4` and waits for `.vp-controls-wrapper` visibility (15s timeout).
+
+### CI Matrix
+
+GitHub Actions (`.github/workflows/ci.yml`) runs 6 jobs: 1 unit test + build job on Ubuntu, plus 5 E2E jobs:
+
+| Runner | Browser | Notes |
+|--------|---------|-------|
+| `ubuntu-latest` | chromium | Standard |
+| `ubuntu-latest` | firefox | Requires `gstreamer1.0-libav` for H.264 (see below) |
+| `ubuntu-latest` | webkit | WebKitGTK (Linux rendering path) |
+| `macos-latest` | webkit | Core Animation WebKit — closest to real Safari |
+| `windows-latest` | edge | Pre-installed Edge binary, `channel: "msedge"` |
+
+`fail-fast: false` — all matrix entries run even if one fails. Blob reports are uploaded as artifacts (`blob-report-{os}-{browser}`, 14-day retention).
+
+**Browser install per OS**: Ubuntu uses `npx playwright install --with-deps $BROWSER`. macOS installs only `webkit` (native media frameworks, no extra deps). Windows installs `chromium` deps (provides the driver); Edge itself is pre-installed on GitHub's Windows runners.
+
+**Cost**: macOS runners cost 10× and Windows runners cost 2× vs Linux per minute. The suite runs in ~15s, so per-run cost is negligible.
+
+### Platform-Specific Nuances
+
+**Firefox on Linux lacks H.264 by default.** Playwright's Firefox relies on system GStreamer plugins for codec support. The `--with-deps` flag does not install `gstreamer1.0-libav`. Without it, `player.load()` fails silently (no codec error, just no playback) and controls never render, causing all player-controls tests to time out. The CI workflow has an explicit `sudo apt-get install -y gstreamer1.0-libav` step for Firefox.
+
+**WebKit behaves differently across OSes.** Playwright does not drive real Safari — it uses a patched WebKit engine. On Linux this is WebKitGTK (software rendering, different compositing path). On macOS it uses Core Animation and native media frameworks, matching real Safari behavior more closely. Both are tested in CI for coverage of rendering and codec differences.
+
+**Edge is Chromium-based but not identical.** Driven via `channel: "msedge"` using the system Edge binary. Catches Edge-specific quirks (autoplay policy, media session API behavior). Requires Windows — the Edge project is only run on `windows-latest`.
+
+**Debug panel overlap.** The dev-only `.vp-debug-panel` can overlap popup menus. The speed selector test hides it via `page.evaluate()` before interacting with popups. This is not needed in production builds.
+
+### Former Approaches (Abandoned)
+
+**VP8 WebM fixture for Firefox (commit `7fd3b4c`, reverted in `2430fa5`).** When Firefox H.264 failures were first discovered on CI, a VP8-encoded WebM fixture was added alongside the H.264 MP4. The helper accepted `browserName` and conditionally routed Firefox to the WebM file. This was reverted because: (1) it reduced test coverage — real streams use H.264, not VP8; (2) different codecs exercise different browser code paths, defeating the purpose of cross-browser testing; (3) the proper fix was installing the system codec (`gstreamer1.0-libav`), making Firefox decode H.264 identically to local development.
+
+### Adding New E2E Tests
+
+- Place test files in `e2e/*.spec.ts`
+- For tests that need a loaded video player, use `loadPlayerWithFixture(page)` in `beforeEach`
+- Use `.vp-*` CSS class selectors (see conventions below); combine with text content filters for resilience: `page.locator(".vp-popup-item", { hasText: "2x" })`
+- Verify video state via `page.evaluate(() => document.querySelector("video")!.property)` rather than relying solely on UI state
+- For timing-sensitive tests (auto-hide), add appropriate timeout buffers beyond the expected delay
+- The `test-video.mp4` fixture is tiny (3.3 KB) and sufficient for control interaction tests; it is not suitable for testing adaptive streaming, DRM, or filmstrip features
 
 ## Conventions
 
