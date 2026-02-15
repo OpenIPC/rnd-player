@@ -63,8 +63,8 @@ export default function FilmstripTimeline({
   const ctxMenuTimeRef = useRef(0);
   /** Normalized frame position (0..1) for position-based save, or undefined for packed mode */
   const ctxMenuFramePositionRef = useRef<number | undefined>(undefined);
-  const [gopTooltip, setGopTooltip] = useState<{ x: number; y: number; segIdx: number } | null>(null);
-  const gopTooltipRef = useRef<{ x: number; y: number; segIdx: number } | null>(null);
+  const [gopTooltip, setGopTooltip] = useState<{ x: number; y: number; segIdx: number; segDuration: number } | null>(null);
+  const gopTooltipRef = useRef<{ x: number; y: number; segIdx: number; segDuration: number } | null>(null);
 
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
@@ -829,6 +829,7 @@ export default function FilmstripTimeline({
         requestGopRef.current(thumbIdx);
       }
 
+      const segDuration = segs[hitIdx].endTime - segs[hitIdx].startTime;
       const prev = gopTooltipRef.current;
       if (prev && prev.segIdx === thumbIdx) {
         // Same segment — just update position
@@ -836,8 +837,8 @@ export default function FilmstripTimeline({
         prev.y = e.clientY;
         setGopTooltip({ ...prev });
       } else {
-        gopTooltipRef.current = { x: e.clientX, y: e.clientY, segIdx: thumbIdx };
-        setGopTooltip({ x: e.clientX, y: e.clientY, segIdx: thumbIdx });
+        gopTooltipRef.current = { x: e.clientX, y: e.clientY, segIdx: thumbIdx, segDuration };
+        setGopTooltip({ x: e.clientX, y: e.clientY, segIdx: thumbIdx, segDuration });
       }
     };
 
@@ -1106,6 +1107,7 @@ export default function FilmstripTimeline({
         if (!gop || gop.length === 0) return null;
         const maxSize = Math.max(...gop.map((f) => f.size), 1);
         const BAR_HEIGHT = 32;
+        const barWidth = gop.length <= 100 ? 2 : 1;
         const totalBytes = gop.reduce((s, f) => s + f.size, 0);
         const fmtBytes = (b: number) => b >= 1048576 ? `${(b / 1048576).toFixed(2)} MB` : `${(b / 1024).toFixed(1)} KB`;
 
@@ -1124,14 +1126,14 @@ export default function FilmstripTimeline({
             className="vp-gop-tooltip"
             style={{ left: gopTooltip.x, top: gopTooltip.y }}
           >
-            <div className="vp-gop-tooltip-size">{fmtBytes(totalBytes)}</div>
+            <div className="vp-gop-tooltip-size">{fmtBytes(totalBytes)} · {gopTooltip.segDuration.toFixed(2)}s</div>
             <div className="vp-gop-tooltip-label">GOP ({gop.length} frames)</div>
             <div className="vp-gop-tooltip-bars">
               {gop.map((f, i) => (
                 <div
                   key={i}
                   className={`vp-gop-bar vp-gop-bar-${f.type}`}
-                  style={{ height: Math.max(2, (f.size / maxSize) * BAR_HEIGHT) }}
+                  style={{ width: barWidth, height: Math.max(2, (f.size / maxSize) * BAR_HEIGHT) }}
                 />
               ))}
             </div>

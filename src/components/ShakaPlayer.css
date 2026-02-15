@@ -1013,7 +1013,6 @@ video::-webkit-media-text-track-container {
 }
 
 .vp-gop-bar {
-  width: 1px;
   min-height: 2px;
 }
 
