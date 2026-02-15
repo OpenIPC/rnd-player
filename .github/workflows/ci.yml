@@ -73,6 +73,13 @@ jobs:
           path: blob-report/
           retention-days: 14
 
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: screenshot-${{ matrix.os }}-${{ matrix.browser }}
+          path: e2e/screenshots/
+          retention-days: 90
+
   deploy:
     if: github.ref == 'refs/heads/main'
     needs: [test, e2e]
@@ -151,6 +158,13 @@ jobs:
               .sort();
             fs.writeFileSync('site/versions.json', JSON.stringify(dirs, null, 2) + '\n');
           "
+
+      - name: Download screenshots
+        uses: actions/download-artifact@v4
+        with:
+          pattern: screenshot-*
+          path: site/screenshots/
+          merge-multiple: true
 
       - name: Upload site archive
         uses: actions/upload-artifact@v4

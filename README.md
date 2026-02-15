@@ -22,6 +22,18 @@ A browser-based video stream analyzer for DASH and HLS. Think of it as a lightwe
 
 Works with any public DASH (.mpd) or HLS (.m3u8) stream. No server required — runs entirely in the browser.
 
+## Browser Support
+
+Automatically tested on every commit:
+
+| Chromium · Linux | Firefox · Linux | WebKit · Linux |
+|:---:|:---:|:---:|
+| ![Chromium on Linux](https://openipc.github.io/rnd-player/screenshots/chromium-linux.png) | ![Firefox on Linux](https://openipc.github.io/rnd-player/screenshots/firefox-linux.png) | ![WebKit on Linux](https://openipc.github.io/rnd-player/screenshots/webkit-linux.png) |
+
+| Safari · macOS | Edge · Windows |
+|:---:|:---:|
+| ![Safari on macOS](https://openipc.github.io/rnd-player/screenshots/webkit-macos.png) | ![Edge on Windows](https://openipc.github.io/rnd-player/screenshots/edge-windows.png) |
+
 ## Getting Started
 
 ```sh
