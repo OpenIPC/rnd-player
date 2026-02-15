@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 import { loadPlayerWithFixture } from "./helpers";
 
 test.describe("Player controls", () => {
-  test.beforeEach(async ({ page }) => {
-    await loadPlayerWithFixture(page);
+  test.beforeEach(async ({ page, browserName }) => {
+    await loadPlayerWithFixture(page, browserName);
   });
 
   test("controls overlay renders", async ({ page }) => {
