@@ -86,6 +86,7 @@ async function pressKeyAndSettle(
   await page.evaluate(
     async ({ key, shiftKey }) => {
       const video = document.querySelector("video")!;
+      const prevTime = video.currentTime;
       document.dispatchEvent(
         new KeyboardEvent("keydown", {
           key,
@@ -94,12 +95,15 @@ async function pressKeyAndSettle(
           cancelable: true,
         }),
       );
-      // Allow the browser to initiate the seek — on some platforms
-      // (Edge/Windows) video.seeking is not true synchronously.
-      await new Promise((r) => requestAnimationFrame(r));
-      // Poll until any resulting seek completes
-      while (video.seeking) {
-        await new Promise((r) => setTimeout(r, 16));
+      // Wait for the seek to take effect. On Edge/Windows with MSE,
+      // the currentTime getter doesn't reflect the new seek target
+      // synchronously — it returns the pre-seek value until the seek
+      // completes. Poll until currentTime changes or a timeout.
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+        if (!video.seeking && video.currentTime !== prevTime) break;
+        // Timeout for no-op seeks (e.g. ArrowLeft at t=0)
+        if (i >= 5 && !video.seeking) break;
       }
       // Double rAF to ensure the decoded frame is composited
       await new Promise((r) =>
