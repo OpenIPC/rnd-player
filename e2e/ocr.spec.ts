@@ -86,7 +86,10 @@ async function pressKeyAndSettle(
   await page.evaluate(
     async ({ key, shiftKey }) => {
       const video = document.querySelector("video")!;
-      const prevTime = video.currentTime;
+      // Register seeked listener BEFORE dispatch so we don't miss fast seeks
+      const seeked = new Promise<void>((resolve) => {
+        video.addEventListener("seeked", () => resolve(), { once: true });
+      });
       document.dispatchEvent(
         new KeyboardEvent("keydown", {
           key,
@@ -95,16 +98,13 @@ async function pressKeyAndSettle(
           cancelable: true,
         }),
       );
-      // Wait for the seek to take effect. On Edge/Windows with MSE,
-      // the currentTime getter doesn't reflect the new seek target
-      // synchronously — it returns the pre-seek value until the seek
-      // completes. Poll until currentTime changes or a timeout.
-      for (let i = 0; i < 30; i++) {
-        await new Promise((r) => requestAnimationFrame(r));
-        if (!video.seeking && video.currentTime !== prevTime) break;
-        // Timeout for no-op seeks (e.g. ArrowLeft at t=0)
-        if (i >= 5 && !video.seeking) break;
-      }
+      // Wait for the seek pipeline to complete. On Edge/Windows with
+      // MSE, the currentTime getter doesn't update until the media
+      // pipeline finishes decoding the target frame. Polling rAF or
+      // currentTime is unreliable — wait for the actual seeked event.
+      // Timeout handles no-op keys (e.g. ArrowLeft at t=0) where no
+      // seek is initiated.
+      await Promise.race([seeked, new Promise((r) => setTimeout(r, 1000))]);
       // Double rAF to ensure the decoded frame is composited
       await new Promise((r) =>
         requestAnimationFrame(() => requestAnimationFrame(r)),
