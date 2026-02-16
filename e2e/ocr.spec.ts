@@ -220,11 +220,25 @@ test.describe("frame stepping", () => {
   test("ten consecutive ArrowRight steps reach frame 10", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
-    // Split into two batches of 5: Edge's MSE pipeline can stall after
-    // ~7 rapid seeks in a single evaluate(), but 5-step batches are
-    // reliable (proven by the forward-backward test).
-    await pressKeyNTimesAndSettle(page, "ArrowRight", 5);
-    await pressKeyNTimesAndSettle(page, "ArrowRight", 5);
+    // Use real keyboard input (page.keyboard.press) instead of synthetic
+    // dispatchEvent. Edge's MSE pipeline drops consecutive seeks when
+    // triggered by synthetic events inside page.evaluate(), but handles
+    // real keyboard input correctly because the browser's native input
+    // pipeline paces seeks through the compositor.
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press("ArrowRight");
+      await page.evaluate(async () => {
+        const video = document.querySelector("video")!;
+        // Wait for seek to complete
+        while (video.seeking) {
+          await new Promise((r) => setTimeout(r, 16));
+        }
+        // Double rAF to ensure the decoded frame is composited
+        await new Promise((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(r)),
+        );
+      });
+    }
     expect(await readFrameNumber(page)).toBe("0010");
   });
 
