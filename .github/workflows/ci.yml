@@ -201,22 +201,8 @@ jobs:
 
       - name: Generate DASH fixture for Pages
         run: |
-          FIXTURE_URL="https://openipc.github.io/rnd-player/fixtures/frames/manifest.mpd"
-          mkdir -p site/fixtures/frames
-          if curl -sSf "$FIXTURE_URL" -o /dev/null 2>/dev/null; then
-            echo "Fixture already published, downloading from Pages..."
-            curl -sS "$FIXTURE_URL" -o site/fixtures/frames/manifest.mpd
-            # Parse segment filenames from manifest and download each
-            grep -oP '[^"<>]+\.(m4s|mp4)' site/fixtures/frames/manifest.mpd | sort -u | while read -r f; do
-              curl -sS "https://openipc.github.io/rnd-player/fixtures/frames/$f" -o "site/fixtures/frames/$f"
-            done
-            echo "Downloaded fixture files:"
-            ls -lh site/fixtures/frames/
-          else
-            echo "Fixture not found on Pages, generating..."
-            sudo apt-get install -y ffmpeg fonts-dejavu-core
-            bash e2e/generate-dash-fixture.sh site/fixtures/frames
-          fi
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          bash e2e/generate-dash-fixture.sh site/fixtures/frames
 
       - name: Download screenshots
         uses: actions/download-artifact@v4
