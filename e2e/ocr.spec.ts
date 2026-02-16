@@ -158,6 +158,11 @@ async function pressKeyNTimesAndSettle(
         await new Promise((r) =>
           requestAnimationFrame(() => requestAnimationFrame(r)),
         );
+        // Extra settle time for Edge: its MSE pipeline can report seeked
+        // and update currentTime in polling, yet the getter still returns
+        // a stale value when read synchronously from the next keydown
+        // handler. 50 ms is enough for the pipeline to fully flush.
+        await new Promise((r) => setTimeout(r, 50));
       }
     },
     { key, count },
