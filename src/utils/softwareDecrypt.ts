@@ -26,6 +26,7 @@ import {
   importClearKey,
   extractScheme,
   extractTenc,
+  extractTrackIdFromTfhd,
   parseSencFromSegment,
   decryptSample,
   findBoxData,
@@ -91,24 +92,19 @@ export async function waitForDecryption(
 
 /**
  * Extract ALL samples from a media segment using a cached init segment.
- * Same approach as segmentExportWorker.ts:56-94 — cannot import from
- * worker file since it has `self.onmessage` at module scope.
+ * Accepts an explicit trackId to extract from (video or audio).
  */
 function extractAllSamples(
   initBuf: ArrayBuffer,
   mediaData: ArrayBuffer,
+  trackId: number,
 ): Promise<Sample[]> {
   return new Promise((resolve, reject) => {
     const allSamples: Sample[] = [];
     const mp4 = createFile();
 
-    mp4.onReady = (info) => {
-      const vt = info.videoTracks[0];
-      if (!vt) {
-        resolve([]);
-        return;
-      }
-      mp4.setExtractionOptions(vt.id, null, { nbSamples: 100_000 });
+    mp4.onReady = () => {
+      mp4.setExtractionOptions(trackId, null, { nbSamples: 100_000 });
       mp4.start();
     };
 
@@ -135,22 +131,30 @@ function extractAllSamples(
 }
 
 /**
- * Parse the init segment with mp4box to extract tenc info.
- * Returns null if not encrypted or scheme is unsupported.
+ * Parse the init segment with mp4box to extract tenc info for ALL tracks.
+ * Returns a Map from track ID to TencInfo for each encrypted track.
  */
-function parseInitTenc(initData: ArrayBuffer): TencInfo | null {
-  let result: TencInfo | null = null;
+function parseInitAllTracks(initData: ArrayBuffer): Map<number, TencInfo> {
+  const result = new Map<number, TencInfo>();
   const mp4 = createFile();
   const buf = MP4BoxBuffer.fromArrayBuffer(initData.slice(0), 0);
   mp4.onReady = (info) => {
-    const vt = info.videoTracks[0];
-    if (!vt) return;
-    const scheme = extractScheme(mp4, vt.id);
-    if (scheme && scheme !== "cenc") {
-      console.warn(`[softwareDecrypt] Unsupported encryption scheme: ${scheme}`);
-      return;
+    const allTracks = [
+      ...info.videoTracks,
+      ...info.audioTracks,
+      ...info.otherTracks,
+    ];
+    for (const track of allTracks) {
+      const scheme = extractScheme(mp4, track.id);
+      if (scheme && scheme !== "cenc") {
+        console.warn(`[softwareDecrypt] Unsupported encryption scheme for track ${track.id}: ${scheme}`);
+        continue;
+      }
+      const tenc = extractTenc(mp4, track.id);
+      if (tenc) {
+        result.set(track.id, tenc);
+      }
     }
-    result = extractTenc(mp4, vt.id);
   };
   mp4.appendBuffer(buf);
   mp4.flush();
@@ -166,8 +170,9 @@ export function configureSoftwareDecryption(
   player: shaka.Player,
   clearKeyHex: string,
 ): void {
-  let cachedInitData: ArrayBuffer | null = null;
-  let tencInfo: TencInfo | null = null;
+  // Per-track state: each track (video, audio) has its own init data and tenc info
+  const initDataByTrack = new Map<number, ArrayBuffer>();
+  const tencInfoByTrack = new Map<number, TencInfo>();
   let cryptoKey: CryptoKey | null = null;
 
   const responseFilter: shaka.extern.ResponseFilter = async (
@@ -213,12 +218,17 @@ export function configureSoftwareDecryption(
     const isInit = hasMoov;
     const isMedia = hasMoof && !hasMoov;
 
-    // ── INIT SEGMENT: cache, parse tenc, import key, strip encryption ──
+    // ── INIT SEGMENT: cache per-track, parse tenc for all tracks, import key, strip encryption ──
     if (isInit) {
-      cachedInitData = rawData.slice(0);
+      const initCopy = rawData.slice(0);
+      const trackTencs = parseInitAllTracks(initCopy);
 
-      tencInfo = parseInitTenc(cachedInitData);
-      if (tencInfo) {
+      for (const [trackId, tenc] of trackTencs) {
+        initDataByTrack.set(trackId, initCopy);
+        tencInfoByTrack.set(trackId, tenc);
+      }
+
+      if (trackTencs.size > 0 && !cryptoKey) {
         cryptoKey = await importClearKey(clearKeyHex);
       }
 
@@ -227,9 +237,16 @@ export function configureSoftwareDecryption(
     }
 
     // ── MEDIA SEGMENT: decrypt samples in-place within mdat ──
-    if (isMedia && cryptoKey && tencInfo && cachedInitData) {
+    if (isMedia && cryptoKey) {
+      // Identify which track this media segment belongs to via tfhd
+      const trackId = extractTrackIdFromTfhd(data);
+      if (trackId === null) return;
+
+      const ti = tencInfoByTrack.get(trackId);
+      const cachedInit = initDataByTrack.get(trackId);
+      if (!ti || !cachedInit) return; // unencrypted track — pass through
+
       const ck = cryptoKey;
-      const ti = tencInfo;
 
       const segBytes = new Uint8Array(rawData);
       const mdatContent = findBoxData(segBytes, "mdat");
@@ -239,7 +256,7 @@ export function configureSoftwareDecryption(
       const ivSize = ti.defaultPerSampleIVSize;
       const sencSamples = parseSencFromSegment(rawData, ivSize);
 
-      const allSamples = await extractAllSamples(cachedInitData, rawData);
+      const allSamples = await extractAllSamples(cachedInit, rawData, trackId);
 
       let cumulativeOffset = 0;
       for (let j = 0; j < allSamples.length; j++) {

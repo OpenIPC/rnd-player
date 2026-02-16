@@ -132,6 +132,20 @@ export function findBoxData(data: Uint8Array, fourcc: string): Uint8Array | null
 }
 
 /**
+ * Extract the track ID from a media segment's tfhd (Track Fragment Header) box.
+ * tfhd is inside moof→traf. Layout after 8-byte box header:
+ *   version (1 byte) + flags (3 bytes) + track_ID (4 bytes)
+ * Returns null if tfhd is not found.
+ */
+export function extractTrackIdFromTfhd(segmentData: Uint8Array): number | null {
+  const tfhdContent = findBoxData(segmentData, "tfhd");
+  if (!tfhdContent || tfhdContent.length < 8) return null;
+  const view = new DataView(tfhdContent.buffer, tfhdContent.byteOffset, tfhdContent.byteLength);
+  // Skip version(1) + flags(3), read track_ID at offset 4
+  return view.getUint32(4);
+}
+
+/**
  * Parse the senc (Sample Encryption) box from raw segment bytes.
  * mp4box's senc parser is commented out, so we parse manually.
  *

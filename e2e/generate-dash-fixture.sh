@@ -39,16 +39,18 @@ case "$OS" in
     ;;
 esac
 
-echo "==> Generating 1080p source with frame counter ($DURATION s @ $FPS fps)..."
+echo "==> Generating 1080p source with frame counter and audio ($DURATION s @ $FPS fps)..."
 ffmpeg -y -loglevel error \
   -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
+  -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
   -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v libx264 -preset ultrafast -tune zerolatency \
   -g "$FPS" -keyint_min "$FPS" \
   -pix_fmt yuv420p \
+  -c:a aac -b:a 128k \
   "$SOURCE"
 
-echo "==> Packaging as DASH with 5 renditions..."
+echo "==> Packaging as DASH with 5 video renditions + audio..."
 ffmpeg -y -loglevel error \
   -i "$SOURCE" \
   -filter_complex "\
@@ -64,9 +66,10 @@ ffmpeg -y -loglevel error \
   -map "[out3]" -c:v:2 libx264 -b:v:2 500k  -preset ultrafast -g "$FPS" -keyint_min "$FPS" \
   -map "[out4]" -c:v:3 libx264 -b:v:3 400k  -preset ultrafast -g "$FPS" -keyint_min "$FPS" \
   -map "[out5]" -c:v:4 libx264 -b:v:4 300k  -preset ultrafast -g "$FPS" -keyint_min "$FPS" \
+  -map 0:a -c:a aac -b:a 128k \
   -use_timeline 1 -use_template 1 \
   -seg_duration 2 \
-  -adaptation_sets "id=0,streams=v" \
+  -adaptation_sets "id=0,streams=v id=1,streams=a" \
   -f dash "$OUT_DIR/manifest.mpd"
 
 # Cleanup intermediate source
@@ -122,7 +125,15 @@ for init_file in "${INIT_FILES[@]}"; do
   fmp4="$TEMP_DIR/rendition${stream_num}.mp4"
   cat "$init_file" "$OUT_DIR"/chunk-stream${stream_num}-*.m4s > "$fmp4"
 
-  PACKAGER_ARGS+=("in=${fmp4},stream=video,output=${ENCRYPTED_DIR}/stream${stream_num}.mp4")
+  # Detect stream type (video or audio) via ffprobe
+  codec_type="$(ffprobe -v error -select_streams 0 -show_entries stream=codec_type -of csv=p=0 "$fmp4" | head -1)"
+  if [ "$codec_type" = "audio" ]; then
+    stream_type="audio"
+  else
+    stream_type="video"
+  fi
+
+  PACKAGER_ARGS+=("in=${fmp4},stream=${stream_type},output=${ENCRYPTED_DIR}/stream${stream_num}.mp4")
   STREAM_IDX=$((STREAM_IDX + 1))
 done
 

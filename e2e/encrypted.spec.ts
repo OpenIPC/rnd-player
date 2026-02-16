@@ -58,6 +58,31 @@ test.describe("encrypted frame stepping", () => {
   });
 });
 
+// ── Encrypted continuous playback ────────────────────────────────────
+
+test.describe("encrypted continuous playback", () => {
+  test("plays across segment boundary without errors", async ({ page }) => {
+    await loadPlayerWithEncryptedDash(page);
+    // Play for ~3.5s to cross at least one 2s segment boundary
+    await page.evaluate(async () => {
+      const video = document.querySelector("video")!;
+      video.currentTime = 0;
+      video.play();
+      await new Promise((r) => setTimeout(r, 3500));
+      video.pause();
+      // Double rAF to ensure the decoded frame is composited
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(r)),
+      );
+    });
+    const frame = await readFrameNumber(page, ocr);
+    const frameNum = parseInt(frame, 10);
+    // At 30fps, ~3.5s of playback should produce frame >= 60
+    // (allowing for startup latency, buffering, etc.)
+    expect(frameNum).toBeGreaterThanOrEqual(60);
+  });
+});
+
 // ── Encrypted filmstrip ──────────────────────────────────────────────
 
 test.describe("encrypted filmstrip", () => {
