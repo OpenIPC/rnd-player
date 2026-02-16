@@ -112,6 +112,7 @@ Things to watch out for when working with frame-level video data:
 - **VideoDecoder output counting**: When feeding ALL samples to a one-shot decoder for save-frame, output counting by display-order index is reliable and preferred over CTS matching (which breaks across streams). For partial feeds or streaming decode, use timestamp matching instead.
 - **Filmstrip click time ≠ frame CTS**: The pixel-to-time conversion from a filmstrip click gives a timeline position, not a frame's actual CTS. The context menu maps click position → slot → arrIdx → framePosition, bypassing CTS entirely for the save path.
 - **Packed vs gap mode**: At low zoom the filmstrip shows one I-frame per segment (packed); zoomed in it shows multiple intra-frames per segment (gap). Packed mode always saves the first frame (position=0); gap mode computes position from the slot's bitmap array index.
+- **Frame-step seek epsilon**: The ArrowRight/ArrowLeft handlers in `useKeyboardShortcuts.ts` add `FRAME_SEEK_EPSILON = 0.001` (1 ms) to the computed seek target. Without this, Firefox's MSE implementation lands slightly *before* the exact frame boundary (`N/fps - epsilon`), displaying frame N-1 instead of N. At 30 fps (33 ms/frame), 1 ms cannot overshoot: `Math.round((N/fps + 0.001) * fps) = N`. The epsilon is safe for consecutive steps — no drift accumulates because each step recomputes `Math.round(currentTime * fps)` to snap to the current frame before adding ±1. Do not remove it without verifying Firefox OCR tests pass.
 
 ## Testing
 
@@ -229,7 +230,8 @@ DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/ocr.spec.ts --project
 **How it works:**
 1. `readFrameNumber(page)` crops a screenshot to the center 30×15% of the video (where the frame counter is drawn), then runs Tesseract with digit-only whitelist and `PSM.SINGLE_WORD` mode
 2. `seekTo(page, time)` sets `currentTime` and polls until `seeking === false`, with a retry loop to handle Shaka Player's internal DASH seeks that can override the target position
-3. `pressKeyAndSettle(page, key, shiftKey?)` dispatches a `KeyboardEvent` directly via `page.evaluate()` (bypasses Playwright's `keyboard.press()` which doesn't reliably propagate `shiftKey`), then polls for seek completion with a double-rAF paint wait
+3. `pressKeyAndSettle(page, key, shiftKey?)` dispatches a `KeyboardEvent` directly via `page.evaluate()` (bypasses Playwright's `keyboard.press()` which doesn't reliably propagate `shiftKey`), then waits for the `seeked` event with a double-rAF paint wait
+4. `pressKeyNTimesAndSettle(page, key, count)` runs N key presses inside a single `page.evaluate()`, waiting for `seeked` + `currentTime` change + double-rAF between each. This avoids Playwright round-trips that cause Edge's MSE pipeline to return stale `currentTime`, making consecutive steps no-op. Used for tests with 3+, 5+, or 10+ consecutive ArrowRight/ArrowLeft presses
 
 **Technical pitfalls encountered:**
 - **Playwright `keyboard.press("Shift+ArrowUp")` doesn't set `shiftKey`** on the dispatched event in all browsers. The fix is to dispatch `KeyboardEvent` directly via `page.evaluate()` with explicit `shiftKey: true`.
@@ -237,6 +239,8 @@ DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/ocr.spec.ts --project
 - **Shaka overriding seeks during init**: Setting `currentTime` immediately after load may be overwritten by Shaka's internal positioning. The `seekTo` retry loop re-issues `currentTime = t` until `Math.abs(currentTime - t) < 0.5`.
 - **WebKit doesn't paint frame 0 without explicit seek**: After `loadPlayerWithDash()` pauses at t=0, WebKit may not have composited the first frame. An explicit `video.currentTime = 0` seek (even to the same position) forces the frame to be painted.
 - **Tesseract drops leading zeros on Windows**: Font rendering differences on Windows cause Tesseract to read "0030" as "30". The fix is `text.trim().padStart(4, "0")` since the frame counter always uses 4-digit format.
+- **Firefox MSE lands before exact frame boundaries**: Seeking to exactly `N/fps` on Firefox displays frame N-1 because the actual position is `N/fps - epsilon`. The fix is `FRAME_SEEK_EPSILON = 0.001` added to ArrowRight/ArrowLeft seek targets in `useKeyboardShortcuts.ts`. This is a player-code fix, not a test-only workaround.
+- **Edge drops consecutive frame steps across Playwright round-trips**: Each `pressKeyAndSettle` is a separate `page.evaluate()`. Between calls, Edge's MSE pipeline hasn't flushed the new `currentTime` to the getter, so the next ArrowRight handler reads stale state and computes the same seek target (no-op). The fix is `pressKeyNTimesAndSettle()`, which runs all N steps inside a single `page.evaluate()` with per-step `seeked` event + `currentTime` change polling.
 
 ### Filmstrip Tests
 

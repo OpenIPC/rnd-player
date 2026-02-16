@@ -26,9 +26,9 @@ Works with any public DASH (.mpd) or HLS (.m3u8) stream. No server required — 
 
 Automatically tested on every commit:
 
-| Chromium · Linux | Firefox · Linux | WebKit · Linux |
+| Chromium · Linux | Firefox · macOS | WebKit · Linux |
 |:---:|:---:|:---:|
-| ![Chromium on Linux](https://openipc.github.io/rnd-player/screenshots/chromium-linux.png) | ![Firefox on Linux](https://openipc.github.io/rnd-player/screenshots/firefox-linux.png) | ![WebKit on Linux](https://openipc.github.io/rnd-player/screenshots/webkit-linux.png) |
+| ![Chromium on Linux](https://openipc.github.io/rnd-player/screenshots/chromium-linux.png) | ![Firefox on macOS](https://openipc.github.io/rnd-player/screenshots/firefox-macos.png) | ![WebKit on Linux](https://openipc.github.io/rnd-player/screenshots/webkit-linux.png) |
 
 | Safari · macOS | Edge · Windows |
 |:---:|:---:|
