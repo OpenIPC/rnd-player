@@ -1,10 +1,6 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import {
-  isDashFixtureAvailable,
-  lacksWebCodecsH264,
-  loadPlayerWithDash,
-} from "./helpers";
+import { isDashFixtureAvailable, loadPlayerWithDash } from "./helpers";
 
 test.skip(
   !isDashFixtureAvailable(),
@@ -171,10 +167,6 @@ async function hasColoredFrameBorders(page: Page): Promise<boolean> {
 
 test.describe("filmstrip panel", () => {
   test.describe("toggle", () => {
-    test.skip(
-      ({ browserName }) => lacksWebCodecsH264(browserName),
-      "No reliable H.264 WebCodecs on this platform",
-    );
 
     test("opens via context menu", async ({ page }) => {
       await loadPlayerWithDash(page);
@@ -210,10 +202,6 @@ test.describe("filmstrip panel", () => {
   // ── Thumbnail loading ────────────────────────────────────────────
 
   test.describe("thumbnail loading", () => {
-    test.skip(
-      ({ browserName }) => lacksWebCodecsH264(browserName),
-      "No reliable H.264 WebCodecs on this platform",
-    );
 
     test("thumbnails render after loading", async ({ page }) => {
       await loadPlayerWithDash(page);
@@ -225,10 +213,6 @@ test.describe("filmstrip panel", () => {
   // ── Zoom ─────────────────────────────────────────────────────────
 
   test.describe("zoom", () => {
-    test.skip(
-      ({ browserName }) => lacksWebCodecsH264(browserName),
-      "No reliable H.264 WebCodecs on this platform",
-    );
 
     test("zoom in with = key", async ({ page }) => {
       await loadPlayerWithDash(page);

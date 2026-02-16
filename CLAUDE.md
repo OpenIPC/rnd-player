@@ -188,9 +188,9 @@ GitHub Actions (`.github/workflows/ci.yml`) runs 7 jobs: 1 unit test + build job
 
 **Firefox on Linux lacks H.264 by default.** Playwright's Firefox relies on system GStreamer plugins for codec support. The `--with-deps` flag does not install `gstreamer1.0-libav`. Without it, `player.load()` fails silently (no codec error, just no playback) and controls never render, causing all player-controls tests to time out. The CI workflow has an explicit `sudo apt-get install -y gstreamer1.0-libav` step for the Ubuntu Firefox job.
 
-**Firefox WebCodecs works on macOS but not Linux.** On Linux, Playwright's Firefox exposes the `VideoDecoder` API (`typeof VideoDecoder !== "undefined"` is true) but cannot actually decode H.264 — the WebCodecs-to-GStreamer path is broken. On macOS, Playwright's Firefox uses Apple's VideoToolbox for H.264 decoding (the XUL engine links against `VideoToolbox.framework` and uses `AppleVTDecoder`), so both basic `<video>` playback and WebCodecs work. The `macos-latest, firefox` CI job tests filmstrip thumbnail decoding and other WebCodecs-dependent features. Tests use `lacksWebCodecsH264(browserName)` from `e2e/helpers.ts` to skip on platforms where H.264 WebCodecs is unreliable (Linux Firefox, Linux WebKit) while running on macOS.
+**WebCodecs H.264 decoding works on all CI platforms.** Diagnostic probes confirmed that `VideoDecoder` successfully decodes H.264 on all 6 CI platforms (Chromium Linux, Firefox Linux, Firefox macOS, WebKit Linux, WebKit macOS, Edge Windows) in both main-thread and Worker contexts. Output pixel formats vary by platform: I420 (Chromium/Edge, Linux WebKit), BGRX (Firefox via GStreamer/VideoToolbox), NV12 (macOS WebKit). Linux WebKitGTK reports decoded frame height as 239 instead of 240 (GStreamer decoder rounding).
 
-**WebKit behaves differently across OSes.** Playwright does not drive real Safari — it uses a patched WebKit engine. On Linux this is WebKitGTK (software rendering, different compositing path). On macOS it uses Core Animation and native media frameworks, matching real Safari behavior more closely. Both are tested in CI for coverage of rendering and codec differences. WebCodecs H.264 decoding works on macOS WebKit but is unreliable on Linux WebKitGTK.
+**WebKit behaves differently across OSes.** Playwright does not drive real Safari — it uses a patched WebKit engine. On Linux this is WebKitGTK (software rendering, different compositing path). On macOS it uses Core Animation and native media frameworks, matching real Safari behavior more closely. Both are tested in CI for coverage of rendering and codec differences.
 
 **Edge is Chromium-based but not identical.** Driven via `channel: "msedge"` using the system Edge binary. Catches Edge-specific quirks (autoplay policy, media session API behavior). Requires Windows — the Edge project is only run on `windows-latest`.
 
@@ -265,12 +265,7 @@ DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/filmstrip.spec.ts --p
 4. `hasBrightPixelsInRegion(page, xFraction)` samples a 5%-width strip at a horizontal position to verify thumbnail content exists at that part of the timeline
 5. `hasColoredFrameBorders(page)` scans for blue P-frame border pixels (B > 180, R < 100 after alpha compositing) which only appear in gap (per-frame) mode, never packed mode
 
-**Browser support** (controlled by `lacksWebCodecsH264()` in `e2e/helpers.ts`):
-- **Chromium/Edge**: Full support — all 8 tests run on all platforms
-- **macOS WebKit**: Full support — native frameworks provide H.264 decoding via WebCodecs
-- **Linux WebKit**: Toggle tests only (3 tests). Thumbnail/zoom tests skipped — WebKitGTK's WebCodecs H.264 decoding is unreliable
-- **Linux Firefox**: Toggle tests only (3 tests). Thumbnail/zoom tests skipped — WebCodecs API is present but H.264 decoding doesn't produce frames
-- **macOS Firefox**: Full support — VideoToolbox provides H.264 decoding via `AppleVTDecoder`
+All 8 tests run on all platforms. H.264 WebCodecs decoding works across all CI browsers (Chromium, Firefox, WebKit, Edge) on all OSes (Linux, macOS, Windows).
 
 ## Conventions
 

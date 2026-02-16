@@ -1,11 +1,7 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { createWorker, PSM } from "tesseract.js";
-import {
-  isDashFixtureAvailable,
-  lacksWebCodecsH264,
-  loadPlayerWithDash,
-} from "./helpers";
+import { isDashFixtureAvailable, loadPlayerWithDash } from "./helpers";
 
 test.skip(
   !isDashFixtureAvailable(),
@@ -302,10 +298,6 @@ test.describe("navigation keys", () => {
 // ── Filmstrip click synchronization ──────────────────────────────────
 
 test.describe("filmstrip click sync", () => {
-  test.skip(
-    ({ browserName }) => lacksWebCodecsH264(browserName),
-    "No reliable H.264 WebCodecs on this platform",
-  );
 
   /**
    * Open the filmstrip panel via the right-click context menu.
