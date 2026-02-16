@@ -98,7 +98,8 @@ export async function loadPlayerWithDash(page: Page) {
         video.addEventListener("seeked", resolve, { once: true }),
       );
       video.currentTime = 0;
-      await seeked;
+      // Timeout prevents hanging on WebKitGTK where seeks can stall
+      await Promise.race([seeked, new Promise((r) => setTimeout(r, 5000))]);
     }
   });
 }
@@ -217,7 +218,8 @@ export async function loadPlayerWithEncryptedDash(page: Page) {
         video.addEventListener("seeked", resolve, { once: true }),
       );
       video.currentTime = 0;
-      await seeked;
+      // Timeout prevents hanging on WebKitGTK where seeks can stall
+      await Promise.race([seeked, new Promise((r) => setTimeout(r, 5000))]);
     }
   });
 }
@@ -284,7 +286,8 @@ export async function loadPlayerWithHevcDash(page: Page) {
         video.addEventListener("seeked", resolve, { once: true }),
       );
       video.currentTime = 0;
-      await seeked;
+      // Timeout prevents hanging on WebKitGTK where seeks can stall
+      await Promise.race([seeked, new Promise((r) => setTimeout(r, 5000))]);
     }
   });
 }
@@ -372,7 +375,10 @@ export async function seekTo(page: Page, time: number) {
     // Retry until currentTime actually lands at the target.
     for (let attempt = 0; attempt < 10; attempt++) {
       video.currentTime = t;
-      while (video.seeking) {
+      // Per-attempt timeout prevents hanging on WebKitGTK where
+      // video.seeking can get stuck as true under CI VM load.
+      const deadline = Date.now() + 3000;
+      while (video.seeking && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 16));
       }
       if (t === 0 || Math.abs(video.currentTime - t) < 0.5) break;

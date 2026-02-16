@@ -189,10 +189,11 @@ test.describe("filmstrip click sync", () => {
     const y = box.y + 35;
     await page.mouse.click(x, y);
 
-    // Wait for seek to settle
+    // Wait for seek to settle (with timeout to avoid hanging on WebKitGTK)
     await page.evaluate(async () => {
       const video = document.querySelector("video")!;
-      while (video.seeking) {
+      const deadline = Date.now() + 5000;
+      while (video.seeking && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 16));
       }
       await new Promise((r) =>
