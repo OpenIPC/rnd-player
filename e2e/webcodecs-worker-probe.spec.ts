@@ -58,7 +58,8 @@ function parseSegmentInNode(): ParsedSegment | null {
     if (!vt) return;
 
     // Extract avcC description (same logic as thumbnailWorker)
-    const trak = mp4File.getTrackById(vt.id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const trak = mp4File.getTrackById(vt.id) as any;
     const entries = trak?.mdia?.minf?.stbl?.stsd?.entries;
     const entry = entries?.[0];
     const box = entry?.avcC ?? entry?.hvcC ?? entry?.vpcC ?? entry?.av1C;
@@ -173,11 +174,8 @@ test("WebCodecs H.264 decoding in Worker context", async ({
           };
 
           let frameCount = 0;
-          let lastFrame: {
-            width: number;
-            height: number;
-            format: string | null;
-          } | null = null;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let lastFrame: any = null;
 
           const decoder = new VideoDecoder({
             output: (frame: VideoFrame) => {
