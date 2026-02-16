@@ -186,7 +186,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs 6 jobs: 1 unit test + build job
 
 **Firefox on Linux lacks H.264 by default.** Playwright's Firefox relies on system GStreamer plugins for codec support. The `--with-deps` flag does not install `gstreamer1.0-libav`. Without it, `player.load()` fails silently (no codec error, just no playback) and controls never render, causing all player-controls tests to time out. The CI workflow has an explicit `sudo apt-get install -y gstreamer1.0-libav` step for the Ubuntu Firefox job.
 
-**Firefox WebCodecs has no working CI path.** On Linux, Playwright's Firefox exposes the `VideoDecoder` API (`typeof VideoDecoder !== "undefined"` is true) but cannot actually decode H.264 — the WebCodecs-to-GStreamer path is broken. On macOS, Playwright's Firefox build cannot play H.264 at all (even basic `<video>` playback fails) — the bundled `libmozavcodec.dylib` does not include H.264 and the sandbox prevents access to VideoToolbox. Tests use `lacksWebCodecsH264(browserName)` from `e2e/helpers.ts` to skip WebCodecs-dependent tests on Firefox and Linux WebKit. If a future Playwright version enables H.264 in Firefox on macOS, a `macos-latest, firefox` CI entry would unlock full filmstrip/WebCodecs testing.
+**Firefox WebCodecs has no working CI path.** On Linux, Playwright's Firefox exposes the `VideoDecoder` API (`typeof VideoDecoder !== "undefined"` is true) but cannot actually decode H.264 — the WebCodecs-to-GStreamer path is broken. On macOS, Playwright's custom Firefox Nightly build cannot play H.264 at all (even basic `<video>` playback fails) — the bundled `libmozavcodec.dylib` excludes H.264 (Mozilla only bundles royalty-free codecs) and the system codec fallback (VideoToolbox) that regular Firefox uses is not enabled in this build. Unlike WebKit — where Playwright drives the system framework with full native media support — Firefox is a standalone third-party binary. Tests use `lacksWebCodecsH264(browserName)` from `e2e/helpers.ts` to skip WebCodecs-dependent tests on Firefox and Linux WebKit. If a future Playwright version enables H.264 in Firefox on macOS, a `macos-latest, firefox` CI entry would unlock full filmstrip/WebCodecs testing.
 
 **WebKit behaves differently across OSes.** Playwright does not drive real Safari — it uses a patched WebKit engine. On Linux this is WebKitGTK (software rendering, different compositing path). On macOS it uses Core Animation and native media frameworks, matching real Safari behavior more closely. Both are tested in CI for coverage of rendering and codec differences. WebCodecs H.264 decoding works on macOS WebKit but is unreliable on Linux WebKitGTK.
 
@@ -265,7 +265,7 @@ DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/filmstrip.spec.ts --p
 - **macOS WebKit**: Full support — native frameworks provide H.264 decoding via WebCodecs
 - **Linux WebKit**: Toggle tests only (3 tests). Thumbnail/zoom tests skipped — WebKitGTK's WebCodecs H.264 decoding is unreliable
 - **Linux Firefox**: Toggle tests only (3 tests). Thumbnail/zoom tests skipped — WebCodecs API is present but H.264 decoding doesn't produce frames
-- **macOS Firefox**: Not tested in CI — Playwright's Firefox build cannot play H.264 on macOS (sandbox blocks VideoToolbox)
+- **macOS Firefox**: Not tested in CI — Playwright's custom Firefox build lacks H.264 (bundled FFmpeg excludes it, system codec fallback not enabled)
 
 ## Conventions
 
