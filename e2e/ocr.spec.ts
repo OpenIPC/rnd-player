@@ -118,6 +118,52 @@ async function pressKeyAndSettle(
   );
 }
 
+/**
+ * Press a key N times inside a single page.evaluate(), waiting for each
+ * seek to complete before pressing again. This eliminates Playwright
+ * round-trips between steps — on Edge/Windows the MSE pipeline doesn't
+ * flush currentTime to the getter fast enough between separate evaluate
+ * calls, causing subsequent steps to read stale state and no-op.
+ */
+async function pressKeyNTimesAndSettle(
+  page: Page,
+  key: string,
+  count: number,
+) {
+  await page.evaluate(
+    async ({ key, count }) => {
+      const video = document.querySelector("video")!;
+      for (let i = 0; i < count; i++) {
+        const prevTime = video.currentTime;
+        const seeked = new Promise<void>((resolve) => {
+          video.addEventListener("seeked", () => resolve(), { once: true });
+        });
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await Promise.race([
+          seeked,
+          new Promise((r) => setTimeout(r, 1000)),
+        ]);
+        // Poll until currentTime actually changed (guards against stale getter)
+        for (let j = 0; j < 50; j++) {
+          if (video.currentTime !== prevTime) break;
+          await new Promise((r) => setTimeout(r, 16));
+        }
+        // Double rAF to ensure the decoded frame is composited
+        await new Promise((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(r)),
+        );
+      }
+    },
+    { key, count },
+  );
+}
+
 // ── Seek verification ────────────────────────────────────────────────
 
 test.describe("seek verification", () => {
@@ -155,9 +201,7 @@ test.describe("frame stepping", () => {
   test("three ArrowRight steps advance by three frames", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
-    for (let i = 0; i < 3; i++) {
-      await pressKeyAndSettle(page, "ArrowRight");
-    }
+    await pressKeyNTimesAndSettle(page, "ArrowRight", 3);
     expect(await readFrameNumber(page)).toBe("0003");
   });
 
@@ -171,9 +215,7 @@ test.describe("frame stepping", () => {
   test("ten consecutive ArrowRight steps reach frame 10", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
-    for (let i = 0; i < 10; i++) {
-      await pressKeyAndSettle(page, "ArrowRight");
-    }
+    await pressKeyNTimesAndSettle(page, "ArrowRight", 10);
     expect(await readFrameNumber(page)).toBe("0010");
   });
 
@@ -203,12 +245,8 @@ test.describe("frame stepping", () => {
     await loadPlayerWithDash(page);
     // 10s × 30fps = frame 300
     await seekTo(page, 10);
-    for (let i = 0; i < 5; i++) {
-      await pressKeyAndSettle(page, "ArrowRight");
-    }
-    for (let i = 0; i < 5; i++) {
-      await pressKeyAndSettle(page, "ArrowLeft");
-    }
+    await pressKeyNTimesAndSettle(page, "ArrowRight", 5);
+    await pressKeyNTimesAndSettle(page, "ArrowLeft", 5);
     expect(await readFrameNumber(page)).toBe("0300");
   });
 });

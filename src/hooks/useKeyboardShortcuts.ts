@@ -2,6 +2,11 @@ import { useEffect, useRef, useState, useCallback } from "react";
 
 const SHUTTLE_SPEEDS = [1, 2, 4, 8, 16];
 const VOLUME_STEP = 0.05;
+// Nudge frame-step seeks 1 ms past the exact frame boundary.
+// Firefox's MSE lands slightly before the target time; without the
+// epsilon the displayed frame is one behind. At 30 fps (33 ms/frame)
+// this cannot overshoot into the next frame.
+const FRAME_SEEK_EPSILON = 0.001;
 
 interface UseKeyboardShortcutsOptions {
   videoEl: HTMLVideoElement;
@@ -165,7 +170,7 @@ export function useKeyboardShortcuts({
           // despite browser timestamp quantization and floating-point error
           const curFrame = Math.round(videoEl.currentTime * fps);
           const prevFrame = Math.max(0, curFrame - 1);
-          videoEl.currentTime = prevFrame / fps;
+          videoEl.currentTime = prevFrame / fps + FRAME_SEEK_EPSILON;
           break;
         }
 
@@ -177,7 +182,7 @@ export function useKeyboardShortcuts({
           videoEl.pause();
           const dur = videoEl.duration || 0;
           const curFrameR = Math.round(videoEl.currentTime * fps);
-          videoEl.currentTime = Math.min(dur, (curFrameR + 1) / fps);
+          videoEl.currentTime = Math.min(dur, (curFrameR + 1) / fps + FRAME_SEEK_EPSILON);
           break;
         }
 
