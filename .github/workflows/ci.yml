@@ -53,14 +53,14 @@ jobs:
 
       - name: Install Playwright browser (macOS)
         if: matrix.os == 'macos-latest'
-        run: npx playwright install --with-deps webkit
+        run: npx playwright install --with-deps ${{ matrix.browser }}
 
       - name: Install Playwright browser (Windows)
         if: matrix.os == 'windows-latest'
         run: npx playwright install --with-deps chromium
 
       - name: Install H.264 codecs for Firefox
-        if: matrix.browser == 'firefox'
+        if: matrix.browser == 'firefox' && matrix.os == 'ubuntu-latest'
         run: sudo apt-get install -y gstreamer1.0-libav
 
       - name: Install ffmpeg and fonts (Ubuntu)

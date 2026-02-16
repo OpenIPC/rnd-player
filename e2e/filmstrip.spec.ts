@@ -1,6 +1,10 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { isDashFixtureAvailable, loadPlayerWithDash } from "./helpers";
+import {
+  isDashFixtureAvailable,
+  lacksWebCodecsH264,
+  loadPlayerWithDash,
+} from "./helpers";
 
 test.skip(
   !isDashFixtureAvailable(),
@@ -68,7 +72,11 @@ async function waitForThumbnails(page: Page, timeout = 30_000) {
       }
       return brightCount / totalPixels;
     });
-    expect(bright).toBeGreaterThan(0.05);
+    // 2% threshold: "no thumbnails" gives ~0% (placeholder is nearly
+    // invisible rgba(255,255,255,0.05)). At high DPR (macOS 2×) the sample
+    // strip intersects fewer bright pixels of the frame counter digits,
+    // yielding ~3% vs ~6% at DPR 1.
+    expect(bright).toBeGreaterThan(0.02);
   }).toPass({ timeout });
 }
 
@@ -120,7 +128,7 @@ async function hasBrightPixelsInRegion(
         bright++;
       }
     }
-    return bright / (sampleW * 2) > 0.05;
+    return bright / (sampleW * 2) > 0.02;
   }, xFraction);
 }
 
@@ -164,8 +172,8 @@ async function hasColoredFrameBorders(page: Page): Promise<boolean> {
 test.describe("filmstrip panel", () => {
   test.describe("toggle", () => {
     test.skip(
-      ({ browserName }) => browserName === "firefox",
-      "Firefox lacks WebCodecs",
+      ({ browserName }) => lacksWebCodecsH264(browserName),
+      "No reliable H.264 WebCodecs on this platform",
     );
 
     test("opens via context menu", async ({ page }) => {
@@ -203,8 +211,8 @@ test.describe("filmstrip panel", () => {
 
   test.describe("thumbnail loading", () => {
     test.skip(
-      ({ browserName }) => browserName === "firefox" || browserName === "webkit",
-      "Requires functional VideoDecoder (Chromium-based only)",
+      ({ browserName }) => lacksWebCodecsH264(browserName),
+      "No reliable H.264 WebCodecs on this platform",
     );
 
     test("thumbnails render after loading", async ({ page }) => {
@@ -218,8 +226,8 @@ test.describe("filmstrip panel", () => {
 
   test.describe("zoom", () => {
     test.skip(
-      ({ browserName }) => browserName === "firefox" || browserName === "webkit",
-      "Requires functional VideoDecoder (Chromium-based only)",
+      ({ browserName }) => lacksWebCodecsH264(browserName),
+      "No reliable H.264 WebCodecs on this platform",
     );
 
     test("zoom in with = key", async ({ page }) => {

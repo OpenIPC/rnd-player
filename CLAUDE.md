@@ -178,15 +178,17 @@ GitHub Actions (`.github/workflows/ci.yml`) runs 6 jobs: 1 unit test + build job
 
 `fail-fast: false` — all matrix entries run even if one fails. Blob reports are uploaded as artifacts (`blob-report-{os}-{browser}`, 14-day retention).
 
-**Browser install per OS**: Ubuntu uses `npx playwright install --with-deps $BROWSER`. macOS installs only `webkit` (native media frameworks, no extra deps). Windows installs `chromium` deps (provides the driver); Edge itself is pre-installed on GitHub's Windows runners.
+**Browser install per OS**: Ubuntu uses `npx playwright install --with-deps $BROWSER`. macOS installs the specific browser via `--with-deps $BROWSER`. Windows installs `chromium` deps (provides the driver); Edge itself is pre-installed on GitHub's Windows runners.
 
 **Cost**: macOS runners cost 10× and Windows runners cost 2× vs Linux per minute. The suite runs in ~15s, so per-run cost is negligible.
 
 ### Platform-Specific Nuances
 
-**Firefox on Linux lacks H.264 by default.** Playwright's Firefox relies on system GStreamer plugins for codec support. The `--with-deps` flag does not install `gstreamer1.0-libav`. Without it, `player.load()` fails silently (no codec error, just no playback) and controls never render, causing all player-controls tests to time out. The CI workflow has an explicit `sudo apt-get install -y gstreamer1.0-libav` step for Firefox.
+**Firefox on Linux lacks H.264 by default.** Playwright's Firefox relies on system GStreamer plugins for codec support. The `--with-deps` flag does not install `gstreamer1.0-libav`. Without it, `player.load()` fails silently (no codec error, just no playback) and controls never render, causing all player-controls tests to time out. The CI workflow has an explicit `sudo apt-get install -y gstreamer1.0-libav` step for the Ubuntu Firefox job.
 
-**WebKit behaves differently across OSes.** Playwright does not drive real Safari — it uses a patched WebKit engine. On Linux this is WebKitGTK (software rendering, different compositing path). On macOS it uses Core Animation and native media frameworks, matching real Safari behavior more closely. Both are tested in CI for coverage of rendering and codec differences.
+**Firefox WebCodecs has no working CI path.** On Linux, Playwright's Firefox exposes the `VideoDecoder` API (`typeof VideoDecoder !== "undefined"` is true) but cannot actually decode H.264 — the WebCodecs-to-GStreamer path is broken. On macOS, Playwright's Firefox build cannot play H.264 at all (even basic `<video>` playback fails) — the bundled `libmozavcodec.dylib` does not include H.264 and the sandbox prevents access to VideoToolbox. Tests use `lacksWebCodecsH264(browserName)` from `e2e/helpers.ts` to skip WebCodecs-dependent tests on Firefox and Linux WebKit. If a future Playwright version enables H.264 in Firefox on macOS, a `macos-latest, firefox` CI entry would unlock full filmstrip/WebCodecs testing.
+
+**WebKit behaves differently across OSes.** Playwright does not drive real Safari — it uses a patched WebKit engine. On Linux this is WebKitGTK (software rendering, different compositing path). On macOS it uses Core Animation and native media frameworks, matching real Safari behavior more closely. Both are tested in CI for coverage of rendering and codec differences. WebCodecs H.264 decoding works on macOS WebKit but is unreliable on Linux WebKitGTK.
 
 **Edge is Chromium-based but not identical.** Driven via `channel: "msedge"` using the system Edge binary. Catches Edge-specific quirks (autoplay policy, media session API behavior). Requires Windows — the Edge project is only run on `windows-latest`.
 
@@ -258,10 +260,12 @@ DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/filmstrip.spec.ts --p
 4. `hasBrightPixelsInRegion(page, xFraction)` samples a 5%-width strip at a horizontal position to verify thumbnail content exists at that part of the timeline
 5. `hasColoredFrameBorders(page)` scans for blue P-frame border pixels (B > 180, R < 100 after alpha compositing) which only appear in gap (per-frame) mode, never packed mode
 
-**Browser support:**
-- **Chromium/Edge**: Full support — all 8 tests run. VideoDecoder reliably decodes H.264 segments via the thumbnail worker
-- **WebKit**: Toggle tests run (3 tests). Thumbnail/zoom tests are skipped because Playwright's patched WebKit engine exposes the `VideoDecoder` API but does not reliably decode H.264 frames — the canvas remains empty despite `typeof VideoDecoder !== "undefined"` returning true
-- **Firefox**: All tests skipped. Firefox on Linux CI now has `VideoDecoder` (WebCodecs) but the thumbnail worker's H.264 decoding is not reliable enough for deterministic testing
+**Browser support** (controlled by `lacksWebCodecsH264()` in `e2e/helpers.ts`):
+- **Chromium/Edge**: Full support — all 8 tests run on all platforms
+- **macOS WebKit**: Full support — native frameworks provide H.264 decoding via WebCodecs
+- **Linux WebKit**: Toggle tests only (3 tests). Thumbnail/zoom tests skipped — WebKitGTK's WebCodecs H.264 decoding is unreliable
+- **Linux Firefox**: Toggle tests only (3 tests). Thumbnail/zoom tests skipped — WebCodecs API is present but H.264 decoding doesn't produce frames
+- **macOS Firefox**: Not tested in CI — Playwright's Firefox build cannot play H.264 on macOS (sandbox blocks VideoToolbox)
 
 ## Conventions
 

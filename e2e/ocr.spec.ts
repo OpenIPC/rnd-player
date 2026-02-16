@@ -1,7 +1,11 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { createWorker, PSM } from "tesseract.js";
-import { isDashFixtureAvailable, loadPlayerWithDash } from "./helpers";
+import {
+  isDashFixtureAvailable,
+  lacksWebCodecsH264,
+  loadPlayerWithDash,
+} from "./helpers";
 
 test.skip(
   !isDashFixtureAvailable(),
@@ -254,8 +258,8 @@ test.describe("navigation keys", () => {
 
 test.describe("filmstrip click sync", () => {
   test.skip(
-    ({ browserName }) => browserName === "firefox" || browserName === "webkit",
-    "Requires functional VideoDecoder (Chromium-based only)",
+    ({ browserName }) => lacksWebCodecsH264(browserName),
+    "No reliable H.264 WebCodecs on this platform",
   );
 
   /**
@@ -311,7 +315,9 @@ test.describe("filmstrip click sync", () => {
         }
         return brightCount / totalPixels;
       });
-      expect(bright).toBeGreaterThan(0.05);
+      // 2% threshold: same as filmstrip.spec.ts — at high DPR (macOS 2×)
+      // the sample strip intersects fewer bright pixels of the frame counter
+      expect(bright).toBeGreaterThan(0.02);
     }).toPass({ timeout });
   }
 

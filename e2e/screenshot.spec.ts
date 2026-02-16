@@ -50,7 +50,9 @@ test("capture player screenshot", async ({ page, browserName }) => {
       }
       return count / (canvas.width * 2);
     });
-    expect(bright).toBeGreaterThan(0.05);
+    // 2% threshold: at high DPR (macOS 2×) the sample strip intersects
+    // fewer bright pixels of the frame counter digits (~3% vs ~6% at DPR 1)
+    expect(bright).toBeGreaterThan(0.02);
   });
   if (browserName === "chromium") {
     await thumbnailCheck.toPass({ timeout: 30_000 });

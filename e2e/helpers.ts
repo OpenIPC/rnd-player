@@ -31,6 +31,20 @@ export async function loadPlayerWithFixture(page: Page) {
   });
 }
 
+/**
+ * Whether the current platform lacks reliable H.264 WebCodecs decoding for
+ * the given browser. On macOS, both Firefox (VideoToolbox) and WebKit
+ * (native frameworks) decode H.264 via WebCodecs. On Linux, Playwright's
+ * Firefox and WebKit builds cannot reliably decode H.264 through WebCodecs.
+ */
+export function lacksWebCodecsH264(browserName: string): boolean {
+  if (browserName === "chromium") return false;
+  // macOS: VideoToolbox provides H.264 for Firefox; native frameworks for WebKit
+  if (process.platform === "darwin") return false;
+  // Linux Firefox / Linux WebKit: WebCodecs H.264 decoding is unreliable
+  return browserName === "firefox" || browserName === "webkit";
+}
+
 // --- DASH fixture support ---
 
 const dashFixtureDir = process.env.DASH_FIXTURE_DIR ?? "";
