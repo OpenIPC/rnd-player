@@ -220,7 +220,11 @@ test.describe("frame stepping", () => {
   test("ten consecutive ArrowRight steps reach frame 10", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
-    await pressKeyNTimesAndSettle(page, "ArrowRight", 10);
+    // Split into two batches of 5: Edge's MSE pipeline can stall after
+    // ~7 rapid seeks in a single evaluate(), but 5-step batches are
+    // reliable (proven by the forward-backward test).
+    await pressKeyNTimesAndSettle(page, "ArrowRight", 5);
+    await pressKeyNTimesAndSettle(page, "ArrowRight", 5);
     expect(await readFrameNumber(page)).toBe("0010");
   });
 
