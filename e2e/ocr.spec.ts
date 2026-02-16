@@ -156,6 +156,50 @@ test.describe("frame stepping", () => {
     await pressKeyAndSettle(page, "ArrowLeft");
     expect(await readFrameNumber(page)).toBe("0000");
   });
+
+  test("ten consecutive ArrowRight steps reach frame 10", async ({ page }) => {
+    await loadPlayerWithDash(page);
+    await seekTo(page, 0);
+    for (let i = 0; i < 10; i++) {
+      await pressKeyAndSettle(page, "ArrowRight");
+    }
+    expect(await readFrameNumber(page)).toBe("0010");
+  });
+
+  test("ArrowRight from mid-frame time advances correctly", async ({
+    page,
+  }) => {
+    await loadPlayerWithDash(page);
+    // 0.5s at 30fps = frame 15, mid-frame lands between 15 and 16
+    // ArrowRight should advance to the next frame: 16
+    await seekTo(page, 0.5);
+    await pressKeyAndSettle(page, "ArrowRight");
+    expect(await readFrameNumber(page)).toBe("0016");
+  });
+
+  test("ArrowLeft from mid-frame time retreats correctly", async ({
+    page,
+  }) => {
+    await loadPlayerWithDash(page);
+    // 5.5s at 30fps = frame 165, mid-frame lands between 165 and 166
+    // ArrowLeft should retreat to the previous frame: 164
+    await seekTo(page, 5.5);
+    await pressKeyAndSettle(page, "ArrowLeft");
+    expect(await readFrameNumber(page)).toBe("0164");
+  });
+
+  test("forward then backward returns to original frame", async ({ page }) => {
+    await loadPlayerWithDash(page);
+    // 10s × 30fps = frame 300
+    await seekTo(page, 10);
+    for (let i = 0; i < 5; i++) {
+      await pressKeyAndSettle(page, "ArrowRight");
+    }
+    for (let i = 0; i < 5; i++) {
+      await pressKeyAndSettle(page, "ArrowLeft");
+    }
+    expect(await readFrameNumber(page)).toBe("0300");
+  });
 });
 
 // ── Navigation keys ──────────────────────────────────────────────────
@@ -197,6 +241,125 @@ test.describe("navigation keys", () => {
     // 5 s − 1 s = 4 s × 30 fps = frame 120
     expect(await readFrameNumber(page)).toBe("0120");
   });
+});
+
+// ── Filmstrip click synchronization ──────────────────────────────────
+
+test.describe("filmstrip click sync", () => {
+  test.skip(
+    ({ browserName }) => browserName === "firefox" || browserName === "webkit",
+    "Requires functional VideoDecoder (Chromium-based only)",
+  );
+
+  /**
+   * Open the filmstrip panel via the right-click context menu.
+   * Same approach as filmstrip.spec.ts.
+   */
+  async function openFilmstrip(page: Page) {
+    await page.evaluate(() => {
+      document
+        .querySelector<HTMLElement>(".vp-debug-panel")
+        ?.style.setProperty("display", "none");
+    });
+
+    const videoArea = page.locator(".vp-video-area");
+    await videoArea.click({ button: "right" });
+
+    await page
+      .locator(".vp-context-menu-item", { hasText: "Filmstrip timeline" })
+      .click();
+
+    await page
+      .locator(".vp-filmstrip-panel")
+      .waitFor({ state: "visible", timeout: 5_000 });
+  }
+
+  /**
+   * Wait until the filmstrip canvas shows real thumbnail content.
+   */
+  async function waitForThumbnails(page: Page, timeout = 30_000) {
+    await expect(async () => {
+      const bright = await page.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          ".vp-filmstrip-panel canvas",
+        );
+        if (!canvas) throw new Error("no canvas");
+
+        const dpr = window.devicePixelRatio || 1;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) throw new Error("no 2d context");
+
+        const y = Math.round(35 * dpr);
+        const w = canvas.width;
+        const stripH = 2;
+        if (y + stripH > canvas.height) throw new Error("canvas too small");
+
+        const data = ctx.getImageData(0, y, w, stripH).data;
+        let brightCount = 0;
+        const totalPixels = w * stripH;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] > 80 || data[i + 1] > 80 || data[i + 2] > 80) {
+            brightCount++;
+          }
+        }
+        return brightCount / totalPixels;
+      });
+      expect(bright).toBeGreaterThan(0.05);
+    }).toPass({ timeout });
+  }
+
+  /**
+   * Click on the filmstrip canvas at a horizontal fraction, wait for the
+   * video to seek, then OCR the frame number and verify it matches.
+   */
+  async function clickFilmstripAndVerify(
+    page: Page,
+    xFraction: number,
+    expectedFrame: number,
+  ) {
+    const canvas = page.locator(".vp-filmstrip-panel canvas");
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error("filmstrip canvas not visible");
+
+    // Click in the thumbnail row (y ≈ 35px below canvas top, below the 22px ruler)
+    const x = box.x + box.width * xFraction;
+    const y = box.y + 35;
+    await page.mouse.click(x, y);
+
+    // Wait for seek to settle
+    await page.evaluate(async () => {
+      const video = document.querySelector("video")!;
+      while (video.seeking) {
+        await new Promise((r) => setTimeout(r, 16));
+      }
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(r)),
+      );
+    });
+
+    const frame = await readFrameNumber(page);
+    const actual = parseInt(frame, 10);
+    // ±1 frame tolerance for pixel→time→frame rounding
+    expect(
+      Math.abs(actual - expectedFrame),
+      `expected frame ~${expectedFrame}, got ${actual}`,
+    ).toBeLessThanOrEqual(1);
+  }
+
+  for (const [label, xFraction, expectedFrame] of [
+    ["start", 0.05, 90],
+    ["midpoint", 0.5, 900],
+    ["near end", 0.9, 1620],
+  ] as const) {
+    test(`filmstrip click at ${label} seeks to frame ${expectedFrame}`, async ({
+      page,
+    }) => {
+      await loadPlayerWithDash(page);
+      await openFilmstrip(page);
+      await waitForThumbnails(page);
+      await clickFilmstripAndVerify(page, xFraction, expectedFrame);
+    });
+  }
 });
 
 // ── Playback ─────────────────────────────────────────────────────────
