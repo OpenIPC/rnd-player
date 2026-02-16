@@ -43,7 +43,9 @@ async function readFrameNumber(page: Page): Promise<string> {
   const {
     data: { text },
   } = await ocr.recognize(screenshot);
-  return text.trim();
+  // Tesseract may drop leading zeros on some platforms (e.g. Windows/Edge).
+  // The frame counter is always 4 digits, so pad back to 4.
+  return text.trim().padStart(4, "0");
 }
 
 /**
