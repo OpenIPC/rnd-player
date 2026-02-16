@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
+import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
@@ -116,9 +117,13 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
       }
 
       if (defaultKID && clearKey) {
-        player.configure({
-          drm: { clearKeys: { [defaultKID]: clearKey } },
-        });
+        if (await hasClearKeySupport()) {
+          player.configure({
+            drm: { clearKeys: { [defaultKID]: clearKey } },
+          });
+        } else {
+          configureSoftwareDecryption(player, clearKey);
+        }
       }
 
       try {
@@ -150,8 +155,41 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
             // Browser may block autoplay without user interaction
           });
         }
+
+        // Non-blocking EME fallback (see handleKeySubmit for details)
+        if (defaultKID && clearKey) {
+          waitForDecryption(video).then(async (emeWorks) => {
+            if (destroyed || emeWorks) return;
+            await player.unload();
+            if (destroyed) return;
+            player.configure({ drm: { clearKeys: {} } });
+            configureSoftwareDecryption(player, clearKey);
+            await player.load(src, loadStartTime);
+            if (destroyed) return;
+            video.play().catch(() => {});
+          });
+        }
       } catch (e: unknown) {
         if (destroyed) return;
+
+        // DRM error — EME may be entirely absent (e.g. Linux WebKitGTK).
+        // Fall back to software decryption instead of showing an error.
+        if (defaultKID && clearKey && e instanceof shaka.util.Error && (e.category === 6 || e.category === 3)) {
+          console.warn("EME load failed (code %d), falling back to software decryption", e.code);
+          player.configure({ drm: { clearKeys: {} } });
+          configureSoftwareDecryption(player, clearKey);
+          try {
+            await player.load(src, loadStartTime);
+            if (destroyed) return;
+            setError(null);
+            setPlayerReady(true);
+            video.play().catch(() => {});
+            return;
+          } catch {
+            if (destroyed) return;
+          }
+        }
+
         if (e instanceof shaka.util.Error) {
           console.error("Error loading manifest:", e.code, e.message);
           setError(`Failed to load video (code ${e.code}).`);
@@ -178,12 +216,32 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
     const kid = kidRef.current;
     if (!player || !kid) return;
 
-    player.configure({ drm: { clearKeys: { [kid]: key } } });
+    const emeSupported = await hasClearKeySupport();
+    if (emeSupported) {
+      player.configure({ drm: { clearKeys: { [kid]: key } } });
+    } else {
+      configureSoftwareDecryption(player, key);
+    }
 
     try {
       await player.load(src);
       setPlayerReady(true);
       videoRef.current?.play().catch(() => {});
+
+      // Non-blocking EME fallback: some browsers report ClearKey EME as
+      // supported but silently fail to decrypt. Detect in background and
+      // reload with software decryption if needed.
+      if (emeSupported && videoRef.current) {
+        const v = videoRef.current;
+        waitForDecryption(v).then(async (emeWorks) => {
+          if (emeWorks || !playerRef.current) return;
+          await player.unload();
+          player.configure({ drm: { clearKeys: {} } });
+          configureSoftwareDecryption(player, key);
+          await player.load(src);
+          v.play().catch(() => {});
+        });
+      }
     } catch (e: unknown) {
       if (e instanceof shaka.util.Error) {
         console.error("Error loading manifest:", e.code, e.message);

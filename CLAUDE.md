@@ -84,6 +84,19 @@ The diagnostic test (`filmstripFrameMapping.test.ts`) runs the full pipeline at 
 - With subsamples: concatenates encrypted ranges into a single decrypt call, then re-interleaves with clear bytes
 - Decryption is fully opt-in — gated on `clearKeyHex` being provided in the worker message
 
+**softwareDecrypt** (`src/utils/softwareDecrypt.ts`) — Software ClearKey decryption fallback for browsers where ClearKey EME is absent or silently fails. Uses a two-layer detection strategy:
+- **Layer 1 — pre-check** (`hasClearKeySupport()`): Probes `navigator.requestMediaKeySystemAccess('org.w3.clearkey', ...)` before loading. Result cached for session. Returns `false` on browsers where EME is entirely absent (e.g. Linux WebKitGTK) — software decryption is used directly, skipping EME entirely. Returns `true` on Chromium, Firefox, macOS WebKit.
+- **Layer 2 — post-load detection** (`waitForDecryption()`): After loading with EME, polls `video.readyState` every 50ms for 1.5s. If readyState stays at HAVE_METADATA (1) despite buffered data, EME decryption silently failed — the CDM produced garbage the decoder drops. The player then unloads and reloads with the software decryption response filter. This catches macOS WebKit, where the EME API exists and the pre-check passes, but actual decryption silently fails.
+- The two layers are complementary: Layer 1 prevents `player.load()` from hanging/throwing on browsers without EME; Layer 2 catches browsers that lie about EME support.
+
+When activated, `configureSoftwareDecryption()` registers an async Shaka response filter with three stages:
+- MANIFEST — strips `ContentProtection` elements from MPD XML so Shaka skips EME setup
+- INIT_SEGMENT — caches original init bytes, parses tenc via mp4box, imports CryptoKey, rewrites `encv→avc1` and removes `sinf`/`pssh` via `stripInitEncryption`
+- MEDIA_SEGMENT — parses senc, extracts samples via mp4box (using cached init), decrypts each sample in-place within mdat via `decryptSample`
+- Segment type detection uses box presence (`moov` for init, `moof` for media) rather than Shaka's `AdvancedRequestType`, because SegmentBase streams tag sidx (index range) requests as INIT_SEGMENT which would overwrite cached init data
+- Reuses utilities from `cencDecrypt.ts` (`importClearKey`, `extractTenc`, `parseSencFromSegment`, `decryptSample`, `findBoxData`) and `stripEncryptionBoxes.ts` (`stripInitEncryption`)
+- Only supports `cenc` scheme (AES-CTR)
+
 **Utilities** in `src/utils/`: `formatTime`, `formatTrackRes`, `safeNum`, `formatBitrate` — small pure functions.
 
 ## Save Frame Pipeline
@@ -280,7 +293,7 @@ All 8 tests run on all platforms. H.264 WebCodecs decoding works across all CI b
 
 ### Encrypted Tests
 
-`e2e/encrypted.spec.ts` — Tests both decryption code paths using the encrypted DASH fixture: Shaka Player ClearKey DRM for video playback and `cencDecrypt.ts` for filmstrip thumbnail decryption.
+`e2e/encrypted.spec.ts` — Tests both decryption code paths using the encrypted DASH fixture: Shaka Player ClearKey DRM for video playback (or software decryption fallback on browsers without EME) and `cencDecrypt.ts` for filmstrip thumbnail decryption. Tests run on all platforms — browsers with ClearKey EME use the native path, while browsers without it (e.g. Playwright's WebKit) use `softwareDecrypt.ts`.
 
 ```bash
 DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/encrypted.spec.ts --project=chromium
@@ -295,7 +308,7 @@ DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/encrypted.spec.ts --p
 | Filmstrip | Thumbnails render after loading | Worker `cencDecrypt.ts` AES-CTR decryption → VideoDecoder pipeline works |
 
 **What's exercised:**
-1. **Shaka Player DRM path** — `ShakaPlayer.tsx` auto-detects `cenc:default_KID` from the manifest, prompts for a key via `.vp-key-overlay`, and configures `drm.clearKeys` for playback
+1. **Shaka Player DRM path** — `ShakaPlayer.tsx` auto-detects `cenc:default_KID` from the manifest, prompts for a key via `.vp-key-overlay`, and configures `drm.clearKeys` for playback. Uses the two-layer fallback from `softwareDecrypt.ts`: Layer 1 (`hasClearKeySupport()`) skips EME entirely on browsers where it's absent (Linux WebKitGTK); Layer 2 (`waitForDecryption()`) detects silent EME failure post-load and reloads with software decryption (macOS WebKit)
 2. **Thumbnail worker CENC path** — `cencDecrypt.ts` parses `tenc`/`senc` boxes, performs AES-128-CTR decryption via Web Crypto API, then feeds decrypted samples to `VideoDecoder` for filmstrip thumbnails
 
 **Fixture generation** requires Shaka Packager (`packager` binary) in PATH. The `e2e/generate-dash-fixture.sh` script reconstructs fragmented MP4s from the plaintext DASH output, then runs Shaka Packager with `--enable_raw_key_encryption --protection_scheme cenc --clear_lead 0`. If `packager` is not available, the encrypted fixture is skipped and tests are gated by `isEncryptedDashFixtureAvailable()`.

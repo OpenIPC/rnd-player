@@ -196,6 +196,18 @@ export async function loadPlayerWithEncryptedDash(page: Page) {
     timeout: 30_000,
   });
 
+  // Wait for video to become playable (readyState >= 2).
+  // On browsers where ClearKey EME silently fails, the player detects
+  // this in the background and reloads with software decryption.
+  // This wait ensures the reload completes before the test proceeds.
+  await page.evaluate(async () => {
+    const video = document.querySelector("video")!;
+    const start = Date.now();
+    while (video.readyState < 2 && Date.now() - start < 10_000) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  });
+
   // Pause and seek to time 0
   await page.evaluate(async () => {
     const video = document.querySelector("video")!;

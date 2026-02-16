@@ -40,6 +40,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from "react";
 import shaka from "shaka-player";
+import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 
 interface QualityCompareProps {
   videoEl: HTMLVideoElement;
@@ -141,14 +142,32 @@ export default function QualityCompare({
 
       // Configure DRM if needed
       if (kid && clearKey) {
-        slavePlayer.configure({
-          drm: { clearKeys: { [kid]: clearKey } },
-        });
+        if (await hasClearKeySupport()) {
+          slavePlayer.configure({
+            drm: { clearKeys: { [kid]: clearKey } },
+          });
+        } else {
+          configureSoftwareDecryption(slavePlayer, clearKey);
+        }
       }
 
       try {
         await slavePlayer.load(src);
         if (destroyed) return;
+
+        // Verify EME decryption works; fall back to software if not
+        if (kid && clearKey && await hasClearKeySupport()) {
+          const emeWorks = await waitForDecryption(slaveVideo);
+          if (destroyed) return;
+          if (!emeWorks) {
+            await slavePlayer.unload();
+            if (destroyed) return;
+            slavePlayer.configure({ drm: { clearKeys: {} } });
+            configureSoftwareDecryption(slavePlayer, clearKey);
+            await slavePlayer.load(src);
+            if (destroyed) return;
+          }
+        }
 
         slaveVideo.muted = true;
 

@@ -15,13 +15,6 @@ test.skip(
   "Encrypted DASH fixture not generated — requires Shaka Packager",
 );
 
-// Playwright's WebKit engine lacks ClearKey EME support — encrypted
-// playback never initializes, causing all tests to timeout.
-test.skip(
-  ({ browserName }) => browserName === "webkit",
-  "WebKit in Playwright does not support ClearKey EME",
-);
-
 // Share a single Tesseract worker across all tests in this file.
 let ocr: Awaited<ReturnType<typeof createWorker>>;
 
