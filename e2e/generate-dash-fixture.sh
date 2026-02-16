@@ -82,72 +82,117 @@ ls -lh "$OUT_DIR"
 
 if ! command -v packager &>/dev/null; then
   echo "==> Skipping encrypted fixture: 'packager' (Shaka Packager) not in PATH"
+else
+  echo "==> Generating encrypted DASH fixture..."
+
+  ENCRYPTED_DIR="$OUT_DIR/encrypted"
+  mkdir -p "$ENCRYPTED_DIR"
+
+  # Fixed ClearKey credentials (known to both script and tests)
+  KID="00112233445566778899aabbccddeeff"
+  KEY="0123456789abcdef0123456789abcdef"
+
+  # Reconstruct per-rendition fragmented MP4s by concatenating init + media segments
+  # from the plaintext DASH output. Parse segment filenames from the manifest.
+  MPD="$OUT_DIR/manifest.mpd"
+
+  # Discover stream count from init segment files
+  INIT_FILES=()
+  while IFS= read -r f; do
+    INIT_FILES+=("$f")
+  done < <(ls "$OUT_DIR"/init-stream*.m4s 2>/dev/null | sort)
+
+  if [ ${#INIT_FILES[@]} -eq 0 ]; then
+    echo "Error: no init-stream*.m4s files found in $OUT_DIR" >&2
+    exit 1
+  fi
+
+  TEMP_DIR="$OUT_DIR/_enc_tmp"
+  mkdir -p "$TEMP_DIR"
+
+  PACKAGER_ARGS=()
+  STREAM_IDX=0
+
+  for init_file in "${INIT_FILES[@]}"; do
+    # Extract stream number from filename like "init-stream0.m4s"
+    base="$(basename "$init_file")"
+    stream_num="${base#init-stream}"
+    stream_num="${stream_num%.m4s}"
+
+    # Concatenate init + chunks into a single fragmented MP4
+    fmp4="$TEMP_DIR/rendition${stream_num}.mp4"
+    cat "$init_file" "$OUT_DIR"/chunk-stream${stream_num}-*.m4s > "$fmp4"
+
+    # Detect stream type (video or audio) via ffprobe
+    codec_type="$(ffprobe -v error -select_streams 0 -show_entries stream=codec_type -of csv=p=0 "$fmp4" | head -1)"
+    if [ "$codec_type" = "audio" ]; then
+      stream_type="audio"
+    else
+      stream_type="video"
+    fi
+
+    PACKAGER_ARGS+=("in=${fmp4},stream=${stream_type},output=${ENCRYPTED_DIR}/stream${stream_num}.mp4")
+    STREAM_IDX=$((STREAM_IDX + 1))
+  done
+
+  packager \
+    "${PACKAGER_ARGS[@]}" \
+    --enable_raw_key_encryption \
+    --keys "key_id=${KID}:key=${KEY}" \
+    --protection_scheme cenc \
+    --clear_lead 0 \
+    --mpd_output "${ENCRYPTED_DIR}/manifest.mpd" \
+    --segment_duration 2
+
+  # Cleanup temp directory
+  rm -rf "$TEMP_DIR"
+
+  echo "==> Encrypted DASH fixture ready in $ENCRYPTED_DIR"
+  ls -lh "$ENCRYPTED_DIR"
+fi
+
+# --- HEVC (H.265) DASH fixture ---
+
+if ! ffmpeg -encoders 2>/dev/null | grep -q libx265; then
+  echo "==> Skipping HEVC fixture: libx265 encoder not available in ffmpeg"
   exit 0
 fi
 
-echo "==> Generating encrypted DASH fixture..."
+echo "==> Generating HEVC 1080p source with frame counter and audio ($DURATION s @ $FPS fps)..."
 
-ENCRYPTED_DIR="$OUT_DIR/encrypted"
-mkdir -p "$ENCRYPTED_DIR"
+HEVC_DIR="$OUT_DIR/hevc"
+mkdir -p "$HEVC_DIR"
 
-# Fixed ClearKey credentials (known to both script and tests)
-KID="00112233445566778899aabbccddeeff"
-KEY="0123456789abcdef0123456789abcdef"
+HEVC_SOURCE="$OUT_DIR/source_hevc_1080p.mp4"
 
-# Reconstruct per-rendition fragmented MP4s by concatenating init + media segments
-# from the plaintext DASH output. Parse segment filenames from the manifest.
-MPD="$OUT_DIR/manifest.mpd"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
+  -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -c:v libx265 -preset ultrafast -tag:v hvc1 \
+  -x265-params "keyint=30:min-keyint=30" \
+  -pix_fmt yuv420p \
+  -c:a aac -b:a 128k \
+  "$HEVC_SOURCE"
 
-# Discover stream count from init segment files
-INIT_FILES=()
-while IFS= read -r f; do
-  INIT_FILES+=("$f")
-done < <(ls "$OUT_DIR"/init-stream*.m4s 2>/dev/null | sort)
+echo "==> Packaging HEVC as DASH with 2 video renditions + audio..."
+ffmpeg -y -loglevel error \
+  -i "$HEVC_SOURCE" \
+  -filter_complex "\
+    [0:v]split=2[v1][v2];\
+    [v1]scale=1920:1080[out1];\
+    [v2]scale=854:480[out2]\
+  " \
+  -map "[out1]" -c:v:0 libx265 -b:v:0 2000k -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
+  -map "[out2]" -c:v:1 libx265 -b:v:1 400k  -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
+  -map 0:a -c:a aac -b:a 128k \
+  -use_timeline 1 -use_template 1 \
+  -seg_duration 2 \
+  -adaptation_sets "id=0,streams=v id=1,streams=a" \
+  -f dash "$HEVC_DIR/manifest.mpd"
 
-if [ ${#INIT_FILES[@]} -eq 0 ]; then
-  echo "Error: no init-stream*.m4s files found in $OUT_DIR" >&2
-  exit 1
-fi
+# Cleanup intermediate source
+rm -f "$HEVC_SOURCE"
 
-TEMP_DIR="$OUT_DIR/_enc_tmp"
-mkdir -p "$TEMP_DIR"
-
-PACKAGER_ARGS=()
-STREAM_IDX=0
-
-for init_file in "${INIT_FILES[@]}"; do
-  # Extract stream number from filename like "init-stream0.m4s"
-  base="$(basename "$init_file")"
-  stream_num="${base#init-stream}"
-  stream_num="${stream_num%.m4s}"
-
-  # Concatenate init + chunks into a single fragmented MP4
-  fmp4="$TEMP_DIR/rendition${stream_num}.mp4"
-  cat "$init_file" "$OUT_DIR"/chunk-stream${stream_num}-*.m4s > "$fmp4"
-
-  # Detect stream type (video or audio) via ffprobe
-  codec_type="$(ffprobe -v error -select_streams 0 -show_entries stream=codec_type -of csv=p=0 "$fmp4" | head -1)"
-  if [ "$codec_type" = "audio" ]; then
-    stream_type="audio"
-  else
-    stream_type="video"
-  fi
-
-  PACKAGER_ARGS+=("in=${fmp4},stream=${stream_type},output=${ENCRYPTED_DIR}/stream${stream_num}.mp4")
-  STREAM_IDX=$((STREAM_IDX + 1))
-done
-
-packager \
-  "${PACKAGER_ARGS[@]}" \
-  --enable_raw_key_encryption \
-  --keys "key_id=${KID}:key=${KEY}" \
-  --protection_scheme cenc \
-  --clear_lead 0 \
-  --mpd_output "${ENCRYPTED_DIR}/manifest.mpd" \
-  --segment_duration 2
-
-# Cleanup temp directory
-rm -rf "$TEMP_DIR"
-
-echo "==> Encrypted DASH fixture ready in $ENCRYPTED_DIR"
-ls -lh "$ENCRYPTED_DIR"
+echo "==> HEVC DASH fixture ready in $HEVC_DIR"
+ls -lh "$HEVC_DIR"

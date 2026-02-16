@@ -222,6 +222,109 @@ export async function loadPlayerWithEncryptedDash(page: Page) {
   });
 }
 
+// --- HEVC DASH fixture support ---
+
+const hevcDashFixtureDir = dashFixtureDir
+  ? join(dashFixtureDir, "hevc")
+  : "";
+
+export function isHevcDashFixtureAvailable(): boolean {
+  if (!hevcDashFixtureDir) return false;
+  return existsSync(join(hevcDashFixtureDir, "manifest.mpd"));
+}
+
+const hevcDashFiles = new Map<string, Buffer>();
+
+if (isHevcDashFixtureAvailable()) {
+  const files = readdirSync(hevcDashFixtureDir);
+  for (const file of files) {
+    const fullPath = join(hevcDashFixtureDir, file);
+    if (statSync(fullPath).isFile()) {
+      hevcDashFiles.set(file, readFileSync(fullPath));
+    }
+  }
+}
+
+/**
+ * Intercepts /hevc-dash/* requests, serves HEVC DASH fixture files from memory.
+ * Navigates to the player with the HEVC DASH manifest, waits for controls,
+ * then pauses and seeks to time 0 so frame "0000" is displayed.
+ */
+export async function loadPlayerWithHevcDash(page: Page) {
+  await page.route(
+    (url) => url.pathname.startsWith("/hevc-dash/"),
+    (route) => {
+      const filename =
+        route.request().url().split("/hevc-dash/").pop() ?? "";
+      const body = hevcDashFiles.get(filename);
+      if (body) {
+        route.fulfill({
+          status: 200,
+          contentType: contentTypeFor(filename),
+          body,
+        });
+      } else {
+        route.fulfill({ status: 404 });
+      }
+    },
+  );
+
+  await page.goto("/?v=/hevc-dash/manifest.mpd");
+  await page.locator(".vp-controls-wrapper").waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+
+  // Pause and seek to time 0 to ensure frame "0000" is rendered
+  await page.evaluate(async () => {
+    const video = document.querySelector("video")!;
+    video.pause();
+    if (video.currentTime !== 0) {
+      const seeked = new Promise((resolve) =>
+        video.addEventListener("seeked", resolve, { once: true }),
+      );
+      video.currentTime = 0;
+      await seeked;
+    }
+  });
+}
+
+/**
+ * Probe whether the browser supports HEVC via MSE (MediaSource.isTypeSupported).
+ * Returns true if either hvc1 or hev1 sample entry type is supported.
+ */
+export async function probeHevcMseSupport(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    if (typeof MediaSource === "undefined") return false;
+    return (
+      MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.B0"') ||
+      MediaSource.isTypeSupported('video/mp4; codecs="hev1.1.6.L93.B0"')
+    );
+  });
+}
+
+/**
+ * Probe whether the browser supports HEVC via WebCodecs (VideoDecoder.isConfigSupported).
+ * Returns true if the VideoDecoder reports support for hvc1 codec.
+ */
+export async function probeHevcWebCodecsSupport(
+  page: Page,
+): Promise<boolean> {
+  return page.evaluate(async () => {
+    if (typeof VideoDecoder === "undefined") return false;
+    try {
+      const result = await VideoDecoder.isConfigSupported({
+        codec: "hvc1.1.6.L93.B0",
+        codedWidth: 1920,
+        codedHeight: 1080,
+      });
+      return result.supported === true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 // --- Shared OCR / seek utilities ---
 
 /**
