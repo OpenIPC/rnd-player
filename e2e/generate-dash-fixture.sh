@@ -72,5 +72,71 @@ ffmpeg -y -loglevel error \
 # Cleanup intermediate source
 rm -f "$SOURCE"
 
-echo "==> DASH fixture ready in $OUT_DIR"
+echo "==> Plaintext DASH fixture ready in $OUT_DIR"
 ls -lh "$OUT_DIR"
+
+# --- Encrypted DASH via Shaka Packager ---
+
+if ! command -v packager &>/dev/null; then
+  echo "==> Skipping encrypted fixture: 'packager' (Shaka Packager) not in PATH"
+  exit 0
+fi
+
+echo "==> Generating encrypted DASH fixture..."
+
+ENCRYPTED_DIR="$OUT_DIR/encrypted"
+mkdir -p "$ENCRYPTED_DIR"
+
+# Fixed ClearKey credentials (known to both script and tests)
+KID="00112233445566778899aabbccddeeff"
+KEY="0123456789abcdef0123456789abcdef"
+
+# Reconstruct per-rendition fragmented MP4s by concatenating init + media segments
+# from the plaintext DASH output. Parse segment filenames from the manifest.
+MPD="$OUT_DIR/manifest.mpd"
+
+# Discover stream count from init segment files
+INIT_FILES=()
+while IFS= read -r f; do
+  INIT_FILES+=("$f")
+done < <(ls "$OUT_DIR"/init-stream*.m4s 2>/dev/null | sort)
+
+if [ ${#INIT_FILES[@]} -eq 0 ]; then
+  echo "Error: no init-stream*.m4s files found in $OUT_DIR" >&2
+  exit 1
+fi
+
+TEMP_DIR="$OUT_DIR/_enc_tmp"
+mkdir -p "$TEMP_DIR"
+
+PACKAGER_ARGS=()
+STREAM_IDX=0
+
+for init_file in "${INIT_FILES[@]}"; do
+  # Extract stream number from filename like "init-stream0.m4s"
+  base="$(basename "$init_file")"
+  stream_num="${base#init-stream}"
+  stream_num="${stream_num%.m4s}"
+
+  # Concatenate init + chunks into a single fragmented MP4
+  fmp4="$TEMP_DIR/rendition${stream_num}.mp4"
+  cat "$init_file" "$OUT_DIR"/chunk-stream${stream_num}-*.m4s > "$fmp4"
+
+  PACKAGER_ARGS+=("in=${fmp4},stream=video,output=${ENCRYPTED_DIR}/stream${stream_num}.mp4")
+  STREAM_IDX=$((STREAM_IDX + 1))
+done
+
+packager \
+  "${PACKAGER_ARGS[@]}" \
+  --enable_raw_key_encryption \
+  --keys "key_id=${KID}:key=${KEY}" \
+  --protection_scheme cenc \
+  --clear_lead 0 \
+  --mpd_output "${ENCRYPTED_DIR}/manifest.mpd" \
+  --segment_duration 2
+
+# Cleanup temp directory
+rm -rf "$TEMP_DIR"
+
+echo "==> Encrypted DASH fixture ready in $ENCRYPTED_DIR"
+ls -lh "$ENCRYPTED_DIR"

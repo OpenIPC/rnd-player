@@ -79,6 +79,24 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: choco install ffmpeg -y
 
+      - name: Install Shaka Packager
+        shell: bash
+        run: |
+          VERSION="v3.2.0"
+          case "$RUNNER_OS" in
+            Linux)  BIN="packager-linux-x64" ;;
+            macOS)  BIN="packager-osx-arm64" ;;
+            Windows) BIN="packager-win-x64.exe" ;;
+          esac
+          URL="https://github.com/shaka-project/shaka-packager/releases/download/$VERSION/$BIN"
+          curl -fsSL "$URL" -o packager && chmod +x packager
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            mv packager "$RUNNER_TOOL_CACHE/packager.exe"
+            echo "$RUNNER_TOOL_CACHE" >> "$GITHUB_PATH"
+          else
+            sudo mv packager /usr/local/bin/
+          fi
+
       - name: Generate DASH fixture
         shell: bash
         run: bash e2e/generate-dash-fixture.sh "${{ runner.temp }}/dash-fixture"

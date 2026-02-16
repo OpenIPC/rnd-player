@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { isDashFixtureAvailable, loadPlayerWithDash } from "./helpers";
+import {
+  isDashFixtureAvailable,
+  loadPlayerWithDash,
+  openFilmstrip,
+  waitForThumbnails,
+} from "./helpers";
 
 test.skip(
   !isDashFixtureAvailable(),
@@ -8,73 +13,6 @@ test.skip(
 );
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-/**
- * Open the filmstrip panel via the right-click context menu.
- */
-async function openFilmstrip(page: Page) {
-  // Hide debug panel (DEV-only) that can overlap the context menu
-  await page.evaluate(() => {
-    document
-      .querySelector<HTMLElement>(".vp-debug-panel")
-      ?.style.setProperty("display", "none");
-  });
-
-  const videoArea = page.locator(".vp-video-area");
-  await videoArea.click({ button: "right" });
-
-  await page
-    .locator(".vp-context-menu-item", { hasText: "Filmstrip timeline" })
-    .click();
-
-  await page
-    .locator(".vp-filmstrip-panel")
-    .waitFor({ state: "visible", timeout: 5_000 });
-}
-
-/**
- * Poll until the filmstrip canvas shows real thumbnail content.
- * The DASH fixture has a white frame counter on black, so decoded
- * thumbnails contain bright pixels (RGB channel > 80).
- * Placeholder tiles use rgba(255,255,255,0.05) which is nearly invisible.
- */
-async function waitForThumbnails(page: Page, timeout = 30_000) {
-  await expect(async () => {
-    const bright = await page.evaluate(() => {
-      const canvas = document.querySelector<HTMLCanvasElement>(
-        ".vp-filmstrip-panel canvas",
-      );
-      if (!canvas) throw new Error("no canvas");
-
-      const dpr = window.devicePixelRatio || 1;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) throw new Error("no 2d context");
-
-      // Sample a horizontal strip in the thumbnail row midpoint.
-      // Ruler is 22px top, so thumbnails start around y=22.
-      // Sample at ~35px below top, scaled by DPR.
-      const y = Math.round(35 * dpr);
-      const w = canvas.width;
-      const stripH = 2;
-      if (y + stripH > canvas.height) throw new Error("canvas too small");
-
-      const data = ctx.getImageData(0, y, w, stripH).data;
-      let brightCount = 0;
-      const totalPixels = (w * stripH);
-      for (let i = 0; i < data.length; i += 4) {
-        if (data[i] > 80 || data[i + 1] > 80 || data[i + 2] > 80) {
-          brightCount++;
-        }
-      }
-      return brightCount / totalPixels;
-    });
-    // 2% threshold: "no thumbnails" gives ~0% (placeholder is nearly
-    // invisible rgba(255,255,255,0.05)). At high DPR (macOS 2×) the sample
-    // strip intersects fewer bright pixels of the frame counter digits,
-    // yielding ~3% vs ~6% at DPR 1.
-    expect(bright).toBeGreaterThan(0.02);
-  }).toPass({ timeout });
-}
 
 /**
  * Press a key N times, then wait for a double-rAF paint settle.

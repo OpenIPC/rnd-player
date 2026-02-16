@@ -1,7 +1,15 @@
 import { test, expect } from "@playwright/test";
-import type { Page } from "@playwright/test";
 import { createWorker, PSM } from "tesseract.js";
-import { isDashFixtureAvailable, loadPlayerWithDash } from "./helpers";
+import {
+  isDashFixtureAvailable,
+  loadPlayerWithDash,
+  readFrameNumber,
+  seekTo,
+  pressKeyAndSettle,
+  pressKeyNTimesAndSettle,
+  openFilmstrip,
+  waitForThumbnails,
+} from "./helpers";
 
 test.skip(
   !isDashFixtureAvailable(),
@@ -23,142 +31,6 @@ test.afterAll(async () => {
   await ocr?.terminate();
 });
 
-async function readFrameNumber(page: Page): Promise<string> {
-  const video = page.locator("video");
-  const box = await video.boundingBox();
-  if (!box) throw new Error("video element not visible");
-
-  // Crop to the center 30x15 % of the video where the frame counter is drawn.
-  const cropW = box.width * 0.3;
-  const cropH = box.height * 0.15;
-  const screenshot = await page.screenshot({
-    clip: {
-      x: box.x + (box.width - cropW) / 2,
-      y: box.y + (box.height - cropH) / 2,
-      width: cropW,
-      height: cropH,
-    },
-  });
-
-  const {
-    data: { text },
-  } = await ocr.recognize(screenshot);
-  // Tesseract may drop leading zeros on some platforms (e.g. Windows/Edge).
-  // The frame counter is always 4 digits, so pad back to 4.
-  return text.trim().padStart(4, "0");
-}
-
-/**
- * Seek to the given time and wait for the frame to be painted.
- * Uses polling instead of seeked-event listeners to avoid races
- * with Shaka Player's internal seeks during DASH stream init.
- */
-async function seekTo(page: Page, time: number) {
-  await page.evaluate(async (t: number) => {
-    const video = document.querySelector("video")!;
-    // Shaka may do internal seeks during DASH init that override ours.
-    // Retry until currentTime actually lands at the target.
-    for (let attempt = 0; attempt < 10; attempt++) {
-      video.currentTime = t;
-      while (video.seeking) {
-        await new Promise((r) => setTimeout(r, 16));
-      }
-      if (t === 0 || Math.abs(video.currentTime - t) < 0.5) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    // Double rAF to ensure the decoded frame is composited
-    await new Promise((r) =>
-      requestAnimationFrame(() => requestAnimationFrame(r)),
-    );
-  }, time);
-}
-
-/**
- * Dispatch a keyboard event directly in the browser and wait for any
- * resulting seek to settle. Bypasses Playwright's keyboard simulation
- * to guarantee modifier keys (shiftKey) are propagated correctly.
- */
-async function pressKeyAndSettle(
-  page: Page,
-  key: string,
-  shiftKey = false,
-) {
-  await page.evaluate(
-    async ({ key, shiftKey }) => {
-      const video = document.querySelector("video")!;
-      // Register seeked listener BEFORE dispatch so we don't miss fast seeks
-      const seeked = new Promise<void>((resolve) => {
-        video.addEventListener("seeked", () => resolve(), { once: true });
-      });
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key,
-          shiftKey,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-      // Wait for the seek pipeline to complete. On Edge/Windows with
-      // MSE, the currentTime getter doesn't update until the media
-      // pipeline finishes decoding the target frame. Polling rAF or
-      // currentTime is unreliable — wait for the actual seeked event.
-      // Timeout handles no-op keys (e.g. ArrowLeft at t=0) where no
-      // seek is initiated.
-      await Promise.race([seeked, new Promise((r) => setTimeout(r, 1000))]);
-      // Double rAF to ensure the decoded frame is composited
-      await new Promise((r) =>
-        requestAnimationFrame(() => requestAnimationFrame(r)),
-      );
-    },
-    { key, shiftKey },
-  );
-}
-
-/**
- * Press a key N times inside a single page.evaluate(), waiting for each
- * seek to complete before pressing again. Running all steps in one
- * evaluate avoids Playwright round-trips that can cause stale
- * currentTime reads on some browsers.
- */
-async function pressKeyNTimesAndSettle(
-  page: Page,
-  key: string,
-  count: number,
-) {
-  await page.evaluate(
-    async ({ key, count }) => {
-      const video = document.querySelector("video")!;
-      for (let i = 0; i < count; i++) {
-        const prevTime = video.currentTime;
-        const seeked = new Promise<void>((resolve) => {
-          video.addEventListener("seeked", () => resolve(), { once: true });
-        });
-        document.dispatchEvent(
-          new KeyboardEvent("keydown", {
-            key,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-        await Promise.race([
-          seeked,
-          new Promise((r) => setTimeout(r, 1000)),
-        ]);
-        // Poll until currentTime actually changed (guards against stale getter)
-        for (let j = 0; j < 50; j++) {
-          if (video.currentTime !== prevTime) break;
-          await new Promise((r) => setTimeout(r, 16));
-        }
-        // Double rAF to ensure the decoded frame is composited
-        await new Promise((r) =>
-          requestAnimationFrame(() => requestAnimationFrame(r)),
-        );
-      }
-    },
-    { key, count },
-  );
-}
-
 // ── Seek verification ────────────────────────────────────────────────
 
 test.describe("seek verification", () => {
@@ -171,7 +43,7 @@ test.describe("seek verification", () => {
     }) => {
       await loadPlayerWithDash(page);
       await seekTo(page, seekTime);
-      expect(await readFrameNumber(page)).toBe(expectedFrame);
+      expect(await readFrameNumber(page, ocr)).toBe(expectedFrame);
     });
   }
 });
@@ -183,28 +55,28 @@ test.describe("frame stepping", () => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
     await pressKeyAndSettle(page, "ArrowRight");
-    expect(await readFrameNumber(page)).toBe("0001");
+    expect(await readFrameNumber(page, ocr)).toBe("0001");
   });
 
   test("ArrowLeft steps backward one frame", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 5);
     await pressKeyAndSettle(page, "ArrowLeft");
-    expect(await readFrameNumber(page)).toBe("0149");
+    expect(await readFrameNumber(page, ocr)).toBe("0149");
   });
 
   test("three ArrowRight steps advance by three frames", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
     await pressKeyNTimesAndSettle(page, "ArrowRight", 3);
-    expect(await readFrameNumber(page)).toBe("0003");
+    expect(await readFrameNumber(page, ocr)).toBe("0003");
   });
 
   test("ArrowLeft at start stays at frame 0000", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
     await pressKeyAndSettle(page, "ArrowLeft");
-    expect(await readFrameNumber(page)).toBe("0000");
+    expect(await readFrameNumber(page, ocr)).toBe("0000");
   });
 
   test("ten consecutive ArrowRight steps reach frame 10", async ({ page }) => {
@@ -219,7 +91,7 @@ test.describe("frame stepping", () => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
     await pressKeyNTimesAndSettle(page, "ArrowRight", 10);
-    expect(await readFrameNumber(page)).toBe("0010");
+    expect(await readFrameNumber(page, ocr)).toBe("0010");
   });
 
   test("ArrowRight from mid-frame time advances correctly", async ({
@@ -230,7 +102,7 @@ test.describe("frame stepping", () => {
     // ArrowRight should advance to the next frame: 16
     await seekTo(page, 0.5);
     await pressKeyAndSettle(page, "ArrowRight");
-    expect(await readFrameNumber(page)).toBe("0016");
+    expect(await readFrameNumber(page, ocr)).toBe("0016");
   });
 
   test("ArrowLeft from mid-frame time retreats correctly", async ({
@@ -241,7 +113,7 @@ test.describe("frame stepping", () => {
     // ArrowLeft should retreat to the previous frame: 164
     await seekTo(page, 5.5);
     await pressKeyAndSettle(page, "ArrowLeft");
-    expect(await readFrameNumber(page)).toBe("0164");
+    expect(await readFrameNumber(page, ocr)).toBe("0164");
   });
 
   test("forward then backward returns to original frame", async ({ page }) => {
@@ -250,7 +122,7 @@ test.describe("frame stepping", () => {
     await seekTo(page, 10);
     await pressKeyNTimesAndSettle(page, "ArrowRight", 5);
     await pressKeyNTimesAndSettle(page, "ArrowLeft", 5);
-    expect(await readFrameNumber(page)).toBe("0300");
+    expect(await readFrameNumber(page, ocr)).toBe("0300");
   });
 });
 
@@ -261,21 +133,21 @@ test.describe("navigation keys", () => {
     await loadPlayerWithDash(page);
     await seekTo(page, 5);
     await pressKeyAndSettle(page, "Home");
-    expect(await readFrameNumber(page)).toBe("0000");
+    expect(await readFrameNumber(page, ocr)).toBe("0000");
   });
 
   test("near-end seek displays correct frame", async ({ page }) => {
     await loadPlayerWithDash(page);
     // 59 s × 30 fps = frame 1770
     await seekTo(page, 59);
-    expect(await readFrameNumber(page)).toBe("1770");
+    expect(await readFrameNumber(page, ocr)).toBe("1770");
   });
 
   test("ArrowRight steps forward near end of video", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 59);
     await pressKeyAndSettle(page, "ArrowRight");
-    expect(await readFrameNumber(page)).toBe("1771");
+    expect(await readFrameNumber(page, ocr)).toBe("1771");
   });
 
   test("Shift+ArrowUp jumps forward one second", async ({ page }) => {
@@ -283,7 +155,7 @@ test.describe("navigation keys", () => {
     await seekTo(page, 0);
     await pressKeyAndSettle(page, "ArrowUp", true);
     // 1 s × 30 fps = 30 frames ahead
-    expect(await readFrameNumber(page)).toBe("0030");
+    expect(await readFrameNumber(page, ocr)).toBe("0030");
   });
 
   test("Shift+ArrowDown jumps backward one second", async ({ page }) => {
@@ -291,7 +163,7 @@ test.describe("navigation keys", () => {
     await seekTo(page, 5);
     await pressKeyAndSettle(page, "ArrowDown", true);
     // 5 s − 1 s = 4 s × 30 fps = frame 120
-    expect(await readFrameNumber(page)).toBe("0120");
+    expect(await readFrameNumber(page, ocr)).toBe("0120");
   });
 });
 
@@ -300,70 +172,11 @@ test.describe("navigation keys", () => {
 test.describe("filmstrip click sync", () => {
 
   /**
-   * Open the filmstrip panel via the right-click context menu.
-   * Same approach as filmstrip.spec.ts.
-   */
-  async function openFilmstrip(page: Page) {
-    await page.evaluate(() => {
-      document
-        .querySelector<HTMLElement>(".vp-debug-panel")
-        ?.style.setProperty("display", "none");
-    });
-
-    const videoArea = page.locator(".vp-video-area");
-    await videoArea.click({ button: "right" });
-
-    await page
-      .locator(".vp-context-menu-item", { hasText: "Filmstrip timeline" })
-      .click();
-
-    await page
-      .locator(".vp-filmstrip-panel")
-      .waitFor({ state: "visible", timeout: 5_000 });
-  }
-
-  /**
-   * Wait until the filmstrip canvas shows real thumbnail content.
-   */
-  async function waitForThumbnails(page: Page, timeout = 30_000) {
-    await expect(async () => {
-      const bright = await page.evaluate(() => {
-        const canvas = document.querySelector<HTMLCanvasElement>(
-          ".vp-filmstrip-panel canvas",
-        );
-        if (!canvas) throw new Error("no canvas");
-
-        const dpr = window.devicePixelRatio || 1;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) throw new Error("no 2d context");
-
-        const y = Math.round(35 * dpr);
-        const w = canvas.width;
-        const stripH = 2;
-        if (y + stripH > canvas.height) throw new Error("canvas too small");
-
-        const data = ctx.getImageData(0, y, w, stripH).data;
-        let brightCount = 0;
-        const totalPixels = w * stripH;
-        for (let i = 0; i < data.length; i += 4) {
-          if (data[i] > 80 || data[i + 1] > 80 || data[i + 2] > 80) {
-            brightCount++;
-          }
-        }
-        return brightCount / totalPixels;
-      });
-      // 2% threshold: same as filmstrip.spec.ts — at high DPR (macOS 2×)
-      // the sample strip intersects fewer bright pixels of the frame counter
-      expect(bright).toBeGreaterThan(0.02);
-    }).toPass({ timeout });
-  }
-
-  /**
    * Click on the filmstrip canvas at a horizontal fraction, wait for the
    * video to seek, then OCR the frame number and verify it matches.
    */
   async function clickFilmstripAndVerify(
-    page: Page,
+    page: Parameters<typeof readFrameNumber>[0],
     xFraction: number,
     expectedFrame: number,
   ) {
@@ -387,7 +200,7 @@ test.describe("filmstrip click sync", () => {
       );
     });
 
-    const frame = await readFrameNumber(page);
+    const frame = await readFrameNumber(page, ocr);
     const actual = parseInt(frame, 10);
     // ±1 frame tolerance for pixel→time→frame rounding
     expect(
@@ -431,7 +244,7 @@ test.describe("playback", () => {
       );
     });
 
-    const frame = await readFrameNumber(page);
+    const frame = await readFrameNumber(page, ocr);
     const n = parseInt(frame, 10);
     // Should have advanced past frame 0 — at 30 fps, expect roughly 20–40
     expect(n).toBeGreaterThan(0);
