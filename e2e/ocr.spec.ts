@@ -94,6 +94,9 @@ async function pressKeyAndSettle(
           cancelable: true,
         }),
       );
+      // Allow the browser to initiate the seek — on some platforms
+      // (Edge/Windows) video.seeking is not true synchronously.
+      await new Promise((r) => requestAnimationFrame(r));
       // Poll until any resulting seek completes
       while (video.seeking) {
         await new Promise((r) => setTimeout(r, 16));
