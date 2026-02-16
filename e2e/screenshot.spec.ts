@@ -31,27 +31,34 @@ test("capture player screenshot", async ({ page, browserName }) => {
   await page.locator(".vp-context-menu-item", { hasText: "Filmstrip timeline" }).click();
   await page.locator(".vp-filmstrip-panel").waitFor({ state: "visible", timeout: 5_000 });
 
-  // On Chromium-based browsers, wait for thumbnails to render.
-  // WebKit/Firefox have VideoDecoder API but don't reliably decode H.264
-  // in Playwright's engine — the panel still shows (empty canvas or fallback).
+  // Wait for filmstrip thumbnails to render. Chromium/Edge decode H.264
+  // reliably via WebCodecs — require thumbnails there. Firefox and WebKit
+  // in Playwright's engine may or may not decode H.264 (the API exists but
+  // codec support is inconsistent), so give them time but don't fail.
+  const thumbnailCheck = expect(async () => {
+    const bright = await page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>(".vp-filmstrip-panel canvas");
+      if (!canvas) throw new Error("no canvas");
+      const dpr = window.devicePixelRatio || 1;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("no 2d context");
+      const y = Math.round(35 * dpr);
+      const data = ctx.getImageData(0, y, canvas.width, 2).data;
+      let count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 80 || data[i + 1] > 80 || data[i + 2] > 80) count++;
+      }
+      return count / (canvas.width * 2);
+    });
+    expect(bright).toBeGreaterThan(0.05);
+  });
   if (browserName === "chromium") {
-    await expect(async () => {
-      const bright = await page.evaluate(() => {
-        const canvas = document.querySelector<HTMLCanvasElement>(".vp-filmstrip-panel canvas");
-        if (!canvas) throw new Error("no canvas");
-        const dpr = window.devicePixelRatio || 1;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) throw new Error("no 2d context");
-        const y = Math.round(35 * dpr);
-        const data = ctx.getImageData(0, y, canvas.width, 2).data;
-        let count = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          if (data[i] > 80 || data[i + 1] > 80 || data[i + 2] > 80) count++;
-        }
-        return count / (canvas.width * 2);
-      });
-      expect(bright).toBeGreaterThan(0.05);
-    }).toPass({ timeout: 30_000 });
+    await thumbnailCheck.toPass({ timeout: 30_000 });
+  } else {
+    // Best-effort: wait up to 15s for thumbnails on Firefox/WebKit.
+    // Some engines (e.g. WebKit on Linux) partially decode thumbnails
+    // given enough time. If decoding doesn't work, take the screenshot as-is.
+    await thumbnailCheck.toPass({ timeout: 15_000 }).catch(() => {});
   }
 
   // Hover over the player to ensure controls are visible (resets the 3s auto-hide timer)
