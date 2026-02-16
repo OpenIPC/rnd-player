@@ -220,24 +220,19 @@ test.describe("frame stepping", () => {
   test("ten consecutive ArrowRight steps reach frame 10", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
-    // Use real keyboard input (page.keyboard.press) instead of synthetic
-    // dispatchEvent. Edge's MSE pipeline drops consecutive seeks when
-    // triggered by synthetic events inside page.evaluate(), but handles
-    // real keyboard input correctly because the browser's native input
-    // pipeline paces seeks through the compositor.
     for (let i = 0; i < 10; i++) {
       await page.keyboard.press("ArrowRight");
-      await page.evaluate(async () => {
-        const video = document.querySelector("video")!;
-        // Wait for seek to complete
-        while (video.seeking) {
-          await new Promise((r) => setTimeout(r, 16));
-        }
-        // Double rAF to ensure the decoded frame is composited
-        await new Promise((r) =>
-          requestAnimationFrame(() => requestAnimationFrame(r)),
-        );
-      });
+      // Wait for the seek to fully complete. Edge on Windows CI needs
+      // substantial settle time — its MSE pipeline returns stale
+      // currentTime if the next seek arrives too soon, causing the
+      // handler to compute the same target (no-op).
+      await page.waitForFunction(
+        () => !document.querySelector("video")!.seeking,
+        null,
+        { timeout: 2000 },
+      );
+      // eslint-disable-next-line playwright/no-wait-for-timeout
+      await page.waitForTimeout(200);
     }
     expect(await readFrameNumber(page)).toBe("0010");
   });
