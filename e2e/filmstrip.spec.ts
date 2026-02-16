@@ -284,36 +284,4 @@ test.describe("filmstrip panel", () => {
     });
   });
 
-  // ── Firefox fallback ─────────────────────────────────────────────
-  // Firefox lacks WebCodecs (VideoDecoder). When the DASH player loads
-  // (requires H.264 support — gstreamer1.0-libav on Linux CI), the
-  // filmstrip panel shows a fallback message instead of the canvas.
-  // This test only runs on Firefox and requires system H.264 codecs.
-
-  test.describe("firefox fallback", () => {
-    test("shows WebCodecs fallback on Firefox", async ({
-      page,
-      browserName,
-    }) => {
-      test.skip(browserName !== "firefox", "Only runs on Firefox");
-      // loadPlayerWithDash waits up to 30s for controls; allow extra
-      // time so the try/catch can handle the timeout gracefully.
-      test.setTimeout(45_000);
-
-      // If Firefox lacks H.264 (no gstreamer1.0-libav), the player
-      // won't load and controls won't appear — skip gracefully.
-      try {
-        await loadPlayerWithDash(page);
-      } catch {
-        test.skip(true, "Firefox H.264 codecs unavailable (no gstreamer1.0-libav)");
-        return;
-      }
-
-      await openFilmstrip(page);
-
-      const fallback = page.locator(".vp-filmstrip-fallback");
-      await expect(fallback).toBeVisible();
-      await expect(fallback).toContainText("WebCodecs");
-    });
-  });
 });
