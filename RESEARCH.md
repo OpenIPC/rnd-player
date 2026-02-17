@@ -228,6 +228,138 @@ Additionally, `isConfigSupported` returns `false` when called on an `about:blank
 - Chromium source: search for `IsConfigSupported` in media/
 - `about:blank` secure context behavior: https://html.spec.whatwg.org/multipage/browsers.html#concept-origin-opaque
 
+### Findings
+
+#### Q1: What does the WebCodecs spec say `isConfigSupported` must verify?
+
+**The "Check Configuration Support" algorithm is implementation-defined.** The spec defines `isConfigSupported()` as resolving with a `VideoDecoderSupport` dictionary containing a `supported` boolean, but the algorithm that determines `supported` is left entirely to the User Agent. The spec states: *"User Agents don't have to support any particular codec type or configuration."*
+
+Browsers implement this very differently:
+
+- **Chromium** (`video_decoder.cc`, `IsConfigSupported` lines 281-334) performs a multi-stage check **without instantiating a real decoder**: validates config structure, clones config, checks software codec capability via `media::IsDecoderBuiltInVideoCodec()` and `media::IsDecoderSupportedVideoType()`, constructs an internal config via `MakeMediaVideoDecoderConfig()`. Only queries GPU factories asynchronously if `prefer-hardware` is specified. Chromium explicitly designed this to not allocate codec resources.
+
+- **WebKit** (`WebCodecsVideoDecoder.cpp`) goes further with a **three-stage check that includes decoder creation**: (1) validates config structure, (2) checks codec string support via `isSupportedDecoderCodec()`, (3) **actually calls `VideoDecoder::create()`** which routes through `createLocalDecoder()` to attempt platform decoder instantiation (VideoToolbox on macOS, GStreamer on Linux). The `supported` boolean is `true` if the create promise succeeds, `false` if it fails.
+
+**Why false positives still occur in WebKit despite attempting decoder creation:**
+
+1. **Decoder creation != successful decoding.** `VideoDecoder::create()` tests whether a decoder *object* can be instantiated (e.g., `VTDecompressionSession` can be allocated), but does not test whether it can actually decode frames. HEVC decoder creation succeeds (the VideoToolbox framework is available) but actual sample processing fails due to NALU rewriting bugs ([Bug 262950](https://bugs.webkit.org/show_bug.cgi?id=262950)).
+
+2. **GStreamer platform mismatches.** On Linux (WebKitGTK), if `dav1d` is installed, the GStreamer element creates successfully, but actual frame output fails due to colorimetry handling bugs, threading misconfiguration, or parser problems ([PR #27230](https://github.com/WebKit/WebKit/pull/27230), Bug 272642).
+
+There are also cross-browser interop issues around the boundary between "invalid" (throws `TypeError`) and "unsupported" (resolves with `supported: false`). [Issue #744](https://github.com/w3c/webcodecs/issues/744) documents that Chromium resolves with `{ supported: false }` for unsupported scalability modes while Safari rejects the promise. Developers must wrap `isConfigSupported` in try/catch to handle both outcomes.
+
+#### Q2: Why does `isConfigSupported` behave differently on `about:blank` vs a navigated page?
+
+**Root cause: `about:blank` is not a secure context in Playwright, and WebCodecs requires `[SecureContext]`.**
+
+The explanation involves three layers of spec interaction:
+
+1. **WebCodecs requires `[SecureContext]`**: The `VideoDecoder` IDL has `[Exposed=(Window, DedicatedWorker), SecureContext]`. On a non-secure context, `typeof VideoDecoder === "undefined"`. This was added per [w3c/webcodecs#350](https://github.com/w3c/webcodecs/issues/350) to prevent fingerprinting via codec enumeration on insecure origins.
+
+2. **The Secure Contexts spec has a URL-level vs origin-level conflict for `about:blank`**: The [W3C Secure Contexts spec](https://w3c.github.io/webappsec-secure-contexts/) defines two algorithms:
+   - **"Is url potentially trustworthy?"** (Section 3.2): Step 1 says `about:blank` returns "Potentially Trustworthy"
+   - **"Is origin potentially trustworthy?"** (Section 3.1): Step 1 says opaque origins return "Not Trustworthy"
+
+   The HTML spec's secure context algorithm uses the URL-level check against the `topLevelCreationURL`, which for a top-level `about:blank` is `about:blank` itself. Per spec, `about:blank` *should* be a secure context.
+
+3. **All major browsers diverge from the spec**: [whatwg/html#6369](https://github.com/whatwg/html/issues/6369) tracks this. Chrome 88+ treats top-level `about:blank` without a creator as a non-secure context, because the opaque origin is not trustworthy. Firefox and WebKit behave the same way. This is a known spec/implementation mismatch that remains unresolved.
+
+**In Playwright specifically**: `browser.newPage()` creates a top-level `about:blank` with no creator browsing context. Without a creator, the HTML spec's origin determination algorithm gives `about:blank` an **opaque origin**. Despite the URL-level check passing, browsers treat the opaque origin as non-trustworthy → `isSecureContext === false` → `VideoDecoder` is `undefined`.
+
+After `page.goto('http://localhost:5173')` (the Vite dev server configured in `playwright.config.ts`), the page becomes a secure context because `localhost` is a potentially trustworthy origin (matching `127.0.0.0/8` in the spec's step 3). `VideoDecoder` and `isConfigSupported` then become available.
+
+**This affects all `[SecureContext]` APIs, not just WebCodecs**: Web Crypto (`crypto.subtle`), Service Workers, WebGPU, Web Bluetooth, MediaDevices, WebTransport, WebUSB, WebHID, WebXR, Web MIDI, Web Locks, Web Share, Web Authentication, etc. are all `undefined` on `about:blank` in Playwright.
+
+The project's probe functions (`e2e/helpers.ts:316-328`, `415-427`) correctly guard against this with `typeof VideoDecoder === "undefined"` checks, and the test comments correctly explain the ordering requirement.
+
+#### Q3: Is the `VideoDecoder` actually failing (emitting an error) or silently producing no output?
+
+**Silent failure -- a spec violation.**
+
+The WebCodecs spec mandates explicit error handling:
+- When `decode()` results in an error: *"queue a task to run the Close VideoDecoder algorithm with EncodingError"*
+- The Close algorithm: *"If exception is not an AbortError DOMException, invoke the error callback with exception"*
+- After closing: the decoder enters a terminal `"closed"` state
+
+Per spec, **there is no path where a decode error occurs without the error callback being invoked**. If the decoder encounters bad data, it must call the error callback with an `EncodingError`.
+
+The thumbnail worker at `src/workers/thumbnailWorker.ts:488-490` has an error handler that posts error messages. The fact that filmstrip thumbnails "never render" without error messages appearing means the error callback is **not firing** -- the decoder silently produces no output. This is a spec violation.
+
+**Known WebKit bugs in this area:**
+
+- [WebKit Bug 262950](https://bugs.webkit.org/show_bug.cgi?id=262950): "WebCodecs HEVC isSupported returns true but decoding failed." The NALU rewriter dropped data during Annex B to HEVC conversion. Status: **REOPENED** (fix incomplete).
+- [WebKit PR #27230](https://github.com/WebKit/WebKit/pull/27230) (Bug 272642): AV1 decoding fixes in GStreamer backend -- `dav1d` had colorimetry handling issues and threading misconfiguration causing decode failures without proper error signaling.
+- [w3c/webcodecs Issue #848](https://github.com/w3c/webcodecs/issues/848): "No output or error decoding streamed h264 video" -- decoder exhibited `decodeQueueSize` never increasing but no output or errors. Root cause: missing SPS/PPS NAL units.
+- [w3c/webcodecs Issue #656](https://github.com/w3c/webcodecs/issues/656): Proposal to allow decoders to ignore corrupted frames rather than entering terminal `"closed"` state on first error.
+
+The root cause is that WebKit's platform decoder abstraction layer (VideoToolbox on macOS, GStreamer on Linux) does not always propagate decode failures back to the WebCodecs layer. The platform decoder may accept input, fail to produce output, and not report an error -- the WebCodecs layer has no visibility into this silent failure.
+
+#### Q4: Is there a way to do a "trial decode" that would be more reliable?
+
+**Yes, and the architecture already exists in this project.**
+
+A trial decode would: (1) create a `VideoDecoder` with output/error callbacks, (2) `configure()` with the target config, (3) feed a single keyframe as an `EncodedVideoChunk`, (4) call `flush()` to force output, (5) wait with a timeout: output callback = success, error callback or timeout = failure.
+
+**Practical considerations:**
+- **What's needed**: Pre-encoded minimal keyframe bitstreams per codec (H.264, HEVC, AV1). A single black 64x64 I-frame is sufficient. ~500 bytes to ~5 KB per codec.
+- **Latency**: Decoder creation ~1-5ms, configure ~1-10ms, decode one keyframe ~10-50ms, flush ~10-50ms. **Total: ~50-200ms** per codec.
+- **Reliability**: Tests the actual decode pipeline, not just codec string recognition or decoder object creation. Catches NALU rewriting bugs, colorimetry issues, threading problems, and missing platform codecs.
+
+The `thumbnailWorker.ts` already implements the full decode pipeline for filmstrip generation. A trial decode probe would be a stripped-down version. The gap is that no major streaming library ships pre-encoded minimal bitstreams for probe purposes.
+
+**Downside**: Requires shipping small pre-encoded keyframes with the application and accepting ~100ms startup latency per codec. Must run in a secure context (same constraint as `isConfigSupported`). Creates a temporary decoder that consumes a hardware decoder slot.
+
+#### Q5: Does behavior differ between main thread and worker-thread `VideoDecoder`?
+
+**No difference per spec or empirical testing.**
+
+The WebCodecs spec exposes `VideoDecoder` as `[Exposed=(Window, DedicatedWorker)]` with no normative text differentiating behavior between contexts. The project's CLAUDE.md confirms this empirically: *"WebCodecs H.264 decoding works on all CI platforms... in both main-thread and Worker contexts."*
+
+The HEVC/AV1 silent failures on WebKit affect both contexts equally -- they are platform decoder issues (VideoToolbox/GStreamer), not threading issues. A `DedicatedWorker` inherits its secure context status from its creating document, so the `[SecureContext]` restriction applies identically.
+
+### Recommendations for this project
+
+1. **The `about:blank` probe ordering fix is correct and well-grounded.** The comment "requires a proper page context (not about:blank)" is accurate -- `VideoDecoder` is `undefined` on `about:blank` due to the `[SecureContext]` requirement and opaque origin. Always run probes after navigating to localhost.
+
+2. **The timeout + skip pattern for filmstrip tests is the right approach** given that `isConfigSupported` cannot guarantee decode success (implementation-defined algorithm, spec-violating silent failures in WebKit). No single API call can guarantee frame output.
+
+3. **A trial decode probe would be definitively reliable** for filmstrip support detection, catching the silent failures that `isConfigSupported` misses. Trade-off: shipping small pre-encoded keyframes (~500B-5KB per codec) and ~100ms startup latency. The thumbnail worker already has the decode infrastructure.
+
+4. **The silent failure behavior in WebKit is a spec violation** that may improve as fixes land ([Bug 262950](https://bugs.webkit.org/show_bug.cgi?id=262950) is REOPENED). Relying on specific browser versions is fragile -- timeout-based detection is more robust.
+
+### Key references
+
+- [WebCodecs spec: `isConfigSupported`](https://www.w3.org/TR/webcodecs/#dom-videodecoder-isconfigsupported) -- "Check Configuration Support" is implementation-defined
+- [WebCodecs spec: `decode()` method](https://w3c.github.io/webcodecs/#dom-videodecoder-decode) -- mandates EncodingError on decode failure
+- [WebCodecs spec: Close algorithm](https://w3c.github.io/webcodecs/#close-videodecoder) -- error callback must fire for non-AbortError
+- [w3c/webcodecs Issue #744](https://github.com/w3c/webcodecs/issues/744) -- "invalid" vs "unsupported" interop
+- [w3c/webcodecs Issue #350](https://github.com/w3c/webcodecs/issues/350) -- `[SecureContext]` rationale (fingerprinting prevention)
+- [w3c/webcodecs Issue #383](https://github.com/w3c/webcodecs/issues/383) -- request to drop SecureContext rejected
+- [w3c/webcodecs Issue #848](https://github.com/w3c/webcodecs/issues/848) -- "No output or error" pattern
+- [w3c/webcodecs Issue #656](https://github.com/w3c/webcodecs/issues/656) -- proposal to allow ignoring corrupted frames
+- [WebKit Bug 262950](https://bugs.webkit.org/show_bug.cgi?id=262950) -- HEVC isConfigSupported true but decode fails (REOPENED)
+- [WebKit commit 8555adf](https://github.com/WebKit/WebKit/commit/8555adfc8a29c5d85caff1f9d6c7f9c0dc8eb0b2) -- HEVC NALU rewriter fix
+- [WebKit commit 7e4ab69](https://github.com/WebKit/WebKit/commit/7e4ab69bd8f2b884468da81c4ed52a3b86fc2c34) -- isConfigSupported false positive fix for unknown codecs
+- [WebKit PR #27230](https://github.com/WebKit/WebKit/pull/27230) -- AV1 GStreamer decoding fixes (Bug 272642)
+- [W3C Secure Contexts spec](https://w3c.github.io/webappsec-secure-contexts/) -- "Is origin potentially trustworthy?" (opaque → Not Trustworthy)
+- [whatwg/html#6369](https://github.com/whatwg/html/issues/6369) -- spec/implementation mismatch for about:blank secure context
+- [Chromium Issue 510424](https://issues.chromium.org/issues/40082499) -- about:blank security context inheritance
+- [MDN: Secure Contexts](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
+- [MDN: Features restricted to secure contexts](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts/features_restricted_to_secure_contexts)
+- [upscaler.video Codec Support Dataset](https://webcodecsfundamentals.org/datasets/codec-support/) -- empirical isConfigSupported data across 224K sessions
+
+### Status: COMPLETE
+
+Topic 2 research is comprehensive. All 5 research questions answered with spec-level, source-code-level, and bug-tracker evidence. Key findings:
+- `isConfigSupported` is implementation-defined; WebKit attempts decoder creation but this does not guarantee decode success
+- `about:blank` non-secure context is a known spec/implementation mismatch (browsers are more conservative than spec)
+- WebKit's silent decode failures are spec violations (error callback not firing)
+- Trial decode is the most reliable alternative, with ~50-200ms latency and pre-encoded keyframes needed
+
+Actionable items for future work:
+- **Actionable**: Consider implementing a trial decode probe for HEVC/AV1 filmstrip support detection using minimal pre-encoded keyframes (overlaps with thumbnail worker architecture)
+- **Actionable**: File a WebKit bug or comment on Bug 262950 about the silent failure pattern (no error callback when decode silently produces no output)
+
 ---
 
 ## Topic 3: ClearKey EME Silent Decryption Failure
