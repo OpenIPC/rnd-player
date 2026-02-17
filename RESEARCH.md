@@ -737,6 +737,149 @@ Tests use `toBeLessThanOrEqual(3)` tolerance for HEVC and AV1 seek assertions:
 - Chromium source: `HTMLMediaElement::setCurrentTime` -> seek algorithm
 - Firefox source: `HTMLMediaElement::Seek` implementation
 
+### Findings
+
+#### Q1: Is the offset caused by the encoder (CTTS atom values), the browser's MSE seek algorithm, or both?
+
+**Primarily the encoder, with browser implementation determining whether the offset manifests.** The CTTS (Composition Time to Sample) box exists specifically because of B-frames. When B-frames are present, frames are stored in decode order (e.g., I, P, B, B for an IBBP GOP) but display in a different order (I, B, B, P). The CTTS table provides offsets to convert decode timestamps (DTS) to presentation timestamps (PTS): `CT(n) = DT(n) + CTTS(n)`.
+
+During a seek, the MSE spec requires the browser to "feed coded frames from the active track buffers into the decoders starting with the closest random access point before the new playback position" ([MSE spec §3.15.3](https://w3c.github.io/media-source/)). The browser should then decode forward and display the frame whose PTS matches the target time. If a browser's seek pipeline correctly uses PTS, the CTTS offsets should be transparent. If it uses DTS internally (or has rounding issues in the PTS calculation), the offset equals the B-frame reorder depth.
+
+The encoder determines the *magnitude* of possible offset (via bframes count → CTTS values). The browser determines whether that offset is *visible* (correct PTS-based vs incorrect DTS-based seeking).
+
+#### Q2: What does the HTML spec say about seek behavior with B-frames?
+
+**The spec does not address B-frames, composition time offsets, or frame-level precision.** The HTML spec defines a unified "seeking algorithm" ([WHATWG HTML §4.8.11.9](https://html.spec.whatwg.org/multipage/media.html#seeking)) invoked by both `currentTime` (for accurate seeking) and `fastSeek()` (with the `approximate-for-speed` flag set, allowing keyframe snapping).
+
+Key spec properties:
+- Setting `currentTime` invokes the seek algorithm **without** `approximate-for-speed`, meaning the browser should seek to the exact requested time, not the nearest keyframe
+- `fastSeek()` invokes the seek algorithm **with** `approximate-for-speed`, allowing the browser to "seek to the nearest position in the media resource" (typically a keyframe) for performance
+- The spec says "wait until the user agent has established whether or not the media data for the new playback position is available, and, if it is, until it has decoded enough data to play back that position"
+- The spec makes no mention of composition time, CTTS, B-frames, or how frame reordering affects seek precision
+
+[W3C Issue #4](https://github.com/w3c/media-and-entertainment/issues/4) (frame-accurate seeking) notes: "the `currentTime` property takes a time, not a frame number" and "internal rounding of time values may mean that one seeks to the end of the previous frame instead of the beginning of a specific video frame." The consensus is that the spec provides no frame-accuracy guarantees — only best-effort time-based seeking.
+
+**`fastSeek()` is not relevant to our case** — our `useKeyboardShortcuts.ts` uses `video.currentTime = target` (accurate seek), not `fastSeek()`.
+
+#### Q3: Does libx264 `-preset ultrafast` disable B-frames entirely? (Explaining why H.264 tests are exact)
+
+**Yes.** The x264 `ultrafast` preset sets `bframes=0`, making it the only preset that disables B-frames entirely. All other presets use ≥3 B-frames:
+
+| x264 Preset | bframes |
+|-------------|---------|
+| **ultrafast** | **0** |
+| superfast | 3 |
+| veryfast–slow | 3 |
+| veryslow | 8 |
+| placebo | 16 |
+
+Our fixture additionally uses `-tune zerolatency` which independently disables B-frames. With both flags, the H.264 output has no CTTS box at all — PTS equals DTS for every frame. This is why H.264 OCR tests produce exact frame matches.
+
+Source: [x264 preset reference](https://dev.beandog.org/x264_preset_reference.html)
+
+#### Q4: For libx265 and AV1 encoders, what are the default B-frame settings? Can they be disabled?
+
+**libx265 (`-preset ultrafast`):** Uses `bframes=3`. Unlike x264, x265 `ultrafast` does NOT disable B-frames:
+
+| x265 Preset | bframes |
+|-------------|---------|
+| ultrafast, superfast | 3 |
+| veryfast–slow | 4 |
+| slower–placebo | 8 |
+
+Our fixture uses `libx265 -preset ultrafast` without `-tune zerolatency` or `-bf 0`, so it produces IBBP GOPs with 3 consecutive B-frames. B-frames can be disabled with `-x265-params "bframes=0"`.
+
+Source: [x265 preset docs](https://x265.readthedocs.io/en/stable/presets.html)
+
+**libsvtav1 (`-preset 12`):** Uses `hierarchical-levels=5` (default for presets ≤12), creating 6 temporal layers with a hierarchical mini-GOP of 32 frames (2^5). The `pred-struct=2` (random access, default) enables bidirectional prediction. This is deeply nested B-frame reordering — far deeper than x265's 3 consecutive B-frames. B-frames can be disabled with `--pred-struct 1` (low-delay mode). The default `-g 30` is also overridden by our fixture's `-g 30 -keyint_min 30`.
+
+Source: [SVT-AV1 Parameters.md](https://gitlab.com/AOMediaCodec/SVT-AV1/-/blob/master/Docs/Parameters.md)
+
+**libaom-av1 (`-cpu-used 8`):** In good-quality mode (ffmpeg default), `cpu-used 8` is internally treated as `cpu-used 6`. Uses altref frames (AV1's equivalent of B-frames) with `lag-in-frames` ~19 by default. Frame reordering is present. Alt-ref frames can be disabled with `-auto-alt-ref 0`, and lag can be reduced with `-lag-in-frames 0`.
+
+Source: [FFmpeg libaomenc.c source](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/libaomenc.c)
+
+#### Q5: Is the ±3 frame tolerance correct, or a coincidence of bframes=3? What is the theoretical maximum offset?
+
+**The ±3 tolerance is correct for x265 ultrafast but is a coincidence of the bframes=3 setting, not a universal constant.** The theoretical maximum composition time offset for a given B-frame configuration is:
+
+`max_offset = bframes × frame_duration`
+
+For x265 ultrafast (bframes=3) at 30fps: `max_offset = 3 × (1/30s) = 100ms = 3 frames`
+
+However, the observable seek offset depends on how the browser's seek algorithm interacts with the decode pipeline. If the browser correctly maps PTS to display time, the offset should be 0. The ±3 offset suggests the browser is resolving to a nearby frame rather than the exact PTS target — possibly due to:
+1. DTS-based internal seek followed by PTS mapping with rounding
+2. Frame boundary quantization in the MSE buffering layer
+3. Browser-specific floating-point precision in currentTime
+
+For SVT-AV1 with hierarchical-levels=5, the reorder depth is much deeper (up to 31 frames between base-layer frames), yet CI tests show the same ±3 tolerance works. This suggests the browser's seek algorithm does correct for most of the B-frame offset, and the residual ±3 is a browser-level precision issue, not the full B-frame depth.
+
+**The ±3 tolerance should be re-evaluated per encoder configuration.** If x265 bframes were increased (e.g., to 8 with `-preset slower`), the tolerance would likely need to increase. A safer formula would be `max(3, bframes)`.
+
+#### Q6: Do different browsers handle B-frame seeking differently?
+
+**Yes, browsers differ in their seek precision.**
+
+**Chromium/Edge:** Since Chrome 69, MSE uses PTS (not DTS) for buffered ranges and duration values. The `PipelineController` orchestrates seeking through the `ChunkDemuxer` → `DecoderStream` → `VideoDecoder` pipeline. The decoder decodes from the nearest keyframe forward and outputs frames in PTS order. Chromium's seek should be accurate for B-frame content, and HEVC/AV1 tests on Chromium/Edge would show exact frames — except that Chromium doesn't support HEVC MSE at all (probe returns false), so we can't verify this. AV1 on Chromium shows ±3 tolerance in practice.
+
+Source: [Chromium media design docs](https://www.chromium.org/developers/design-documents/video/)
+
+**Firefox:** Has a `MediaDecoderStateMachine` with `AccurateSeekingState` that decodes forward from the keyframe to the exact target time. However, Firefox is known to land slightly before frame boundaries (`N/fps - epsilon`), which is why `FRAME_SEEK_EPSILON` exists in our code. Bug [778077](https://bugzilla.mozilla.org/show_bug.cgi?id=778077) shows `fastSeek` was implemented as keyframe-only seek. Bug [1022913](https://bugzilla.mozilla.org/show_bug.cgi?id=1022913) shows fastSeek direction issues. For B-frame content, Firefox's accurate seek should work via PTS, but the epsilon issue may compound with B-frame offsets.
+
+**WebKit/GStreamer:** GStreamer tracks PTS and DTS separately in `GstBuffer`. During seeks, the `GstVideoDecoder` resets and flushes its pipeline. GStreamer's segment handling clips frames outside the target range by PTS. However, per the GStreamer docs: "every time you seek you'll get DTS that is before segment start (assuming stream with bframes)." The ±3 frame offset on WebKitGTK with HEVC is likely a GStreamer pipeline interaction where the segment start/stop clipping doesn't perfectly align with composition time offsets. GStreamer Bug [740575](https://gstreamer-bugs.narkive.com/JBWSWwCW/bug-740575-new-fixing-dts-in-gstreamer) discusses DTS fixing in GStreamer.
+
+#### Q7: Is `fastSeek()` vs `currentTime` assignment relevant here?
+
+**No, `fastSeek()` is not used in our code path.** Our `useKeyboardShortcuts.ts` sets `video.currentTime = target`, which invokes the seek algorithm WITHOUT the `approximate-for-speed` flag. This means the browser should seek accurately, not to the nearest keyframe.
+
+The spec-level difference:
+- `currentTime = T` → accurate seek (decode from keyframe, display frame at T)
+- `fastSeek(T)` → approximate seek (may display nearest keyframe frame)
+
+The ±3 frame offset is NOT caused by fastSeek behavior. It's an accuracy limitation of the browser's accurate-seek implementation when handling B-frame content.
+
+#### Shaka Player's role in the seek pipeline
+
+**Shaka Player does not modify the seek target for B-frame correction.** When `video.currentTime = T` is set, Shaka Player:
+1. Detects the seek via its `onSeeking_()` handler
+2. May reposition the playhead if it falls outside the availability window (live streams only, via `safeSeekOffset`)
+3. Clears and re-fetches segments around the new position if the target isn't buffered
+4. Calculates `timestampOffset = Period@start - presentationTimeOffset` for MSE SourceBuffer alignment
+5. Does NOT adjust the seek target based on B-frame CTTS values
+
+Shaka Player Issue [#593](https://github.com/google/shaka-player/issues/593) documents playback failures with B-frames and `presentationTimeOffset` in Chrome (2016-2019 era PTS/DTS bugs, now fixed). Issue [#2087](https://github.com/shaka-project/shaka-player/issues/2087) confirms that PTS corresponds to composition time (CTTS + STTS values).
+
+The seek offset is entirely a browser-level issue — Shaka passes through the seek to the native `<video>` element without modification.
+
+#### Key references
+
+- [WHATWG HTML seeking algorithm](https://html.spec.whatwg.org/multipage/media.html#seeking)
+- [W3C MSE spec §3.15.3](https://w3c.github.io/media-source/) — seek algorithm in MSE context
+- [W3C Issue #4: Frame accurate seeking](https://github.com/w3c/media-and-entertainment/issues/4)
+- [x264 preset reference](https://dev.beandog.org/x264_preset_reference.html) — bframes=0 for ultrafast
+- [x265 preset options](https://x265.readthedocs.io/en/stable/presets.html) — bframes per preset
+- [SVT-AV1 Parameters.md](https://gitlab.com/AOMediaCodec/SVT-AV1/-/blob/master/Docs/Parameters.md) — hierarchical levels
+- [Apple CTTS documentation](https://developer.apple.com/documentation/quicktime-file-format/composition_offset_atom)
+- [GDCL CTTS explanation](https://www.gdcl.co.uk/mpeg4/ctts.htm) — CT(n) = DT(n) + CTTS(n) formula
+- [Shaka Player Issue #593](https://github.com/google/shaka-player/issues/593) — B-frames + presentationTimeOffset
+- [Shaka Player Issue #2087](https://github.com/shaka-project/shaka-player/issues/2087) — timestampOffset and CTTS
+- [Chromium media design](https://www.chromium.org/developers/design-documents/video/) — pipeline architecture
+- [Firefox Bug 778077](https://bugzilla.mozilla.org/show_bug.cgi?id=778077) — fastSeek implementation
+- [GStreamer Bug 740575](https://gstreamer-bugs.narkive.com/JBWSWwCW/bug-740575-new-fixing-dts-in-gstreamer) — DTS fixing
+- [Chrome 69 media updates](https://developer.chrome.com/blog/media-updates-in-chrome-69) — PTS buffering
+
+### Status: COMPLETE
+
+**Root cause identified.** The ±3 frame offset in HEVC and AV1 tests is caused by the combination of: (1) B-frame encoding producing CTTS offsets in the MP4 container, and (2) browser seek algorithms not achieving perfect PTS-based frame resolution for B-frame content. H.264 tests are exact because `libx264 -preset ultrafast` sets `bframes=0`, eliminating all composition time offsets.
+
+**The ±3 tolerance is empirically correct but theoretically fragile.** It matches x265 ultrafast's bframes=3 by coincidence. For AV1 (deeper B-frame hierarchy), the same tolerance works because browsers resolve most of the B-frame offset and only the residual precision error is ±3 frames.
+
+**Actionable items (4):**
+1. Consider adding `-x265-params "bframes=0"` or `-tune zerolatency` to the HEVC fixture encoding to eliminate B-frames and enable exact frame matching — this would make HEVC tests consistent with H.264 and validate that the offset is indeed B-frame-related
+2. Consider adding `--pred-struct 1` (low-delay) or `-svtav1-params "hierarchical-levels=0"` to the AV1 fixture to test without B-frames
+3. If exact matching is not needed, document the tolerance formula as `max(3, encoder_bframes)` rather than a magic constant
+4. Consider using `requestVideoFrameCallback()` API's `mediaTime` property for true frame-accurate verification in future tests, as it provides the actual presentation timestamp of the displayed frame rather than relying on `currentTime` rounding
+
 ---
 
 ## Topic 5: WebKitGTK Seek Stalls Under CI VM Load
