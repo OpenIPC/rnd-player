@@ -61,6 +61,87 @@ Two-stage skip in tests: probe first, then catch load failure with 30s timeout a
 - WebKit Bugzilla: `isTypeSupported` + AV1
 - Chromium: https://source.chromium.org search for `IsTypeSupportedImpl`
 
+### Findings
+
+#### Q1: What does the MSE spec require `isTypeSupported` to check?
+
+**The spec is deliberately vague.** The algorithm checks: (1) valid MIME type, (2) supported media type/subtype, (3) supported codec, (4) supported combination. But the spec does not define what "support" means at the implementation level. A conforming implementation **is permitted** to return `true` based on MIME type and codec string parsing alone, without verifying decoder availability or attempting trial decode. The spec note explicitly states: "If true is returned, it only indicates that the MediaSource implementation is capable of creating SourceBuffer objects for the specified MIME type." MDN further clarifies: true means the browser can **"probably"** play media of the specified type, and this is **"not a guarantee."**
+
+No spec (MSE, HTML media, or MediaCapabilities) requires verifying actual decoder availability. This is a deliberate design choice -- mandating specific probe mechanisms across diverse platform decoder architectures would be impractical.
+
+#### Q2: Is Firefox's HEVC `isTypeSupported` behavior a known bug?
+
+**Yes, extensively documented.** Multiple Bugzilla bugs and streaming library issues confirm this:
+
+- **[Bug 1928484](https://bugzilla.mozilla.org/show_bug.cgi?id=1928484)**: `isTypeSupported` returned true for HEVC due to PlayReady preferences leaking into codec reporting. Fixed in Firefox 132.0.1.
+- **[Bug 1945371](https://bugzilla.mozilla.org/show_bug.cgi?id=1945371)**: Extensive HEVC decode failures on macOS Firefox 136 (VideoToolbox errors, broken seeking, incorrect rendering) despite probe passing.
+- **[Bug 1894818](https://bugzilla.mozilla.org/show_bug.cgi?id=1894818)**: HEVC on Linux (Firefox 137 via FFmpeg/VA-API). CI VMs may lack hardware acceleration that the decode path requires.
+- **[hls.js #7046](https://github.com/video-dev/hls.js/issues/7046)**: Both `isTypeSupported` AND `decodingInfo` return true for HEVC in Firefox on Windows, but actual MSE playback fails. Fix: UA-based override ([PR #7048](https://github.com/video-dev/hls.js/pull/7048)).
+- **[hls.js #6572](https://github.com/video-dev/hls.js/issues/6572)**: Firefox produces `addSourceBuffer: Can't play type` errors AFTER `isTypeSupported` returned true.
+
+**Root cause**: Firefox's `isTypeSupported` flows through `PDMFactory::Supports()` which probes platform decoders (FFmpeg on Linux, VideoToolbox on macOS). The probe is shallow (can a decoder be created?) but the actual MSE pipeline involves additional layers (demuxing, buffer management, decoder initialization with real data) that can fail even when the probe succeeds. The `media.hevc.enabled` preference defaults to `true`.
+
+#### Q3: Is macOS WebKit's AV1 behavior a known bug?
+
+**Almost certainly a Playwright-specific issue, not a Safari bug.** Real Safari gates AV1 support on hardware decoder availability via the `contentTypesRequiringHardwareSupport` embedder setting. Apple has stated no plans for software AV1 decoding in Safari. AV1 hardware decode requires M3+ / A17 Pro+ chips.
+
+The mechanism: WebKit's `MediaPlayerPrivateMediaSourceAVFObjC.mm` calls `contentTypeMeetsHardwareDecodeRequirements()` which checks if the codec is in the embedder's hardware-required list. **Safari configures this list to include AV1; Playwright's MiniBrowser does not configure it at all.** The default is NULL/empty (confirmed by [WebKitGTK docs](https://webkitgtk.org/reference/webkit2gtk/stable/property.Settings.media-content-types-requiring-hardware-support.html)), meaning no hardware requirements are enforced in Playwright. So `isTypeSupported` returns true (parser supports AV1), but `VTDecompressionSession` creation for AV1 fails silently (no hardware decoder on M1/M2 CI runners).
+
+Precedent bugs with the same pattern: [Bug 198583](https://bugs.webkit.org/show_bug.cgi?id=198583) (FLAC false positive), [Bug 216652](https://bugs.webkit.org/show_bug.cgi?id=216652) (VP9 false positive).
+
+#### Q4: Is there a more reliable probe than `isTypeSupported`?
+
+**Detection methods ranked by reliability:**
+
+| Method | Reliability | Latency | Notes |
+|--------|------------|---------|-------|
+| `isTypeSupported()` | Medium | 0ms | False positives for HEVC on Firefox, AV1 on Playwright WebKit |
+| `canPlayType()` | Low | 0ms | Returns "maybe"/"probably"; no MSE awareness |
+| `decodingInfo()` | Medium+ | 0-50ms | Adds smooth/powerEfficient but shares Firefox HEVC false positive |
+| Trial `addSourceBuffer()` | High | 50-200ms | Catches Firefox HEVC `addSourceBuffer` failures |
+| WebCodecs trial decode | Highest | 100-500ms | Tests actual decode pipeline; not yet used by major libraries |
+| UA + blocklist | Deterministic | 0ms | What hls.js/Shaka actually do for known false positives |
+
+**Industry practice**: Shaka Player uses hardcoded platform blocklists (`rejectCodec_()` / `rejectContainer_()` in `lib/polyfill/mediasource.js`). hls.js uses `userAgentHevcSupportIsInaccurate()` UA check for Firefox+HEVC. dash.js uses `decodingInfo()` with fallback. Netflix/YouTube combine client probes with server-side device profiles.
+
+**The most promising unexploited approach is WebCodecs trial decode**: create a `VideoDecoder`, feed a minimal encoded keyframe, verify the output callback fires. This tests the actual decode pipeline rather than API claims. The player's `thumbnailWorker.ts` already uses this pattern for filmstrip generation. The gap is that no major streaming library ships pre-encoded minimal bitstreams for probe purposes.
+
+#### Q5: Does `canPlayType` have the same false-positive behavior?
+
+**The MSE spec explicitly ties them**: returning `true` from `isTypeSupported` implies `canPlayType` returns `"maybe"` or `"probably"`. In practice, `canPlayType` is **less** reliable for MSE purposes because it answers about `<video src>` playback, not MSE buffering. dash.js originally used `canPlayType` and had to switch to `isTypeSupported` because `canPlayType` returned "probably" for codecs the native element could decode (e.g., FLAC) but MSE could not buffer ([dash.js #2167](https://github.com/Dash-Industry-Forum/dash.js/issues/2167)).
+
+#### Q6: Is `MediaCapabilities.decodingInfo` more reliable?
+
+**Somewhat, but not enough for HEVC.** The `supported` boolean in `decodingInfo` is derived from the same underlying checks as `isTypeSupported` in most browsers. Firefox's initial implementation returned information identical to `isTypeSupported` for media-source type ([Bug 1409664](https://bugzilla.mozilla.org/show_bug.cgi?id=1409664)). The HEVC false positive on Firefox affects `decodingInfo` equally ([hls.js #7046](https://github.com/video-dev/hls.js/issues/7046)). The `smooth` and `powerEfficient` fields are more useful but browser-specific: Chromium is reasonably accurate, Firefox had accuracy bugs that were fixed incrementally.
+
+### Recommendations for this project
+
+1. **Current two-stage approach is correct.** No single API call can guarantee playback success -- this is a spec-level limitation. The probe + load-failure-catch pattern aligns with industry practice.
+
+2. **Consider `decodingInfo()` as an upgrade over `isTypeSupported`.** While it shares the HEVC false positive on Firefox, it provides `smooth`/`powerEfficient` signals and accepts resolution parameters. It would not change existing skip behavior but would provide richer diagnostic annotations.
+
+3. **The macOS WebKit AV1 false positive is Playwright-specific** and will not affect real Safari users. No code change needed in the player; the test-level `tryLoadAv1Dash` readyState check is the correct fix.
+
+4. **A WebCodecs trial decode probe** would be the definitive solution but adds complexity (shipping minimal encoded keyframes) and latency (100-500ms). Worth considering if the false-positive problem expands to more codecs/platforms.
+
+5. **UA-based blocklists** (like hls.js does for Firefox+HEVC) are deterministic and zero-latency but require ongoing maintenance. Not recommended for this project since the player doesn't select codecs -- it plays whatever manifest URL the user provides.
+
+### Key references
+
+- [MSE spec isTypeSupported](https://www.w3.org/TR/media-source-2/#dom-mediasource-istypesupported) -- "only indicates capability of creating SourceBuffer objects"
+- [Media Capabilities Explainer](https://github.com/w3c/media-capabilities/blob/main/explainer.md) -- designed to replace isTypeSupported/canPlayType
+- [Firefox Bug 1928484](https://bugzilla.mozilla.org/show_bug.cgi?id=1928484) -- HEVC isTypeSupported false positive from PlayReady
+- [Firefox Bug 1945371](https://bugzilla.mozilla.org/show_bug.cgi?id=1945371) -- Extensive HEVC decode failures despite probe passing
+- [hls.js #7046](https://github.com/video-dev/hls.js/issues/7046) -- decodingInfo also lies for HEVC on Firefox
+- [hls.js #7048](https://github.com/video-dev/hls.js/pull/7048) -- UA-based override fix
+- [WebKit Bug 198583](https://bugs.webkit.org/show_bug.cgi?id=198583) -- FLAC isTypeSupported false positive (same pattern)
+- [WebKitGTK media-content-types-requiring-hardware-support](https://webkitgtk.org/reference/webkit2gtk/stable/property.Settings.media-content-types-requiring-hardware-support.html) -- default NULL in non-Safari embedders
+- [Shaka Player mediasource.js](https://github.com/shaka-project/shaka-player/blob/main/lib/polyfill/mediasource.js) -- rejectCodec/rejectContainer blocklist approach
+- [Shaka Player codec preferences](https://github.com/shaka-project/shaka-player/blob/main/docs/design/codec_preferences.md)
+- [dash.js #2167](https://github.com/Dash-Industry-Forum/dash.js/issues/2167) -- canPlayType vs isTypeSupported
+- [MDN MediaSource.isTypeSupported](https://developer.mozilla.org/en-US/docs/Web/API/MediaSource/isTypeSupported_static)
+- [MDN MediaCapabilities.decodingInfo](https://developer.mozilla.org/en-US/docs/Web/API/MediaCapabilities/decodingInfo)
+
 ---
 
 ## Topic 2: WebCodecs `isConfigSupported` vs Actual Decode Failures
