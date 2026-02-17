@@ -328,6 +328,105 @@ export async function probeHevcWebCodecsSupport(
   });
 }
 
+// --- AV1 DASH fixture support ---
+
+const av1DashFixtureDir = dashFixtureDir ? join(dashFixtureDir, "av1") : "";
+
+export function isAv1DashFixtureAvailable(): boolean {
+  if (!av1DashFixtureDir) return false;
+  return existsSync(join(av1DashFixtureDir, "manifest.mpd"));
+}
+
+const av1DashFiles = new Map<string, Buffer>();
+
+if (isAv1DashFixtureAvailable()) {
+  const files = readdirSync(av1DashFixtureDir);
+  for (const file of files) {
+    const fullPath = join(av1DashFixtureDir, file);
+    if (statSync(fullPath).isFile()) {
+      av1DashFiles.set(file, readFileSync(fullPath));
+    }
+  }
+}
+
+/**
+ * Intercepts /av1-dash/* requests, serves AV1 DASH fixture files from memory.
+ * Navigates to the player with the AV1 DASH manifest, waits for controls,
+ * then pauses and seeks to time 0 so frame "0000" is displayed.
+ */
+export async function loadPlayerWithAv1Dash(page: Page) {
+  await page.route(
+    (url) => url.pathname.startsWith("/av1-dash/"),
+    (route) => {
+      const filename =
+        route.request().url().split("/av1-dash/").pop() ?? "";
+      const body = av1DashFiles.get(filename);
+      if (body) {
+        route.fulfill({
+          status: 200,
+          contentType: contentTypeFor(filename),
+          body,
+        });
+      } else {
+        route.fulfill({ status: 404 });
+      }
+    },
+  );
+
+  await page.goto("/?v=/av1-dash/manifest.mpd");
+  await page.locator(".vp-controls-wrapper").waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+
+  // Pause and seek to time 0 to ensure frame "0000" is rendered
+  await page.evaluate(async () => {
+    const video = document.querySelector("video")!;
+    video.pause();
+    if (video.currentTime !== 0) {
+      const seeked = new Promise((resolve) =>
+        video.addEventListener("seeked", resolve, { once: true }),
+      );
+      video.currentTime = 0;
+      // Timeout prevents hanging on WebKitGTK where seeks can stall
+      await Promise.race([seeked, new Promise((r) => setTimeout(r, 5000))]);
+    }
+  });
+}
+
+/**
+ * Probe whether the browser supports AV1 via MSE (MediaSource.isTypeSupported).
+ */
+export async function probeAv1MseSupport(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    if (typeof MediaSource === "undefined") return false;
+    return MediaSource.isTypeSupported(
+      'video/mp4; codecs="av01.0.01M.08"',
+    );
+  });
+}
+
+/**
+ * Probe whether the browser supports AV1 via WebCodecs (VideoDecoder.isConfigSupported).
+ */
+export async function probeAv1WebCodecsSupport(
+  page: Page,
+): Promise<boolean> {
+  return page.evaluate(async () => {
+    if (typeof VideoDecoder === "undefined") return false;
+    try {
+      const result = await VideoDecoder.isConfigSupported({
+        codec: "av01.0.01M.08",
+        codedWidth: 1920,
+        codedHeight: 1080,
+      });
+      return result.supported === true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 // --- Shared OCR / seek utilities ---
 
 /**

@@ -196,3 +196,60 @@ rm -f "$HEVC_SOURCE"
 
 echo "==> HEVC DASH fixture ready in $HEVC_DIR"
 ls -lh "$HEVC_DIR"
+
+# --- AV1 DASH fixture ---
+
+# Detect AV1 encoder: prefer libsvtav1 (fast), fall back to libaom-av1 (slow)
+AV1_ENCODER=""
+AV1_EXTRA_FLAGS=""
+if ffmpeg -encoders 2>/dev/null | grep -q libsvtav1; then
+  AV1_ENCODER="libsvtav1"
+  AV1_EXTRA_FLAGS="-preset 12"
+elif ffmpeg -encoders 2>/dev/null | grep -q libaom-av1; then
+  AV1_ENCODER="libaom-av1"
+  AV1_EXTRA_FLAGS="-cpu-used 8 -row-mt 1"
+fi
+
+if [ -z "$AV1_ENCODER" ]; then
+  echo "==> Skipping AV1 fixture: neither libsvtav1 nor libaom-av1 encoder available in ffmpeg"
+  exit 0
+fi
+
+echo "==> Generating AV1 1080p source with $AV1_ENCODER ($DURATION s @ $FPS fps)..."
+
+AV1_DIR="$OUT_DIR/av1"
+mkdir -p "$AV1_DIR"
+
+AV1_SOURCE="$OUT_DIR/source_av1_1080p.mp4"
+
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
+  -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -c:v "$AV1_ENCODER" $AV1_EXTRA_FLAGS \
+  -g "$FPS" -keyint_min "$FPS" \
+  -pix_fmt yuv420p \
+  -c:a aac -b:a 128k \
+  "$AV1_SOURCE"
+
+echo "==> Packaging AV1 as DASH with 2 video renditions + audio..."
+ffmpeg -y -loglevel error \
+  -i "$AV1_SOURCE" \
+  -filter_complex "\
+    [0:v]split=2[v1][v2];\
+    [v1]scale=1920:1080[out1];\
+    [v2]scale=854:480[out2]\
+  " \
+  -map "[out1]" -c:v:0 "$AV1_ENCODER" -b:v:0 2000k $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
+  -map "[out2]" -c:v:1 "$AV1_ENCODER" -b:v:1 400k  $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
+  -map 0:a -c:a aac -b:a 128k \
+  -use_timeline 1 -use_template 1 \
+  -seg_duration 2 \
+  -adaptation_sets "id=0,streams=v id=1,streams=a" \
+  -f dash "$AV1_DIR/manifest.mpd"
+
+# Cleanup intermediate source
+rm -f "$AV1_SOURCE"
+
+echo "==> AV1 DASH fixture ready in $AV1_DIR"
+ls -lh "$AV1_DIR"
