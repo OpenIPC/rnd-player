@@ -880,6 +880,100 @@ The seek offset is entirely a browser-level issue — Shaka passes through the s
 3. If exact matching is not needed, document the tolerance formula as `max(3, encoder_bframes)` rather than a magic constant
 4. Consider using `requestVideoFrameCallback()` API's `mediaTime` property for true frame-accurate verification in future tests, as it provides the actual presentation timestamp of the displayed frame rather than relying on `currentTime` rounding
 
+### Cross-reference with ChatGPT deep research
+
+**Overall assessment: Strong convergence on root cause, with ChatGPT raising several important gaps we didn't address.**
+
+Both sources agree on the core mechanism (CTTS offsets from B-frame reordering → browser seek imprecision), the x264 ultrafast bframes=0 explanation, the HTML spec's lack of frame-accuracy guarantees, and `requestVideoFrameCallback` as the correct measurement primitive. ChatGPT independently arrived at the same conclusion about `currentTime` vs `fastSeek()` irrelevance.
+
+#### New findings from ChatGPT that strengthen our analysis
+
+**1. Edit lists as a compounding factor (MISSED IN ORIGINAL)**
+
+ChatGPT raised edit lists (`elst` box) as a separate mechanism that can shift the presentation timeline. Follow-up investigation confirmed this is significant:
+
+- FFmpeg's DASH muxer (`-f dash`) sets `+delay_moov` automatically, which enables meaningful edit list writing in init segments
+- When B-frames are present and `-movflags +negative_cts_offsets` is NOT set (which is the case for DASH mode — only CMAF mode sets it), ffmpeg uses CTTS version 0 (unsigned offsets) and writes an edit list to compensate for the initial DTS shift
+- The W3C [ISO BMFF Byte Stream Format spec](https://www.w3.org/TR/mse-byte-stream-format-isobmff/) requires MSE to handle only a **single edit with rate=1** — multiple edits or empty edits are not mandated
+- Browser handling of edit lists in MSE is inconsistent: Chrome is most conformant, Firefox ignores multiple edits ([Bug 1140965](https://bugzilla.mozilla.org/show_bug.cgi?id=1140965)), WebKit has separate frame-accuracy issues
+- With libx265 bframes=3 (IBBP pattern), the edit list compensates for a composition offset of `3 × (1/30s) = 100ms = 3 frames` — exactly matching our observed tolerance
+
+This means the ±3 frame offset could be caused by edit list mishandling **in addition to** (or instead of) direct CTTS/B-frame mapping errors. The two mechanisms are two sides of the same coin: B-frame reordering is the encoder-side cause, edit lists + CTTS are the container-side signaling, and browser MSE handling is the manifestation.
+
+**Actionable**: Adding `-movflags +negative_cts_offsets` to the HEVC/AV1 DASH encoding commands would switch to CTTS v1 (signed offsets) and eliminate edit lists, potentially improving seek accuracy on browsers that mishandle edit lists. However, this changes container structure and could trigger different bugs (e.g., [Shaka Packager #751](https://github.com/google/shaka-packager/issues/751) reports wrong frame rates with CTTS v1).
+
+**2. Measurement methodology weakness: `seeked` + double-rAF is a heuristic (ACKNOWLEDGED BUT UNDEREXPLORED)**
+
+ChatGPT correctly notes our test helper's `seeked` event + double-rAF wait "is still a heuristic, and it does not directly observe 'the frame presented for composition.'" Follow-up research on rVFC confirms:
+
+- `video.currentTime` is audio-clock-derived (Chromium), not frame-PTS-derived — it may not correspond to any actual frame's presentation timestamp
+- `metadata.mediaTime` from rVFC is populated directly from the frame's PTS, representing the actually-composited frame
+- WICG/video-rvfc [issue #64](https://github.com/WICG/video-rvfc/issues/64) confirms rVFC is **unaffected** by Chrome's B-frame seeking bug — it reports actually-composited frames regardless
+- All 6 CI browsers now support rVFC: Chrome 83+, Edge 83+, Firefox 132+, Safari 15.4+, WebKitGTK 2.36+
+- The practical improvement would be replacing double-rAF with rVFC confirmation: `await seekedEvent; await new Promise(r => video.requestVideoFrameCallback(() => r()));` — semantically correct instead of timing-based guess
+- Caveat: WebKitGTK stalls (Topic 5) are upstream of rVFC — if the seek never completes, rVFC won't fire either, so timeout fallbacks remain necessary
+
+**3. Safari `seeked` fires before frame decode completes (NEW ECOSYSTEM SIGNAL)**
+
+hls.js [#7583](https://github.com/video-dev/hls.js/issues/7583) reports that Safari fires `seeked` **before** the new frame is actually decoded and composited at 120fps. The hls.js maintainer confirms: "I experienced an issue in Safari where `seeked` is fired before `seeking` is complete." The reporter found rVFC is the reliable signal. This is the same class of bug as Mozilla [Bug 626273](https://bugzilla.mozilla.org/show_bug.cgi?id=626273) (fixed in Firefox in 2011), where `seeked` fired but the stale frame remained displayed.
+
+**Safari 26.0 (2025)** fixed a specific B-frame seeking issue: "Fixed MP4 seeking with b-frames to prevent out-of-order frame display by suppressing frames with earlier presentation timestamps following the seek point" ([WebKit blog](https://webkit.org/blog/17333/webkit-features-in-safari-26-0/)).
+
+**4. WebKit Bug 52697: truncation vs rounding in time conversion (NEW DETAIL)**
+
+WebKit had a bug where converting `currentTime` (float seconds) to internal `TimeValue/TimeScale` used **truncation** instead of **rounding**: `(13/25) * 2500 = 1299.999...` truncated to `1299` instead of `1300`. Fixed in 2011 (r77690). This is exactly the class of bug our `FRAME_SEEK_EPSILON = 0.001` addresses — floating-point seconds don't map cleanly to integer frame boundaries.
+
+**5. Controlled B-frame sweep experiment design (MORE DETAILED)**
+
+ChatGPT proposes 5 falsifiable experiments with evaluation metrics. The most impactful is the "controlled B-frame sweep": generate fixtures with `bf=0,1,2,3,4` while holding everything else constant, then measure max absolute frame error and correlation with `bf`. Our actionable items #1 and #2 are a simplified version (bf=0 only). The full sweep would definitively prove whether error scales with B-frame depth.
+
+**6. MSE vs progressive MP4 experiment (NEW)**
+
+ChatGPT proposes testing the same media via direct `src` playback vs MSE to isolate whether the offset is MSE-specific (segment timestamp offsets, edit list handling) or present in progressive playback too. This would distinguish "MSE pipeline bug" from "general browser seek imprecision."
+
+#### Areas where our original analysis has more depth
+
+- **Shaka Player pipeline analysis**: Our Q7 and Shaka section are more detailed, with specific issue numbers (#593, #2087) and the `timestampOffset = Period@start - presentationTimeOffset` formula
+- **GStreamer internals**: Our Q6 covers WebKit/GStreamer segment clipping behavior and Bug 740575 (DTS fixing)
+- **Chrome 69 historical fix**: We documented the specific Chrome version that switched from DTS to PTS for MSE buffered ranges
+- **SVT-AV1 hierarchical-levels=5**: We gave precise numbers for the prediction structure depth (6 temporal layers, mini-GOP of 32 frames)
+- **Firefox AccurateSeekingState**: Specific state machine class name in the MediaDecoderStateMachine
+
+#### ChatGPT ambiguities flagged (and our responses)
+
+| ChatGPT flag | Our assessment |
+|---|---|
+| "Exact bitstreams and container timelines not specified" | Fair — we described encoder flags but didn't inspect actual CTTS/elst boxes with mp4dump. The edit list investigation above partially addresses this. |
+| "Whether error is symmetric or biased" | Valid gap — we didn't analyze error distribution by browser/OS or by seek target (keyframe vs non-keyframe). CI test results only show pass/fail with ±3 tolerance, not the actual error values. |
+| "Line-number references appear stale" | Incorrect — ChatGPT read raw GitHub which apparently rendered differently. Our line references (hevc.spec.ts:103-108, av1.spec.ts:117-121) are accurate in the local source. |
+| "MSE vs direct-src not isolated" | Valid — all our tests use MSE (DASH fixtures). We don't have progressive MP4 tests for HEVC/AV1 to compare. |
+| "Frame counter corresponds to CT, not DT?" | Important assumption we didn't verify. The drawtext filter in ffmpeg uses `%{eif\:n\:d\:4}` which is the sequential frame count (0, 1, 2, 3...). These numbers correspond to **encode order**, which for B-frame content differs from display order. However, since the frame counter is burned into the video *before* encoding, frame N in the source becomes frame N in both DTS and CTS order — the number is embedded in the pixel data, not derived from timestamps. So the OCR test's "expected frame 150 at t=5s" is valid regardless of reordering. |
+
+#### Correction to ChatGPT
+
+ChatGPT states x265 default bframes is **4** (CLI default). Our table says **3** for ultrafast. Both are correct but refer to different contexts: the x265 CLI default is 4, but the `ultrafast` preset overrides it to 3 (confirmed in [x265 preset docs](https://x265.readthedocs.io/en/stable/presets.html)). Our fixture uses `-preset ultrafast`, so bframes=3 is the applicable value.
+
+#### Updated actionable items (7, expanded from 4)
+
+Original items 1-4 remain. Adding:
+
+5. Investigate adding `-movflags +negative_cts_offsets` to HEVC/AV1 DASH encoding to eliminate edit lists and switch to CTTS v1 — may improve seek accuracy on browsers that mishandle edit lists
+6. Replace double-rAF with `requestVideoFrameCallback` confirmation in `seekTo()` and `pressKeyAndSettle()` — all 6 CI browsers support rVFC, providing a semantic "frame composited" signal instead of a timing heuristic. Keep timeout fallback for WebKitGTK stalls
+7. Run `mp4dump` / `mp4info` on actual HEVC/AV1 DASH init segments to inspect CTTS version, edit list presence, and composition offset values — verify the container matches our assumptions
+
+#### New references (from cross-reference)
+
+- [W3C ISO BMFF Byte Stream Format](https://www.w3.org/TR/mse-byte-stream-format-isobmff/) — MSE edit list handling requirements
+- [FFmpeg movenc.c](https://github.com/FFmpeg/FFmpeg/blob/master/libavformat/movenc.c) — edit list writing logic
+- [Firefox Bug 1140965](https://bugzilla.mozilla.org/show_bug.cgi?id=1140965) — MSE ignoring multiple edits
+- [WebKit Bug 52697](https://bugs.webkit.org/show_bug.cgi?id=52697) — truncation vs rounding in time conversion
+- [Mozilla Bug 626273](https://bugzilla.mozilla.org/show_bug.cgi?id=626273) — float precision + stale frame invalidation
+- [hls.js #7583](https://github.com/video-dev/hls.js/issues/7583) — Safari `seeked` fires before frame decode completes
+- [WICG/video-rvfc #64](https://github.com/WICG/video-rvfc/issues/64) — rVFC unaffected by B-frame seeking bugs
+- [WebKit Features in Safari 26.0](https://webkit.org/blog/17333/webkit-features-in-safari-26-0/) — B-frame seeking fix
+- [Shaka Packager #751](https://github.com/google/shaka-packager/issues/751) — CTTS v1 causing wrong frame rates
+- [web.dev rVFC article](https://web.dev/articles/requestvideoframecallback-rvfc) — `mediaTime` vs `currentTime` difference
+
 ---
 
 ## Topic 5: WebKitGTK Seek Stalls Under CI VM Load
