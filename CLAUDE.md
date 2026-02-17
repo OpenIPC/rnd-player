@@ -409,12 +409,12 @@ Observed codec support across CI browser/OS combinations, based on E2E test resu
 
 | Runner | Browser | AV1 MSE | AV1 WebCodecs | Notes |
 |--------|---------|---------|---------------|-------|
-| `ubuntu-latest` | chromium | TBD | TBD | Expected: yes (software decode since Chrome 70) |
-| `ubuntu-latest` | firefox | TBD | TBD | Expected: yes (dav1d since Firefox 67) |
-| `ubuntu-latest` | webkit | TBD | TBD | Expected: unlikely (needs hardware decoder) |
-| `macos-latest` | webkit | TBD | TBD | Expected: unlikely (needs Apple Silicon M3+) |
-| `macos-latest` | firefox | TBD | TBD | Expected: yes (dav1d software decoder) |
-| `windows-latest` | edge | TBD | TBD | Expected: yes (Chromium-based) |
+| `ubuntu-latest` | chromium | Yes | Probe: yes, filmstrip: TBD | Playback works; filmstrip probe ran on about:blank (fixed) |
+| `ubuntu-latest` | firefox | Yes | Probe: yes, filmstrip: TBD | Playback works; filmstrip probe ran on about:blank (fixed) |
+| `ubuntu-latest` | webkit | Yes | Probe: yes, filmstrip: no | WebKitGTK; playback works; filmstrip thumbnails didn't render |
+| `macos-latest` | webkit | Probe: yes, actual: no | Probe: yes, actual: no | `isTypeSupported` lies; `readyState` stays at 1; tests skip |
+| `macos-latest` | firefox | Yes | Probe: yes, filmstrip: TBD | dav1d decoder; playback works; filmstrip probe fix pending CI |
+| `windows-latest` | edge | Yes | Probe: yes, filmstrip: TBD | Playback works; filmstrip probe ran on about:blank (fixed) |
 
 **ClearKey DRM** (encrypted H.264, `e2e/encrypted.spec.ts`):
 

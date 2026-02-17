@@ -152,17 +152,19 @@ test.describe("HEVC filmstrip", () => {
   test.setTimeout(90_000);
 
   test("thumbnails render after loading", async ({ page }) => {
-    const webCodecsSupport = await probeHevcWebCodecsSupport(page);
-    test.skip(
-      !webCodecsSupport,
-      "Browser does not support HEVC via WebCodecs",
-    );
-
     const mseSupport = await probeHevcMseSupport(page);
     test.skip(!mseSupport, "Browser does not support HEVC via MSE");
 
     const loaded = await tryLoadHevcDash(page);
     test.skip(!loaded, "HEVC MSE reported but player failed to load");
+
+    // Check WebCodecs AFTER loading — VideoDecoder.isConfigSupported
+    // requires a proper page context (not about:blank) for reliable results.
+    const webCodecsSupport = await probeHevcWebCodecsSupport(page);
+    test.skip(
+      !webCodecsSupport,
+      "Browser does not support HEVC via WebCodecs",
+    );
 
     await openFilmstrip(page);
     // WebCodecs isConfigSupported can return true for HEVC but the

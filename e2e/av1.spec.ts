@@ -165,17 +165,19 @@ test.describe("AV1 filmstrip", () => {
   test.setTimeout(90_000);
 
   test("thumbnails render after loading", async ({ page }) => {
-    const webCodecsSupport = await probeAv1WebCodecsSupport(page);
-    test.skip(
-      !webCodecsSupport,
-      "Browser does not support AV1 via WebCodecs",
-    );
-
     const mseSupport = await probeAv1MseSupport(page);
     test.skip(!mseSupport, "Browser does not support AV1 via MSE");
 
     const loaded = await tryLoadAv1Dash(page);
     test.skip(!loaded, "AV1 MSE reported but player failed to load");
+
+    // Check WebCodecs AFTER loading — VideoDecoder.isConfigSupported
+    // requires a proper page context (not about:blank) for reliable results.
+    const webCodecsSupport = await probeAv1WebCodecsSupport(page);
+    test.skip(
+      !webCodecsSupport,
+      "Browser does not support AV1 via WebCodecs",
+    );
 
     await openFilmstrip(page);
     // WebCodecs isConfigSupported can return true for AV1 but the
