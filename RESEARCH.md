@@ -114,23 +114,61 @@ Precedent bugs with the same pattern: [Bug 198583](https://bugs.webkit.org/show_
 
 **Somewhat, but not enough for HEVC.** The `supported` boolean in `decodingInfo` is derived from the same underlying checks as `isTypeSupported` in most browsers. Firefox's initial implementation returned information identical to `isTypeSupported` for media-source type ([Bug 1409664](https://bugzilla.mozilla.org/show_bug.cgi?id=1409664)). The HEVC false positive on Firefox affects `decodingInfo` equally ([hls.js #7046](https://github.com/video-dev/hls.js/issues/7046)). The `smooth` and `powerEfficient` fields are more useful but browser-specific: Chromium is reasonably accurate, Firefox had accuracy bugs that were fixed incrementally.
 
+### Additional findings from cross-reference analysis
+
+#### Browser source code call chains
+
+Each engine implements `isTypeSupported` differently, explaining why false positives are engine-specific:
+
+- **Chromium (Blink)**: `MediaSource::isTypeSupported()` → `IsTypeSupportedInternal()` → `HTMLMediaElement` support check → `MIMETypeRegistry::SupportsMediaSourceMIMEType(mime, codecs)` → returns `true` only when registry reports `kIsSupported`. Registry-driven and conservative -- encodes MSE support in a centralized registry that incorporates platform restrictions. This is why Chromium honestly reports no HEVC/AV1 MSE support when it's truly absent. ([source: media_source.cc](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/renderer/modules/mediasource/media_source.cc))
+
+- **WebKit**: `MediaSource::isTypeSupported()` → `MediaPlayer::supportsType(parameters)` with `parameters.isMediaSource = true` → returns `true` when result equals `MediaPlayer::SupportsType::IsSupported`. Only as accurate as the media engine's `supportsType` heuristic for the MSE pipeline on that OS/hardware/feature-gating. When AV1 is compiled-in but hardware decode is absent, the call chain returns "supported" even though `VTDecompressionSession` creation will fail. ([source: MediaSource.cpp](https://github.com/nicedoc/nicedoc.io))
+
+- **Firefox**: `MediaSource::IsTypeSupported` → parse into `MediaContainerType` → reject if `DecoderTraits::CanHandleContainerType() == CANPLAY_NO` → apply VP9/WebM preference restrictions and fingerprinting mitigation → accept MP4/WebM otherwise. No HEVC-specific validation at this entry point; HEVC outcomes depend entirely on what `DecoderTraits` reports for the platform build. ([source: MediaSource.cpp on searchfox](https://searchfox.org/mozilla-central/source/dom/media/mediasource/MediaSource.cpp))
+
+#### Firefox HEVC origin-dependent behavior (Bug 1928484 → Bug 1928536)
+
+The origin check in Bug 1928484 was a **temporary workaround** for Firefox 132.0.1. The root cause was Bug 1919627 (enabling PlayReady DRM preferences by default), which had the side effect of turning on HEVC codec reporting in `isTypeSupported()` before HEVC playback was fully enabled on Windows. The fix suppressed HEVC reporting for specific origins. This workaround was later **reverted** in [Bug 1928536](https://bugzilla.mozilla.org/show_bug.cgi?id=1928536) ("Enable HEVC for all playback on Windows") starting in Firefox 134, which properly enabled HEVC playback -- making the origin check unnecessary.
+
+This history demonstrates that Firefox's HEVC support is gated on a combination of platform decoder availability, preference flags, and DRM configuration, and these gates change across versions. The `isTypeSupported` false positive we see on CI is the current version's manifestation of the same underlying issue: the probe path (`PDMFactory::Supports()`) succeeds but the full MSE pipeline (demuxing, buffer management, decoder initialization with real data) fails.
+
+#### Fingerprinting resistance impact on probes
+
+Firefox's `IsTypeSupported` explicitly considers "resist fingerprinting" behavior, aiming not to leak whether codecs are disabled or whether hardware support exists (notably for VP9 in that code path). This means privacy features can intentionally reduce accuracy or consistency of reported capabilities. This is an argument for functional-decode probes (like readyState polling or `requestVideoFrameCallback`) that observe whether frames are produced rather than relying on declarative "capability statements."
+
+#### `requestVideoFrameCallback` as a frame liveness signal
+
+The [`requestVideoFrameCallback`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback) API provides a **positive** "frame was decoded and composited" signal, which is strictly stronger than the current `readyState >= 2` check:
+
+- **Browser support**: Baseline across all major browsers since October 2024 (Chrome 83+, Edge 83+, Safari 15.4+, Firefox 132+). WebKitGTK has GStreamer support since 2.36.0 (March 2022, [WebKit Bug 233541](https://bugs.webkit.org/show_bug.cgi?id=233541)).
+
+- **Why it's better than readyState**: `readyState >= 2` means the browser *thinks* it has decodable data but doesn't prove a frame was actually rendered. When EME produces garbage data that the decoder silently drops (macOS WebKit ClearKey scenario), `requestVideoFrameCallback` would never fire since no frames are being composited. It also provides `presentedFrames` counter and `mediaTime` for diagnostics.
+
+- **Applicability**: Could improve `softwareDecrypt.ts` Layer 2 detection (`waitForDecryption()`) and E2E test probes. The callback fires as soon as the first frame is composited, potentially faster than the current 50ms polling interval.
+
+- **Caveat**: Needs empirical verification in Playwright's WebKitGTK build, as Playwright disables some WebKit features ([Playwright #31017](https://github.com/microsoft/playwright/issues/31017)). A feature-detection fallback to readyState polling would be needed.
+
 ### Recommendations for this project
 
 1. **Current two-stage approach is correct.** No single API call can guarantee playback success -- this is a spec-level limitation. The probe + load-failure-catch pattern aligns with industry practice.
 
-2. **Consider `decodingInfo()` as an upgrade over `isTypeSupported`.** While it shares the HEVC false positive on Firefox, it provides `smooth`/`powerEfficient` signals and accepts resolution parameters. It would not change existing skip behavior but would provide richer diagnostic annotations.
+2. **Consider `requestVideoFrameCallback` as a liveness upgrade.** For both `softwareDecrypt.ts` Layer 2 detection and E2E test probes, `requestVideoFrameCallback` provides a definitive "frame was decoded" signal. It would replace the empirical `readyState` polling with a spec-backed positive confirmation. Needs empirical verification on Playwright WebKitGTK first.
 
-3. **The macOS WebKit AV1 false positive is Playwright-specific** and will not affect real Safari users. No code change needed in the player; the test-level `tryLoadAv1Dash` readyState check is the correct fix.
+3. **Consider `decodingInfo()` as an annotation upgrade over `isTypeSupported`.** While it shares the HEVC false positive on Firefox, it provides `smooth`/`powerEfficient` signals and accepts resolution parameters. It would not change existing skip behavior but would provide richer diagnostic annotations.
 
-4. **A WebCodecs trial decode probe** would be the definitive solution but adds complexity (shipping minimal encoded keyframes) and latency (100-500ms). Worth considering if the false-positive problem expands to more codecs/platforms.
+4. **The macOS WebKit AV1 false positive is Playwright-specific** and will not affect real Safari users. No code change needed in the player; the test-level `tryLoadAv1Dash` readyState check is the correct fix.
 
-5. **UA-based blocklists** (like hls.js does for Firefox+HEVC) are deterministic and zero-latency but require ongoing maintenance. Not recommended for this project since the player doesn't select codecs -- it plays whatever manifest URL the user provides.
+5. **A WebCodecs trial decode probe** would be the definitive solution but adds complexity (shipping minimal encoded keyframes) and latency (100-500ms). Worth considering if the false-positive problem expands to more codecs/platforms.
+
+6. **UA-based blocklists** (like hls.js does for Firefox+HEVC) are deterministic and zero-latency but require ongoing maintenance. Not recommended for this project since the player doesn't select codecs -- it plays whatever manifest URL the user provides.
 
 ### Key references
 
 - [MSE spec isTypeSupported](https://www.w3.org/TR/media-source-2/#dom-mediasource-istypesupported) -- "only indicates capability of creating SourceBuffer objects"
 - [Media Capabilities Explainer](https://github.com/w3c/media-capabilities/blob/main/explainer.md) -- designed to replace isTypeSupported/canPlayType
 - [Firefox Bug 1928484](https://bugzilla.mozilla.org/show_bug.cgi?id=1928484) -- HEVC isTypeSupported false positive from PlayReady
+- [Firefox Bug 1928536](https://bugzilla.mozilla.org/show_bug.cgi?id=1928536) -- Reverts origin check, enables HEVC fully on Windows (Firefox 134)
+- [Firefox Bug 1924066](https://bugzilla.mozilla.org/show_bug.cgi?id=1924066) -- Implements HEVC on macOS via VideoToolbox (Firefox 136)
 - [Firefox Bug 1945371](https://bugzilla.mozilla.org/show_bug.cgi?id=1945371) -- Extensive HEVC decode failures despite probe passing
 - [hls.js #7046](https://github.com/video-dev/hls.js/issues/7046) -- decodingInfo also lies for HEVC on Firefox
 - [hls.js #7048](https://github.com/video-dev/hls.js/pull/7048) -- UA-based override fix
@@ -141,6 +179,16 @@ Precedent bugs with the same pattern: [Bug 198583](https://bugs.webkit.org/show_
 - [dash.js #2167](https://github.com/Dash-Industry-Forum/dash.js/issues/2167) -- canPlayType vs isTypeSupported
 - [MDN MediaSource.isTypeSupported](https://developer.mozilla.org/en-US/docs/Web/API/MediaSource/isTypeSupported_static)
 - [MDN MediaCapabilities.decodingInfo](https://developer.mozilla.org/en-US/docs/Web/API/MediaCapabilities/decodingInfo)
+- [Chromium media_source.cc](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/renderer/modules/mediasource/media_source.cc) -- IsTypeSupportedInternal implementation
+- [MDN requestVideoFrameCallback](https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback) -- frame liveness API
+- [WebKit Bug 233541](https://bugs.webkit.org/show_bug.cgi?id=233541) -- requestVideoFrameCallback GStreamer implementation
+- [Playwright #31017](https://github.com/microsoft/playwright/issues/31017) -- WebKit feature support on non-Apple platforms
+
+### Status: COMPLETE
+
+Topic 1 research is comprehensive. All 6 research questions answered with spec-level and implementation-level evidence. Cross-referenced against independent analysis. Two actionable items identified for future work:
+- **Actionable**: Verify `requestVideoFrameCallback` in Playwright WebKitGTK, then upgrade `softwareDecrypt.ts` Layer 2 detection (Topic 3 overlap)
+- **Actionable**: Add `decodingInfo()` results to E2E test annotations for richer CI diagnostics
 
 ---
 
