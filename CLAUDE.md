@@ -371,7 +371,7 @@ DASH_FIXTURE_DIR=/tmp/dash-fixture npx playwright test e2e/av1.spec.ts --project
 **Runtime skip strategy (three-stage):**
 1. **File-level** — `isAv1DashFixtureAvailable()` checks for the AV1 fixture on disk. Skips the entire file if no AV1 encoder was available during fixture generation.
 2. **API probe** — `probeAv1MseSupport(page)` checks `MediaSource.isTypeSupported('video/mp4; codecs="av01.0.01M.08"')`. Skips if false.
-3. **Load-failure catch** — `tryLoadAv1Dash(page)` wraps `loadPlayerWithAv1Dash` in try/catch. Catches cases where `isTypeSupported` returns true but playback fails. Test timeout is set to 90s to accommodate the 30s load timeout.
+3. **Load + decode check** — `tryLoadAv1Dash(page)` wraps `loadPlayerWithAv1Dash` in try/catch and additionally verifies `video.readyState >= 2` (HAVE_CURRENT_DATA). This catches browsers where `isTypeSupported` returns true and the player loads (controls appear), but the AV1 decoder silently fails (e.g. macOS WebKit reports AV1 MSE support but `readyState` stays at HAVE_METADATA). Test timeout is set to 90s to accommodate the 30s load timeout + 5s decode check.
 
 **AV1 frame tolerance**: AV1 encoders may use B-frames by default, causing ±3 frame offset (same conservative tolerance as HEVC until CI results show otherwise).
 

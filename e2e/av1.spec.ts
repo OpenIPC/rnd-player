@@ -35,13 +35,26 @@ test.afterAll(async () => {
 
 /**
  * Try to load the AV1 DASH stream. Returns true if the player loaded
- * successfully, false if the controls didn't appear (browser reports AV1
- * MSE support via isTypeSupported but actual playback fails).
+ * successfully AND the video is actually decodable, false otherwise.
+ * Some browsers (e.g. macOS WebKit) report AV1 MSE support via
+ * isTypeSupported but actual decoding silently fails — the player loads
+ * (controls appear) but readyState never reaches HAVE_CURRENT_DATA.
  */
 async function tryLoadAv1Dash(page: Page): Promise<boolean> {
   try {
     await loadPlayerWithAv1Dash(page);
-    return true;
+    // Verify the decoder is actually producing frames.
+    // On macOS WebKit, AV1 MSE "loads" but readyState stays at 1
+    // (HAVE_METADATA) because the decoder silently fails.
+    const playable = await page.evaluate(async () => {
+      const video = document.querySelector("video")!;
+      const start = Date.now();
+      while (video.readyState < 2 && Date.now() - start < 5000) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return video.readyState >= 2;
+    });
+    return playable;
   } catch {
     return false;
   }
