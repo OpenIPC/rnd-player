@@ -469,6 +469,237 @@ On detection, the player unloads and reloads with a software decryption response
 - Playwright WebKit patches: https://github.com/nicedoc/nicedoc.io
 - Shaka Player EME issues: search for ClearKey + WebKit
 
+### Findings
+
+#### Q1: Is ClearKey EME required to work in all browsers that expose the API?
+
+**Yes -- ClearKey is the only mandatory key system.** The EME spec states: *"Implementation of Digital Rights Management is not required for compliance with this specification: only the Clear Key system is required to be implemented as a common baseline."* Proprietary DRM (Widevine, FairPlay, PlayReady) is optional; ClearKey (`org.w3.clearkey`) is mandatory for EME conformance. However, EME itself is optional for HTML conformance -- a browser that doesn't implement EME at all is still HTML-conformant.
+
+**`requestMediaKeySystemAccess` implies a guarantee.** The "Get Supported Capabilities" algorithm (EME Section 3.2.2.3) requires the user agent to *"definitely support"* the combination of container, media types, encryption scheme, robustness, and configuration before resolving. When `requestMediaKeySystemAccess('org.w3.clearkey', ...)` resolves, the browser has committed that it can decrypt. If it later fails, this is a spec violation.
+
+**ClearKey MUST support `cenc` (AES-CTR).** From the WICG Encryption Scheme Query extension: *"Clear Key implementations MUST support the cenc scheme at a minimum, to ensure interoperability."*
+
+The macOS WebKit behavior -- resolving the probe but silently failing to decrypt -- is therefore a spec violation: the browser reported "definitely supports" ClearKey decryption but produced garbage output.
+
+#### Q2: Is the macOS WebKit behavior a known bug?
+
+**Safari historically does not support `org.w3.clearkey` through the standard unprefixed EME API.** The most specific open bug is [WebKit Bug 231006](https://bugs.webkit.org/show_bug.cgi?id=231006): *"[EME] Clear key encryption support is broken"* (filed 2021, still NEW as of November 2024). It states ClearKey is *"broken due to incompatible pssh init data"* and all ClearKey tests are skipped on Mac. A 2024 user comment confirms it still blocks Shaka Player ClearKey support. The earlier [Bug 158843](https://bugs.webkit.org/show_bug.cgi?id=158843) ("update the ClearKey CDM") was RESOLVED FIXED in 2018 but clearly did not address the deeper issue. The Shaka Player team confirmed: *"The ClearKey video plays fine in Chrome and doesn't play at all in Safari"* ([shaka-player#478](https://github.com/shaka-project/shaka-player/issues/478)).
+
+**WebKit has ClearKey at the EME API layer but not in the media pipeline.** The cross-platform `CDMClearKey.cpp` handles key management (license parsing, key storage) and is compiled on all platforms, which is why the `requestMediaKeySystemAccess` probe succeeds on macOS. But the actual AES-CTR decryption pipeline is only wired for the GStreamer backend (Linux), not the AVFoundation backend (macOS). See Q3 for details.
+
+**Playwright's `window.safari` injection compounds the problem.** [Playwright Issue #26948](https://github.com/microsoft/playwright/issues/26948) found that Playwright injects `if (!window.safari) window.safari = {};` which breaks feature detection for DRM libraries. [Playwright Issue #31017](https://github.com/microsoft/playwright/issues/31017) documents that WebKit on non-Apple platforms has different feature support, and the maintainers added documentation acknowledging this.
+
+**Apple's AVFoundation does have a ClearKey API** (`AVContentKeySystem.clearKey`, added in macOS 10.13 / iOS 11 at WWDC 2017), but WebKit's bridge from the web EME API to AVFoundation only wires up FairPlay, not ClearKey. The AVFoundation-level ClearKey is designed for native apps using `AVContentKeySession`, not for the web EME path.
+
+#### Q3: What exactly happens inside WebKit's CDM when it "decrypts" with ClearKey?
+
+**Neither AES-CTR invocation nor pass-through -- the decryption pipeline is simply absent on macOS.**
+
+WebKit has two fundamentally different decryption architectures by platform:
+
+**GStreamer path (Linux WebKitGTK):**
+1. `CDMClearKey.cpp` (cross-platform) handles EME API: key system matching, license parsing, key storage in `KeyStore`. Contains **no decrypt method**.
+2. `WebKitCommonEncryptionDecryptorGStreamer.cpp` provides a GStreamer `BaseTransform` element that decrypts samples using `GstProtectionMeta` (IV, key ID, subsample info, cipher mode). Distinguishes `cenc` (AES-CTR) and `cbcs` (AES-CBC). On failure, raises explicit `GST_ELEMENT_ERROR(STREAM, DECRYPT)`.
+3. The ClearKey-specific decryptor (`CDMProxyClearKey.cpp`, `WebKitClearKeyDecryptorGStreamer.cpp`) historically used libgcrypt's `GCRY_CIPHER_AES128` with `GCRY_CIPHER_MODE_CTR`. **However, both files have been removed from the current WebKit source.** The current `CDMFactoryGStreamer.cpp` only registers the Thunder (OpenCDM) factory -- no ClearKey factory. This is why `hasClearKeySupport()` returns `false` on Linux WebKitGTK.
+
+**AVFoundation path (macOS):**
+1. `CDMClearKey.cpp` is compiled and registers the `org.w3.clearkey` key system, so `requestMediaKeySystemAccess` succeeds.
+2. `platformRegisterFactories()` in `CDMFairPlayStreaming.cpp` registers both `CDMFactoryClearKey` and `CDMFactoryFairPlayStreaming`.
+3. Keys are successfully parsed from the JSON license and stored in the `KeyStore` after `session.update()`. The `keystatuseschange` event fires with status `"usable"`.
+4. **But no decryption pipeline exists for ClearKey on the macOS AVFoundation path.** `CDMSessionAVContentKeySession.mm` and `CDMInstanceFairPlayStreamingAVFObjC.mm` only wire FairPlay. The `CDMInstanceProxy` has keys but no `CDMProxy` decryptor to apply them.
+5. AVFoundation's decoder receives still-encrypted samples, silently drops them, and `readyState` stays at `HAVE_METADATA`.
+
+**Scheme support:** `CDMClearKey.cpp` supports `"keyids"`, `"cenc"`, and `"webm"` init data types. The (now-removed) GStreamer decryptor only supported `cenc` (AES-CTR), not `cbcs`.
+
+#### Q4: Is `readyState` polling the right detection mechanism?
+
+**Yes -- `readyState` polling is the most practical mechanism for this specific failure mode.** The failure is uniquely silent: no EME events, no `MediaError`, and no error callbacks indicate failure.
+
+**Analysis of alternative signals:**
+
+| Signal | Would it help? | Why |
+|--------|---------------|-----|
+| `waitingforkey` | No | Keys ARE provided and status is `"usable"`. Failure is downstream. Event would not fire. |
+| `keystatuseschange` | No | Fires successfully with `"usable"` -- the CDM layer succeeds, the pipeline fails |
+| `video.error` | Partially | Already checked in polling loop. macOS WebKit does not raise `MediaError` for this case |
+| `encrypted` | No | Confirms encryption is present, says nothing about decryption success |
+| `timeupdate` | No | Video is paused on load, so `timeupdate` does not fire |
+| `canplay` | Equivalent | Would fire when `readyState >= 3`, functionally same as current `readyState >= 2` check |
+| `playing` | No | Video is paused on load |
+| `progress` / `buffered` | No | MSE reports buffered data regardless of decryption |
+
+**Key spec context:** The EME working group explicitly decided NOT to reuse standard `waiting`/`canplay` events for key-related blocking ([Issue #7](https://github.com/w3c/encrypted-media/issues/7)). There is also **no inverse of `waitingforkey`** ([Issue #284](https://github.com/w3c/encrypted-media/issues/284)) -- no event fires when decryption resumes. The Shaka Player team requested this and it was closed as wontfix.
+
+#### Q5: Is the 1.5s timeout correct? Is there a spec-defined signal for "decryption succeeded"?
+
+**There is no spec-defined signal that says "decryption of the current segment succeeded."** The spec leaves timing implementation-defined.
+
+**The EME decryption lifecycle signals:**
+
+1. `waitingforkey` fires when playback is blocked for a key. The "Wait for Key" algorithm sets `readyState` to `HAVE_METADATA` (if no frames decoded yet) or `HAVE_CURRENT_DATA` (if playback was underway -- per [Issue #338](https://github.com/w3c/encrypted-media/issues/338) resolution). Runs synchronously, not in a task.
+
+2. `keystatuseschange` fires after `session.update()` provides keys. Status `"usable"` means the CDM *believes* the key can decrypt, but does not guarantee frames are produced.
+
+3. After keys become available, "Attempt to Resume Playback If Necessary" runs: checks if the media element was waiting for a key → attempts decryption → if successful, `readyState` transitions up → `canplay` fires (from `HAVE_CURRENT_DATA` → `HAVE_FUTURE_DATA`).
+
+4. Cross-browser timing inconsistency: browsers decode ahead of playback (Firefox ~10 frames, Chrome ~4 frames), so `waitingforkey` may fire while frames are still being displayed from the decode-ahead buffer ([Issue #336](https://github.com/w3c/encrypted-media/issues/336)).
+
+**The 1.5s timeout is well-calibrated.** Working browsers reach `readyState >= 2` within ~100-200ms. The timeout provides 7-15× safety margin. The 50ms polling interval is fine -- no spec-defined minimum exists.
+
+**Possible improvements:**
+- Add `canplay` event listener as a fast positive path alongside polling
+- Check `keystatuseschange` for `"internal-error"` status to fail fast
+- Both are optimizations, not corrections -- the current approach is functionally correct
+
+#### Q6: Does Playwright's WebKit match real Safari for ClearKey?
+
+**Real Safari ALSO does not support ClearKey DASH.** This is not a Playwright-specific issue -- it's a fundamental WebKit/Safari limitation.
+
+**The evidence:**
+1. **WebKit Bug 231006** ("[EME] Clear key encryption support is broken", filed 2021, still NEW) explicitly states ClearKey is broken on Mac due to PSSH init data incompatibility. All ClearKey tests skipped on Mac. The earlier Bug 158843 was resolved in 2018 without fixing the underlying issue.
+2. **Shaka Player maintainers confirmed** Safari doesn't support ClearKey ([#478](https://github.com/shaka-project/shaka-player/issues/478), [#1773](https://github.com/google/shaka-player/issues/1773)).
+3. **W3C EME test results** show Safari fails `clearkey-mp4` tests ([w3c test results](https://w3c.github.io/test-results/encrypted-media/all.html)).
+4. **WebKit source confirms** the AVFoundation pipeline only wires FairPlay, not ClearKey (see Q3).
+
+**Where Playwright differs from real Safari:**
+
+| Aspect | Real Safari | Playwright's WebKit |
+|--------|------------|-------------------|
+| `requestMediaKeySystemAccess('org.w3.clearkey')` | **Resolves** (API probe passes) | **Resolves** (same code) |
+| Actual ClearKey decryption | Silently fails (same root cause) | Silently fails (same root cause) |
+| FairPlay DRM | Works | May not work ([#26948](https://github.com/microsoft/playwright/issues/26948)) |
+| `window.safari` | Present | Injected as empty object |
+
+The key difference is that **Layer 1 (`hasClearKeySupport`) returns `true`** on both real Safari and Playwright's macOS WebKit, because the EME API probe succeeds. The **Layer 2 (`waitForDecryption`) detection is needed** on both platforms. The software decryption fallback works identically on both.
+
+For Linux WebKitGTK, the behavior is cleaner: Layer 1 returns `false` because the ClearKey GStreamer factory is not registered, and the software fallback activates immediately without the 1.5s detection delay.
+
+### Recommendations for this project
+
+1. **The two-layer detection is the correct architecture** and is not fragile. Layer 1 catches Linux WebKitGTK (no EME). Layer 2 catches macOS WebKit (EME exists but ClearKey decryption pipeline is absent). Both are structural limitations, not transient bugs.
+
+2. **The 1.5s timeout is appropriate.** The spec provides no "decryption succeeded" signal. Working browsers reach `readyState >= 2` in ~100-200ms; 1.5s gives 7-15× margin.
+
+3. **This is NOT Playwright-specific.** Real Safari has the same ClearKey limitation. The software decryption fallback would be needed for real Safari users with ClearKey-encrypted content.
+
+4. **Consider adding a `canplay` event listener** as a fast positive path to detect decryption success without polling, while keeping the timeout-based fallback.
+
+5. **Consider checking `keystatuseschange` for `"internal-error"` status** to fail faster when the CDM explicitly reports failure.
+
+### Key references
+
+- [W3C EME Specification](https://www.w3.org/TR/encrypted-media/) -- ClearKey is the only mandatory key system (Section 9.1)
+- [WICG Encryption Scheme Query](https://wicg.github.io/encrypted-media-encryption-scheme/) -- ClearKey MUST support `cenc`
+- [WebKit Bug 231006](https://bugs.webkit.org/show_bug.cgi?id=231006) -- "[EME] Clear key encryption support is broken" (NEW since 2021, PSSH init data incompatibility)
+- [WebKit Bug 158843](https://bugs.webkit.org/show_bug.cgi?id=158843) -- "update the ClearKey CDM" (RESOLVED FIXED 2018, did not fix the deeper issue)
+- [WebKit Bug 158836](https://bugs.webkit.org/show_bug.cgi?id=158836) -- EME compliance umbrella bug
+- [Shaka Player #478](https://github.com/shaka-project/shaka-player/issues/478) -- ClearKey cross-browser discussion
+- [Shaka Player #1773](https://github.com/google/shaka-player/issues/1773) -- ClearKey on iOS/Mac
+- [Playwright #26948](https://github.com/microsoft/playwright/issues/26948) -- DRM on Playwright's WebKit
+- [Playwright #31017](https://github.com/microsoft/playwright/issues/31017) -- WebKit feature support on non-Apple platforms
+- [CDMClearKey.cpp](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.cpp) -- Cross-platform ClearKey CDM (key management only, no decrypt)
+- [CDMFairPlayStreaming.cpp](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/avfoundation/CDMFairPlayStreaming.cpp) -- platformRegisterFactories registers both ClearKey and FairPlay
+- [Apple AVContentKeySystem.clearKey](https://developer.apple.com/documentation/avfoundation/avcontentkeysystem/clearkey) -- AVFoundation-level ClearKey (not wired to web EME)
+- [W3C Issue #284](https://github.com/w3c/encrypted-media/issues/284) -- `waitingforkey` has no inverse event (closed wontfix)
+- [W3C Issue #336](https://github.com/w3c/encrypted-media/issues/336) -- `waitingforkey` fires at different times across browsers
+- [W3C Issue #338](https://github.com/w3c/encrypted-media/issues/338) -- `readyState` should be `HAVE_CURRENT_DATA` when playing
+- [W3C Issue #129](https://github.com/w3c/encrypted-media/issues/129) -- Confirm `readyState` behavior when blocked waiting for key
+- [W3C Issue #7](https://github.com/w3c/encrypted-media/issues/7) -- EME should not fire waiting/canplay events for key issues
+- [MDN: waitingforkey event](https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/waitingforkey_event)
+- [MDN: keystatuseschange event](https://developer.mozilla.org/en-US/docs/Web/API/MediaKeySession/keystatuseschange_event)
+- [W3C EME test results](https://w3c.github.io/test-results/encrypted-media/all.html) -- Safari fails clearkey-mp4 tests
+- [Igalia blog: EME on GStreamer-based WebKit ports](https://blogs.igalia.com/xrcalvar/2020/09/02/serious-encrypted-media-extensions-on-gstreamer-based-webkit-ports/) -- Architecture explanation
+
+### Cross-reference with independent research (ChatGPT deep research)
+
+An independent research report was generated by ChatGPT covering the same Topic 3 questions. The findings are broadly consistent and reinforce the core conclusions, while surfacing several additional insights.
+
+#### Agreement on core findings
+
+Both sources agree on all fundamental conclusions:
+- ClearKey is the only mandatory key system in the EME spec; `cenc` (AES-CTR) must be supported
+- No spec-defined "decryption succeeded" signal exists -- `readyState` polling is the best detection mechanism
+- The two-layer detection architecture in `softwareDecrypt.ts` is correct and well-matched to the failure modes
+- This is a known WebKit problem, not specific to Playwright
+- The 1.5s timeout is reasonable for the detection window
+- The EME "Attempt to Decrypt" algorithm explicitly allows wrong-key decryption to not trigger an error -- failure surfaces (or doesn't) at the decode stage
+- Same Shaka Player issues identified confirming ClearKey doesn't work in Safari
+
+#### New insights from ChatGPT report
+
+**1. WebKit Bug 231006 -- the correct and still-open bug.** The ChatGPT report identified [WebKit Bug 231006](https://bugs.webkit.org/show_bug.cgi?id=231006) ("[EME] Clear key encryption support is broken"), filed September 2021 and still NEW as of November 2024. This is more specific and more relevant than Bug 158843 (which is RESOLVED FIXED from 2018). Bug 231006 explicitly states ClearKey is broken "due to incompatible pssh init data" and that all ClearKey tests are skipped on Mac. A November 2024 user comment confirms it still blocks Shaka Player ClearKey support. **Our Q2 has been updated to reference this bug.**
+
+**2. PSSH init data compatibility as a root cause dimension.** Bug 231006 attributes the failure to "incompatible pssh init data" -- meaning WebKit's ClearKey CDM cannot parse the standard CENC PSSH box format. This is a complementary explanation to our Q3 finding (no AVFoundation decryption pipeline): even if the pipeline existed, the CDM may not correctly extract key info from the PSSH box. This raises the question: would differently formatted PSSH data (e.g., using `keyids` init data type instead of `cenc`) bypass this failure? This is a testable hypothesis.
+
+**3. EME "Attempt to Decrypt" spec language.** The report quotes the EME spec's note that *"using the wrong key does not necessarily trigger a 'decryption fails' branch"* and *"no error is fired here but one may be fired during decode."* We described this conceptually in Q4/Q5 but the ChatGPT report provides the more precise spec language. This spec text directly justifies the `readyState`-based detection: if even wrong-key decryption doesn't fire an error, then correct-key-but-no-pipeline decryption certainly won't.
+
+**4. Playback progression as supplemental signal.** The report identifies `timeupdate`/`currentTime` advancement as a "strong 'it really plays' signal" that could serve as a longer-window confirmation after the initial `readyState` gate. This is slower than `readyState` polling but provides higher confidence. Relevant if the player were to issue a brief `play()` probe during detection.
+
+**5. Alternatives comparison.** The report compares 5 implementation strategies:
+
+| Approach | Compatibility | Complexity | Notes |
+|----------|---------------|------------|-------|
+| Native EME only | Low (fails on WebKit) | Low | What we'd have without the fallback |
+| Current two-layer + software fallback | High for `cenc` | Medium | Already implemented; correct |
+| Always force software decryption on WebKit | High for `cenc` | Medium | Simpler but penalizes platforms where EME would work |
+| UA-based denylist | Medium--High | Medium | Fragile; requires continuous version maintenance |
+| Server-side decrypt/repackage | Very high | High | Contradicts "no server required" premise |
+
+The current approach is validated as the best fit. The "always force software on WebKit" alternative was considered and correctly rejected because WebKit behavior varies across builds (Playwright vs Safari vs WebKitGTK).
+
+**6. Performance concern for software decrypt path.** Decrypting each sample in-place within `mdat` is CPU-intensive, especially for high-bitrate streams. The report suggests considering moving decryption to a Worker if performance becomes an issue. Currently `softwareDecrypt.ts` runs in the main thread via Shaka response filters.
+
+**7. Security model note.** Software decryption places the clear key and decrypted media in JS memory space. For ClearKey this is acceptable (ClearKey is not designed as high-security DRM -- the key is in the manifest or user-provided), but worth documenting if the player is ever used beyond test/analysis scenarios.
+
+**8. ClearKey test vector for reproduction.** The report cites a public ClearKey test vector: `https://media.axprod.net/TestVectors/v7-MultiDRM-SingleKey/Manifest_1080p_ClearKey.mpd` (from [Shaka Packager #1197](https://github.com/shaka-project/shaka-packager/issues/1197)). This could be used to reproduce the failure on real Safari without generating a custom fixture.
+
+**9. Stale URL in sources.** The report flags that the "Playwright WebKit patches" URL in our Sources to Investigate (`https://github.com/nicedoc/nicedoc.io`) resolves to a GitHub 404. Playwright's WebKit patches are tracked in the [Playwright monorepo](https://github.com/nicedoc/nicedoc.io) rather than a standalone repo. The actual WebKit patch set lives in the `browser_patches/webkit/` directory of `microsoft/playwright`.
+
+**10. False negative risk.** A slow platform might take >1500ms to reach `readyState >= 2` even when EME works correctly, triggering an unnecessary reload to the software path. This is mitigated by the 7-15x safety margin (working browsers reach readyState >= 2 in ~100-200ms), but could theoretically occur on very slow VMs or under extreme load.
+
+#### Items NOT in ChatGPT report (unique to our research)
+
+Our research includes several items the independent report does not cover:
+- Detailed WebKit source code analysis: `CDMClearKey.cpp` (608 lines read), `CDMFairPlayStreaming.cpp` `platformRegisterFactories`, `CDMFactoryGStreamer.cpp` only registers Thunder
+- The specific removed GStreamer files: `CDMProxyClearKey.cpp`, `WebKitClearKeyDecryptorGStreamer.cpp` (previously used libgcrypt `GCRY_CIPHER_AES128`)
+- Apple's `AVContentKeySystem.clearKey` (AVFoundation-level ClearKey API exists but is not wired to web EME)
+- Complete signal analysis table evaluating 8 alternative detection signals with specific reasons each fails
+- W3C EME working group issues with precise context: #7 (no waiting/canplay for keys), #129, #284 (no inverse of waitingforkey, closed wontfix), #336 (cross-browser timing), #338 (readyState during playback)
+- `keystatuseschange` fires with `"usable"` even when decryption silently fails -- the CDM layer succeeds while the pipeline fails
+- W3C EME test results page showing Safari fails `clearkey-mp4` tests
+- Cross-browser decode-ahead buffer sizes (Firefox ~10 frames, Chrome ~4 frames)
+
+#### Additional actionable items from cross-reference
+
+- **Actionable**: Test with different PSSH/init data formats to determine if Bug 231006's "incompatible pssh init data" root cause is format-specific. Try `keyids` init data type instead of `cenc` PSSH to see if WebKit's CDM can parse it
+- **Actionable**: Use the axprod.net ClearKey test vector (`Manifest_1080p_ClearKey.mpd`) for real Safari reproduction testing
+- **Actionable**: Consider adding `timeupdate`/`currentTime` advancement as a longer-window confirmation signal after the initial `readyState` gate, for environments where higher confidence is needed
+- **Actionable**: Document the security model assumption (ClearKey places key in JS memory) in `softwareDecrypt.ts` header comment
+- **Actionable**: If performance issues arise with high-bitrate encrypted streams, consider offloading the `configureSoftwareDecryption` response filter to a Worker (currently main-thread via Shaka response filters)
+
+### Status: COMPLETE
+
+Topic 3 research is comprehensive. All 6 research questions answered with spec-level, source-code-level, and bug-tracker evidence. Cross-referenced with independent ChatGPT deep research -- findings are consistent with 10 additional insights integrated.
+
+Key findings:
+- ClearKey is the only mandatory key system in the EME spec; macOS WebKit's silent failure is a spec violation
+- The root cause is dual: (1) PSSH init data incompatibility ([Bug 231006](https://bugs.webkit.org/show_bug.cgi?id=231006), open since 2021) and (2) no AES-CTR decryption pipeline on the macOS AVFoundation path
+- On Linux WebKitGTK, the ClearKey GStreamer decryptor has been removed entirely (only Thunder remains)
+- `readyState` polling is the correct detection mechanism -- no EME event signals silent CDM failure
+- The 1.5s timeout is well-calibrated (7-15x margin over working browsers)
+- Real Safari has the same limitation as Playwright's WebKit -- this is not a Playwright-specific issue
+- The two-layer detection architecture is validated as the best approach among 5 alternatives analyzed
+
+Actionable items:
+- **Actionable**: Consider adding `canplay` event listener as a fast positive path alongside `readyState` polling in `waitForDecryption()`
+- **Actionable**: Consider checking `keystatuseschange` for `"internal-error"` status to fail faster
+- **Actionable**: File or comment on WebKit Bug 231006 about the `requestMediaKeySystemAccess` false promise (resolves but cannot decrypt)
+- **Actionable**: Test with different PSSH/init data formats (e.g., `keyids` init data type) to determine if the failure is format-specific
+- **Actionable**: Use axprod.net ClearKey test vector for real Safari reproduction testing
+- **Actionable**: Consider `timeupdate`/`currentTime` advancement as supplemental longer-window confirmation signal
+- **Actionable**: Document security model assumption in `softwareDecrypt.ts` header
+- **Actionable**: Consider Worker offload for software decrypt if performance issues arise with high-bitrate streams
+
 ---
 
 ## Topic 4: B-Frame Composition Time Offsets and Seek Accuracy
