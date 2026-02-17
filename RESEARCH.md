@@ -1012,6 +1012,201 @@ All seek waits have 3-5 second deadlines:
 - GitHub Actions runner specs: https://docs.github.com/en/actions/using-github-hosted-runners
 - Playwright WebKitGTK issues: https://github.com/nicedoc/nicedoc.io search for seek
 
+### Findings
+
+#### Root cause: WebKitGTK GStreamer MSE seek race conditions
+
+The seek stalls are caused by multiple, layered bugs in WebKitGTK's GStreamer media backend. These are all upstream issues — not bugs in our code or in Playwright's patches.
+
+**Primary root cause — WebKit Bug 194499: "Seek while seeking freezes playback"**
+
+This is the most likely single bug causing our CI stalls. Filed against the GStreamer MSE backend, it documents two problems:
+
+1. **Buffer tolerance mismatch**: `MediaSource::hasBufferedTime()` uses tolerance-based checking for buffered ranges while GStreamer's private player uses exact matching. This causes the MSE stack to enter an invalid state during overlapping seeks.
+2. **PAUSED-to-PAUSED state transition freeze**: When a seek arrives while another seek is in progress, the GStreamer pipeline enters a `PAUSED → PAUSED` async state change that hangs. The debug log shows: `"Delaying the seek: In async change PAUSED --> PAUSED"` — the seek never completes.
+
+Under CI VM CPU pressure, seeks take longer, widening the race window. Our `seekTo()` retry loop, which re-issues `video.currentTime = t` until it sticks, directly triggers this bug when Shaka Player's internal init seeks overlap with our programmatic seeks.
+
+**Contributing cause — WebKit Bug 275566: Seek from `seeked` callback races with state change continuation**
+
+Fixed in WebKit trunk June 2024 (commit 81376c, PR WebKit/WebKit#29897). A race between the application triggering a seek from within a `seeked` event handler and GStreamer's playbin internal state change continuation from `async-done` handling. The flushing seek posts `async-start`, which races with playbin's bin state change from the previous seek, leaving the pipeline in an inconsistent state with a **seek that never finishes**. Fix: acquire the playbin states lock before sending seek events.
+
+**Contributing cause — WPEWebKit Issue #1367: Early seek deadlock (GStreamer flush-stop + sticky events)**
+
+A GStreamer-level deadlock that occurs during seeks when stream element chains are partially constructed. The sequence:
+1. WebKitMediaSrc emits `FLUSH_START` during seek, propagating through a half-created element chain
+2. The element chain completes, and `FLUSH_STOP` is emitted
+3. Final chain elements receive `FLUSH_STOP` without preceding `FLUSH_START`
+4. `FLUSH_STOP` propagation triggers sticky event (stream-start) push on a pad with a blocking probe → deadlock
+
+**Reproduced on GStreamer 1.20.3** (the version on Ubuntu 22.04, our CI runner). Fixed via GStreamer MR #7632 (disable sticky event propagation on FLUSH_STOP). The fix is only available in newer GStreamer versions — not in Ubuntu 22.04's system GStreamer.
+
+**Contributing cause — GStreamer Bug 796737 / Issue #301: ASYNC_DONE dropped**
+
+A fundamental GStreamer core bug where the `ASYNC_DONE` message can be dropped internally by `gstbin` when `change_state` is executing concurrently with `ASYNC_START`. The application waits for `ASYNC_DONE` (which signals seek completion) but it never arrives. Sebastian Dröge (GStreamer maintainer) acknowledged: *"you still have a race condition in gstreamer where the async_done can be dropped"* but stated *"there are conflicting requirements here"* and considered the issue fundamentally unresolvable in GStreamer 1.x's state management design.
+
+#### Answer to research question 1: Known WebKitGTK bugs
+
+Yes, extensively. Key bugs:
+
+| Bug | Title | Status | Directly causes our stalls? |
+|-----|-------|--------|---------------------------|
+| [WebKit 194499](https://bugs.webkit.org/show_bug.cgi?id=194499) | Seek while seeking freezes playback (MSE) | Partially addressed | **Yes — primary cause** |
+| [WebKit 275566](https://bugs.webkit.org/show_bug.cgi?id=275566) | Race: seek from seeked callback hangs pipeline | Fixed Jun 2024 | Yes, if Playwright's WebKit predates fix |
+| [WebKit 245852](https://bugs.webkit.org/show_bug.cgi?id=245852) | MSE scrubbing freeze/crash | **UNRESOLVED** (since Sep 2022) | Possible contributing factor |
+| [WebKit 263317](https://bugs.webkit.org/show_bug.cgi?id=263317) | Pause after seek not working | Fixed Feb 2024 | Related — state desync during seek |
+| [WebKit 272167](https://bugs.webkit.org/show_bug.cgi?id=272167) | Sinks return wrong position while seeking | Fixed, cherry-picked to 2.44 | Related — stale currentTime during seeks |
+| [WebKit 269587](https://bugs.webkit.org/show_bug.cgi?id=269587) | currentTime reset on preroll | Fixed | Related — readyState drop during MSE init |
+| [WPE #1367](https://github.com/WebPlatformForEmbedded/WPEWebKit/issues/1367) | Early seek deadlock (flush-stop + sticky events) | Fixed in GStreamer MR #7632 | **Yes — GStreamer 1.20.3 affected** |
+| [WPE #284](https://github.com/WebPlatformForEmbedded/WPEWebKit/issues/284) | After seek, playback stuck (MSE) | Fixed via commits in #271 | Related pattern |
+| [GStreamer #301](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/301) | ASYNC_DONE message dropped → hang | Acknowledged, unfixed in 1.x | **Yes — fundamental GStreamer issue** |
+| [GStreamer #349](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/349) | Race in bin state change | Unfixable in GStreamer 1.x | Contributing |
+| [GStreamer gst-plugins-bad #931](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/931) | DASH: sometimes stalls trying to seek | Unknown | Related pattern |
+| [GStreamer gst-plugins-bad #609](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/609) | Pre-rolling problem after seeks (adaptive) | Unknown | Related pattern |
+
+#### Answer to research question 2: WebKitGTK media backend architecture
+
+WebKitGTK's media backend is `MediaPlayerPrivateGStreamer` (`Source/WebCore/platform/graphics/gstreamer/MediaPlayerPrivateGStreamer.cpp`). Key architectural details relevant to seek stalls:
+
+**Threading model**: Two main thread domains:
+1. **WebKit main thread** — handles UI, HTML media element state, fires `seeking`/`seeked` events
+2. **GStreamer streaming threads** — one or more threads for pipeline processing, buffer passing, event handling
+
+Messages from GStreamer threads are posted on the GStreamer bus and received by the main thread. An `AbortableTaskQueue` is used to "abort every time a flush is sent downstream from the main thread to avoid deadlocks from threads in the playback pipeline waiting for the main thread."
+
+**Seek dispatch**: `doSeek()` method sends a `gst_element_seek()` on the pipeline. For MSE, this is in `MediaPlayerPrivateGStreamerMSE.cpp`. The seek completion is signaled via `timeChanged(const MediaTime&)` — if the MediaTime is valid, a seek has completed. The fix in Bug 275566 now acquires the playbin states lock before `doSeek()`.
+
+**Preroll waiting**: `isPipelineWaitingPreroll()` (renamed from `isPipelineSeeking()` in Bug 263317) checks whether the pipeline is in an async state change (paused and pending). If so, moving to PLAYING is delayed to avoid "desynchronization between pipeline and player." This is the mechanism that breaks when overlapping seeks cause PAUSED→PAUSED transitions.
+
+**Non-AC deadlock path**: In non-accelerated-compositing mode, `triggerRepaint()` uses a `m_drawCondition` that can deadlock between GStreamer threads and the main thread: "the main thread is waiting for the GStreamer thread to pause, but the GStreamer thread is locked waiting for the main thread to draw." This path is triggered more often in headless CI where AC may be disabled.
+
+**Decoder threading**: WebKitGTK sets GStreamer's `max-threads` property to 2 threads, introducing artificial processing latency. Under CI VM CPU contention, this further slows seek completion.
+
+#### Answer to research question 3: VM CPU throttling and deadlocks
+
+Yes, VM CPU throttling directly increases the probability of hitting seek race conditions:
+
+1. **GitHub Actions ubuntu-latest specs**: 4 vCPU / 16 GB RAM (public repos) or 2 vCPU / 8 GB (private). These are Azure VMs with shared physical hosts — subject to noisy-neighbor effects.
+2. **No GPU**: Standard runners have zero GPU hardware. All video decoding is software-only via `avdec_h264` (ffmpeg). This is significantly more CPU-intensive.
+3. **Race window expansion**: GStreamer's seek race conditions (Bug 194499, Bug 275566, Issue #301) have a timing component. Under CPU pressure, seeks take longer, expanding the window where overlapping operations can trigger deadlocks.
+4. **Shared infrastructure**: Multiple VMs on the same physical host compete for CPU scheduling. I/O and CPU availability are not guaranteed — operations that take 5ms on bare metal may take 50ms+ on a loaded VM.
+
+The 3s per-attempt timeout in our `seekTo()` is calibrated for this environment: long enough to allow normal seeks to complete under moderate VM load, short enough to recover from a stuck seek before the 30s test timeout.
+
+#### Answer to research question 4: Can a stuck seek be canceled?
+
+**Per the HTML spec (WHATWG Section 4.8.11.9)**: Yes. The seeking algorithm explicitly states: *"If the element's seeking IDL attribute is true, then another instance of this algorithm is already running. Abort that other instance of the algorithm without waiting for the step that it is running to complete."*
+
+**In practice on WebKitGTK**: No, it doesn't work reliably. WebKit Bug 194499 documents that the GStreamer MSE backend does NOT correctly implement the abort behavior. Setting `currentTime` during an active seek can trigger the PAUSED→PAUSED freeze instead of aborting the first seek.
+
+Setting `currentTime` to the **same** position is particularly dangerous. When GStreamer determines the target matches the current position, it may not perform an actual seek operation, meaning the `seeked` completion signal is never sent to WebKit's HTMLMediaElement, leaving `video.seeking = true` permanently.
+
+Our workaround in `seekTo()` — retry with `video.currentTime = t` after a 3s timeout — is effective because the retry usually occurs after the pipeline has moved past the stuck state, but it relies on timing rather than a clean abort mechanism.
+
+#### Answer to research question 5: Recovery via video.load() or src reassignment
+
+`video.load()` can reset the stuck state, but with significant side effects:
+
+- WebKit Bug 117354 documents the decision to "not set state to NULL until element is destroyed" for the GStreamer pipeline. `video.load()` triggers the full load algorithm, which resets `seeking` to false and `currentTime` to 0.
+- WebKit Bug 269587 (fixed) addresses a specific problem where `video.load()` during MSE preroll caused a temporary `currentTime` of 0 that dropped `readyState` to `HAVE_METADATA`, creating a cascade of state corruption.
+
+For our use case, `video.load()` is too destructive — it would require Shaka Player to reinitialize the entire DASH stream. The timeout + retry approach is less disruptive.
+
+#### Answer to research question 6: GStreamer environment variables for reliability
+
+**Potentially useful CI environment variables:**
+
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `LIBVA_DRIVER_NAME` | `dummy` | Prevents VA-API probe failures (no GPU on CI) |
+| `LIBVA_DRIVERS_PATH` | `/dev/null` | Suppresses hardware decoder search |
+| `GST_PLUGIN_FEATURE_RANK` | `vah264dec:0,vaapih264dec:0` | Explicitly disable hardware decoders |
+| `WEBKIT_DISABLE_COMPOSITING_MODE` | `1` | Disable GPU compositing (reduces code paths) |
+| `GST_REGISTRY_UPDATE` | `no` | Skip registry update on startup (faster) |
+
+**For debugging (not permanent):**
+
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `GST_DEBUG` | `3,webkit*:5` | Warnings globally, WebKit-specific at DEBUG |
+| `GST_DEBUG_FILE` | `/tmp/gst.log` | Capture GStreamer logs |
+| `GST_DEBUG_DUMP_DOT_DIR` | `/tmp/gst-dots` | Pipeline graph dumps |
+
+**Not useful for our case:**
+- GStreamer has no environment variable for thread priority or scheduling policy (only API-driven)
+- `GST_GL_WINDOW=surfaceless` is unnecessary since headless CI already has no display
+- `GST_XINITTHREADS` only relevant for X11 multi-threaded contexts
+
+#### Answer to research question 7: Correlation with runner specs
+
+The stalls are most likely to occur on:
+- **ubuntu-latest with 2 vCPU** (private repos) — highest CPU pressure
+- **Any runner during peak GitHub Actions load** — noisy-neighbor CPU scheduling
+
+Not observed on:
+- **macOS WebKit** — uses AVFoundation/VideoToolbox, not GStreamer at all
+- **Chromium/Firefox on ubuntu-latest** — different seek implementations, no GStreamer dependency
+- **Windows Edge** — Chromium-based, no GStreamer
+
+The stalls are GStreamer-specific, load-dependent, and timing-sensitive. More CPU resources reduce the race window but don't eliminate it.
+
+#### Playwright-specific context
+
+Key facts about Playwright's WebKit on Linux:
+
+1. **GStreamer is NOT bundled** (since [Playwright PR #2541](https://github.com/microsoft/playwright/pull/2541), June 2020). Partially bundled GStreamer conflicted with system GStreamer, causing X server crashes. WebKitGTK now uses the **system-installed GStreamer**.
+2. **System GStreamer version depends on host OS**: Ubuntu 22.04 → GStreamer ~1.20.3, Ubuntu 24.04 → ~1.24.x. The flush-stop deadlock (WPE #1367) fixed in GStreamer MR #7632 is NOT in GStreamer 1.20.3.
+3. **Playwright tracks WebKit trunk**, not stable WebKitGTK releases. Fixes committed to WebKit trunk (like Bug 275566, June 2024) are available in Playwright's WebKit builds relatively quickly. But GStreamer-level fixes depend on the system GStreamer.
+4. **macOS WebKit uses AVFoundation**, not GStreamer. The entire seek stall problem is Linux-only.
+5. **Playwright docs warn**: "available media codecs vary substantially between Linux, macOS and Windows. While running WebKit on Linux CI is usually the most affordable option, for the closest-to-Safari experience you should run WebKit on mac, for example if you do video playback."
+
+Playwright also acknowledges general WebKit-on-Linux flakiness:
+- [Issue #3261](https://github.com/microsoft/playwright/issues/3261): "video test flakiness" with WebKit that "has nothing to do with the installed plugins"
+- [Issue #27337](https://github.com/microsoft/playwright/issues/27337): "Many flaky tests on WebKit browser on Linux" after Playwright upgrade
+- [Issue #30428](https://github.com/microsoft/playwright/issues/30428): Random WebKit crashes in Docker with GStreamer warnings
+
+### Actionable items
+
+1. **Current workarounds are correct and sufficient**: The 3s per-attempt timeout on `while(video.seeking)` in `seekTo()` and the 5s `Promise.race` on `seeked` in load helpers are the right defensive strategy given unfixed upstream bugs.
+2. **Consider adding same-position seek guard**: Before setting `video.currentTime`, check `Math.abs(currentTime - target) < 0.01` and skip the seek if true. This avoids the particularly dangerous "seek to same position" case (Bug 194499).
+3. **Consider CI environment variables**: Setting `LIBVA_DRIVER_NAME=dummy` and `GST_PLUGIN_FEATURE_RANK=vah264dec:0,vaapih264dec:0` in the CI workflow for the WebKit job could prevent spurious hardware decoder probe failures, though these are unlikely to affect our specific stall pattern.
+4. **Consider `WEBKIT_DISABLE_COMPOSITING_MODE=1`**: Disabling accelerated compositing for WebKitGTK CI tests removes the non-AC triggerRepaint deadlock path. However, this may affect rendering behavior.
+5. **Monitor GStreamer version on ubuntu-latest**: When GitHub Actions updates to Ubuntu 24.04 (GStreamer ~1.24), the flush-stop deadlock (WPE #1367) should be fixed. The seek stalls may decrease.
+6. **The seek stalls cannot be eliminated without upstream fixes**: Bug 194499 remains partially addressed and Bug 245852 is unresolved. The timeout + retry pattern is the only application-level mitigation.
+
+### References
+
+- [WebKit Bug 194499: Seek while seeking freezes playback](https://bugs.webkit.org/show_bug.cgi?id=194499)
+- [WebKit Bug 275566: Take playbin's states lock when seeking](https://bugs.webkit.org/show_bug.cgi?id=275566) — Fixed Jun 2024
+- [WebKit Bug 245852: MSE scrubbing freeze/crash](https://bugs.webkit.org/show_bug.cgi?id=245852) — Unresolved
+- [WebKit Bug 263317: Pause after seek not working](https://bugs.webkit.org/show_bug.cgi?id=263317) — Fixed Feb 2024
+- [WebKit Bug 272167: Ignore sinks position while seeking](https://bugs.webkit.org/show_bug.cgi?id=272167) — Fixed
+- [WebKit Bug 269587: Prevent currentTime reset on preroll](https://bugs.webkit.org/show_bug.cgi?id=269587) — Fixed
+- [WebKit Bug 114044: Cannot seek after video finished](https://bugs.webkit.org/show_bug.cgi?id=114044) — Fixed
+- [WebKit Bug 182936: Seek broken on YouTube (GStreamer)](https://bugs.webkit.org/show_bug.cgi?id=182936) — Fixed
+- [WPEWebKit Issue #1367: Early seek deadlock](https://github.com/WebPlatformForEmbedded/WPEWebKit/issues/1367) — Fixed in GStreamer MR #7632
+- [WPEWebKit Issue #284: After seek, playback stuck](https://github.com/WebPlatformForEmbedded/WPEWebKit/issues/284) — Fixed
+- [WPEWebKit Issue #271: MSE seek to unbuffered range](https://github.com/WebPlatformForEmbedded/WPEWebKit/issues/271) — Fixed
+- [GStreamer Issue #301: ASYNC_DONE message dropped](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/301) — Acknowledged, unfixed
+- [GStreamer Issue #349: Race in bin state change](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/349) — Unfixable in 1.x
+- [GStreamer Issue #150: ASYNC_DONE propagation with repeated seeks](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/150)
+- [GStreamer gst-plugins-bad Issue #931: DASH seek stall](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/931)
+- [GStreamer gst-plugins-bad Issue #609: Pre-rolling problem after seeks](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/609)
+- [GStreamer gst-plugins-bad Issue #611: adaptivedemux deadlock](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/611)
+- [Playwright PR #2541: Exclude GStreamer from WebKit distribution](https://github.com/microsoft/playwright/pull/2541)
+- [Playwright Issue #3261: State of WebKit video codecs](https://github.com/microsoft/playwright/issues/3261)
+- [Playwright Issue #27337: Flaky WebKit tests on Linux](https://github.com/microsoft/playwright/issues/27337)
+- [Playwright Issue #31017: WebKit feature support on non-Apple platforms](https://github.com/microsoft/playwright/issues/31017)
+- [Playwright Browsers Documentation](https://playwright.dev/docs/browsers)
+- [Playwright CI Documentation](https://playwright.dev/docs/ci)
+- [WebKit Multimedia Debugging](https://docs.webkit.org/Ports/WebKitGTK%20and%20WPE%20WebKit/Multimedia.html)
+- [GitHub-hosted Runners Reference](https://docs.github.com/en/actions/using-github-hosted-runners/using-github-hosted-runners/about-github-hosted-runners)
+- [GStreamer Running Documentation](https://gstreamer.freedesktop.org/documentation/gstreamer/running.html)
+- [GStreamer Debugging Tools Tutorial](https://gstreamer.freedesktop.org/documentation/tutorials/basic/debugging-tools.html)
+- [GStreamer Hardware-accelerated Decoding Tutorial](https://gstreamer.freedesktop.org/documentation/tutorials/playback/hardware-accelerated-video-decoding.html)
+- [WHATWG HTML Standard — Media Elements Seeking](https://html.spec.whatwg.org/multipage/media.html#seeking)
+- [WebKit MediaPlayerPrivateGStreamer source](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/gstreamer/MediaPlayerPrivateGStreamer.cpp)
+
 ---
 
 ## Topic 6: Firefox MSE Frame Boundary Precision
