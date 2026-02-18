@@ -3765,6 +3765,154 @@ No explicit workaround -- canvas drawing APIs handle conversion transparently. T
 - `VideoFrame.format` property documentation
 - Chromium source: `VideoFrame` format negotiation in decoder output
 
+### Findings
+
+#### Q1: Does the WebCodecs spec mandate a specific output format, or is it implementation-defined?
+
+**The output pixel format is entirely implementation-defined.** The WebCodecs specification deliberately does not mandate which pixel format `VideoDecoder` must produce. The spec's "Output VideoFrames" algorithm (section 4.6) states that the output config's remaining keys -- including pixel format -- are "assigned as determined by [[codec implementation]]." When the codec implementation outputs a frame, the spec checks whether the native format maps to a recognized `VideoPixelFormat` enum value; if it does, that value is assigned to the frame's `[[format]]` internal slot, otherwise `null` is assigned ([w3c/webcodecs#390](https://github.com/w3c/webcodecs/issues/390), [w3c/webcodecs#631 discussion](https://github.com/w3c/webcodecs/discussions/631)).
+
+**The `VideoPixelFormat` enum** defines the set of recognized formats ([MDN: VideoFrame.format](https://developer.mozilla.org/en-US/docs/Web/API/VideoFrame/format)):
+
+| Format | Description |
+|--------|-------------|
+| `I420` | YUV 4:2:0 planar (Y, U, V separate planes) |
+| `I420A` | I420 with alpha plane |
+| `I422` | YUV 4:2:2 planar |
+| `I444` | YUV 4:4:4 planar |
+| `NV12` | YUV 4:2:0 semi-planar (Y plane + interleaved UV) |
+| `RGBA` | Red, Green, Blue, Alpha interleaved |
+| `RGBX` | RGB with padding (alpha ignored) |
+| `BGRA` | Blue, Green, Red, Alpha interleaved |
+| `BGRX` | BGR with padding (alpha ignored) |
+
+10-bit and 12-bit variants (`I420P10`, `I420P12`) were added to the MDN documentation more recently, but support varies by browser.
+
+**What determines the actual format in practice:**
+
+1. **Hardware decoder pipeline**: Hardware decoders (VA-API on Linux, VideoToolbox on macOS, D3D11 on Windows, MediaCodec on Android) output in their native format. VideoToolbox produces NV12, MediaCodec on Android can produce RGB textures, VA-API/D3D11 typically produce NV12 ([Chromium bug #574292](https://bugs.chromium.org/p/chromium/issues/detail?id=574292)).
+2. **Software decoder**: FFmpeg-based software decoders in Chromium output I420 (the most common YUV planar format). GStreamer-based decoders in Firefox output BGRX (BGRx in GStreamer's naming) because that is the native output of GStreamer's video conversion pipeline.
+3. **Codec profile**: The encoded bitstream influences the format (e.g., 10-bit H.264 High 10 may produce a format outside the enum, resulting in `format === null`).
+4. **Browser integration layer**: Firefox wraps GStreamer (Linux) and VideoToolbox (macOS) outputs into WebCodecs `VideoFrame` objects. Both paths expose BGRX because Firefox's media pipeline normalizes to BGRx internally before creating the frame.
+
+**There is no feature-detection API** for querying which output format a decoder will produce. Applications must inspect `VideoFrame.format` at runtime. The spec's position is that all renderable formats should work for downstream operations (canvas, encoding), so the specific format should not matter for correctness ([w3c/webcodecs#407](https://github.com/w3c/webcodecs/issues/407)).
+
+#### Q2: Can the output format be requested via VideoDecoderConfig or similar? Is there a way to normalize to RGBA at decode time?
+
+**No -- `VideoDecoderConfig` has no `outputPixelFormat` property.** The config dictionary accepts `codec`, `description`, `codedWidth`, `codedHeight`, `displayAspectWidth`, `displayAspectHeight`, `colorSpace`, `hardwareAcceleration`, `optimizeForLatency`, `rotation`, and `flip` ([MDN: VideoDecoder.configure()](https://developer.mozilla.org/en-US/docs/Web/API/VideoDecoder/configure)). There is no field to request a specific output pixel format. The decoder produces frames in whatever format the underlying platform decoder natively outputs.
+
+**There was spec discussion about adding format negotiation** ([w3c/webcodecs#92](https://github.com/w3c/webcodecs/issues/92)), proposing an API like `let frame = await gpu_frame.convertTo(I420)`. The issue was closed as completed (the conversion was addressed through other APIs), but no format-request parameter was added to `VideoDecoderConfig`.
+
+**Three normalization paths exist, with different trade-offs:**
+
+1. **`createImageBitmap(videoFrame)`** -- Converts any format to an RGBA-backed `ImageBitmap`. This is what the thumbnail worker uses. The conversion happens internally via the browser's compositing pipeline. On Chromium, this may use GPU shaders for GPU-backed frames or libyuv for CPU-backed frames. The result is an opaque `ImageBitmap` that can be drawn to any canvas. This is the most practical normalization path for rendering workflows.
+
+2. **`VideoFrame.copyTo(buffer, { format: "RGBA" })`** -- Shipped in Chrome 126 (mid-2024) with positive signals from Firefox and WebKit ([Chromium Intent to Ship](https://www.mail-archive.com/blink-dev@chromium.org/msg10071.html)). This copies the frame's pixel data into a provided `ArrayBuffer` in the requested RGBA/BGRA format. The conversion is explicit and produces raw pixel data on the CPU. This is designed for ML/CV pipelines (TensorFlow.js, OpenCV.js) that need pixel arrays, not for rendering. It replaces the previous workaround of `drawImage(frame) → getImageData()` which required an explicit canvas.
+
+3. **`CanvasRenderingContext2D.drawImage(videoFrame, ...)`** -- Since `VideoFrame` is a `CanvasImageSource` ([w3c/webcodecs#158](https://github.com/w3c/webcodecs/issues/158)), it can be drawn directly to a 2D canvas. The browser performs all necessary format conversion (YUV→RGB, channel reordering) internally. This is the simplest path and is what the spec recommends for rendering use cases.
+
+**For our thumbnail worker**, the current approach is path (1): `drawImage(frame, ...) → createImageBitmap(canvas)`. A marginally more direct alternative would be `createImageBitmap(videoFrame, { resizeWidth, resizeHeight })`, which combines format conversion and resize in a single operation. However, at 426x240 resolution the performance difference is <0.05ms per frame and not worth the code change.
+
+**WebGPU offers a future zero-copy path** for applications that need GPU-resident frames: `GPUQueue.copyExternalImageToTexture()` accepts `VideoFrame` directly and can upload the frame as a GPU texture without CPU readback ([WebGPU spec issue #1380](https://github.com/gpuweb/gpuweb/issues/1380), [WEBGL_webcodecs_video_frame extension](https://registry.khronos.org/webgl/extensions/proposals/WEBGL_webcodecs_video_frame/)). This is irrelevant for the thumbnail worker but would matter for real-time video processing.
+
+#### Q3: Does the format affect decode performance? Is BGRX-to-RGBA conversion done on GPU or CPU?
+
+**The decode performance itself is not affected by the output format** -- the decoder produces frames in its native format regardless. The performance question is really about the **post-decode conversion cost** when the frame is consumed by canvas or `createImageBitmap`.
+
+**Conversion paths in Chromium** (from [`paint_canvas_video_renderer.cc`](https://github.com/chromium/chromium/blob/master/media/renderers/paint_canvas_video_renderer.cc)):
+
+1. **GPU-backed frames** (hardware-decoded via VA-API, D3D11, VideoToolbox): YUV→RGB conversion runs as a **GPU shader** via Skia's GPU backend. The frame's texture is composited directly without CPU readback. Cost is effectively zero for any resolution. This is the typical path in Chromium/Edge on main thread.
+
+2. **CPU-mapped frames** (software-decoded, or Workers without GPU canvas): Conversion uses **libyuv** with SIMD acceleration. The work is parallelized across CPU cores in 1 MiB chunks. Per-format libyuv functions:
+   - `I420ToARGBMatrix()` -- full YUV→RGB matrix multiply per pixel (AVX2/SSSE3/NEON)
+   - `NV12ToARGBMatrix()` -- similar cost to I420
+   - BGRX→RGBA -- channel reorder macro, trivially fast (just swaps B and R bytes)
+
+**Quantitative benchmarks** from libyuv on Intel Core i7-6700K ([Mozilla bug #1256475](https://bugzilla.mozilla.org/show_bug.cgi?id=1256475)):
+
+| Operation | AVX2 | SSSE3 | C fallback |
+|-----------|------|-------|------------|
+| I420→ARGB (720p) | ~0.7ms | ~0.9ms | ~5.4ms |
+| NV12→ARGB (720p) | ~0.7ms | ~0.9ms | ~5.4ms |
+| BGRX→RGBA | microseconds | microseconds | microseconds |
+
+**At thumbnail resolution (426x240, ~102K pixels):**
+- I420/NV12→RGBA: ~0.03ms (linear scaling from 720p benchmarks, ~22x fewer pixels)
+- BGRX→RGBA: <0.001ms (byte-level channel swap, no matrix math)
+- Compared to VideoDecoder decode time of 1-5ms per frame, conversion overhead is negligible
+
+**Firefox-specific behavior**: Firefox's GStreamer and VideoToolbox integrations produce BGRX frames. The BGRX→RGBA conversion is a trivial per-pixel operation: byte 0 (B) swaps with byte 2 (R), and byte 3 (X padding) becomes 0xFF (opaque alpha). On x86, this is a single SIMD shuffle instruction per 16 pixels. Firefox's canvas implementation handles this internally.
+
+**macOS WebKit NV12 path**: VideoToolbox outputs NV12 (Y plane + interleaved UV plane). WebKit's compositor converts this to RGB via Core Video pixel buffer routines or software libyuv fallback. The semi-planar layout of NV12 is slightly more cache-friendly than I420's three separate planes, but the difference is negligible at small resolutions.
+
+**Worker context matters**: In Web Workers (where the thumbnail worker runs), GPU-accelerated canvas may not be available on all platforms. In that case, the CPU path with libyuv is used. Even so, at 426x240, the cost is ~0.03ms -- completely dominated by network fetch and VideoDecoder decode times. The [w3c/webcodecs#420](https://github.com/w3c/webcodecs/issues/420) and [#421](https://github.com/w3c/webcodecs/issues/421) issues about slow `drawImage` performance were at 3840x3840 resolution (14.7M pixels vs our 102K pixels -- a 144x difference).
+
+**Summary for our codebase**: The pixel format has zero measurable impact on the thumbnail worker's performance. Even the worst case (I420/NV12 at 426x240 via CPU-only libyuv) adds only ~0.03ms per frame. The BGRX format that Firefox produces is actually the cheapest to convert (simple byte swap). No optimization is needed or recommended.
+
+#### Q4: Does the browser handle format conversion when drawing a VideoFrame to canvas, or must the application convert?
+
+**The browser handles all format conversion automatically.** The WebCodecs specification mandates that `VideoFrame` is a `CanvasImageSource` ([spec issue #158](https://github.com/w3c/webcodecs/issues/158)), which means it can be passed directly to `CanvasRenderingContext2D.drawImage()`, `WebGLRenderingContext.texImage2D()`, and `createImageBitmap()`. The spec requires that implementations MUST support pixel format conversion for rendering -- any valid `VideoFrame` (I420, NV12, BGRX, RGBA, etc.) must be drawable to a canvas without application-level conversion code.
+
+**How this works internally in Chromium:** The rendering path goes through `PaintCanvasVideoRenderer::Paint()` in [`media/renderers/paint_canvas_video_renderer.cc`](https://github.com/chromium/chromium/blob/master/media/renderers/paint_canvas_video_renderer.cc). This function routes through two paths:
+
+1. **GPU-backed frames** (hardware-decoded): The frame's GPU texture is composited via Skia's GPU pipeline. YUV-to-RGB conversion happens as a GPU shader operation (via `GrContext`), which is fast and avoids CPU readback. This is the common path for `VideoDecoder` frames in Chromium/Edge.
+2. **CPU-mapped frames** (software-decoded): Falls back to `ConvertVideoFrameToRGBPixels()`, which uses **libyuv** for the actual color space conversion. Specific libyuv functions are selected per format: `I420ToARGB` for I420, `NV12ToARGB` for NV12, channel-swizzle macros for BGRA/BGRX (near-zero cost). Color matrix selection uses `ToSkYUVColorSpace()` based on the frame's color space metadata.
+
+**Firefox** uses a similar two-path approach. GStreamer (Linux) and VideoToolbox (macOS) produce BGRX frames. Firefox's canvas implementation converts BGRX to the canvas's internal format (BGRA or RGBA depending on platform). Since BGRX-to-BGRA is a trivial alpha-channel fill (the X channel becomes 0xFF alpha), this is effectively zero overhead.
+
+**WebKit** on macOS receives NV12 from VideoToolbox. NV12 is semi-planar YUV 4:2:0 (Y plane + interleaved UV plane). The conversion to RGB for canvas drawing is handled by the platform's GPU compositor or by libyuv in software fallback paths.
+
+**Critical point for our codebase:** The thumbnail worker's current approach of `ctx2d.drawImage(frame, 0, 0, w, h)` followed by `createImageBitmap(canvas)` works correctly regardless of the input pixel format. The browser performs all necessary YUV-to-RGB conversion internally. No application-level format detection or conversion code is needed, and none should be added.
+
+**Spec references:** The [HTML spec](https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-drawimage) defines `drawImage` for all `CanvasImageSource` types. The [WebCodecs spec](https://www.w3.org/TR/webcodecs/#videoframe) adds `VideoFrame` to this set.
+
+#### Q5: Are there formats that are more efficient for canvas operations (avoiding conversion overhead)?
+
+**Yes, but the differences are negligible for thumbnail-sized frames.** The conversion cost hierarchy from most expensive to cheapest:
+
+| Source Format | Conversion Required | Relative Cost | Notes |
+|---------------|-------------------|---------------|-------|
+| I420 (YUV planar) | Full YUV→RGB matrix multiply per pixel | Highest | Chromium/Edge, Linux WebKit default |
+| NV12 (YUV semi-planar) | Full YUV→RGB matrix multiply per pixel | High (similar to I420) | macOS WebKit default |
+| BGRX | Channel reorder (B↔R swap) + alpha fill | Very low | Firefox Linux/macOS default |
+| BGRA | Channel reorder (B↔R swap) | Very low | Near-zero if canvas native format is BGRA |
+| RGBA/RGBX | None or minimal | Zero | Direct match to canvas internal format |
+
+**Quantitative perspective from libyuv benchmarks:** At test resolutions (similar to 720p), I420→ARGB takes ~0.7ms per frame, NV12→ARGB takes ~0.7ms (with AVX2), and BGRA→ARGB is a channel-shuffle macro completing in microseconds. At the thumbnail worker's resolution of 426x240, the YUV→RGB conversion cost scales roughly proportional to pixel count -- approximately **0.03ms per frame** (240p has ~22x fewer pixels than 720p). This is well within noise.
+
+**GPU acceleration eliminates most of the concern.** When GPU-accelerated canvas is available (the common case in Chromium on main thread), YUV→RGB conversion runs as a GPU shader and is effectively free for any resolution. The main cost scenario is CPU-only canvas paths, which can occur in Web Workers on some platforms. Even in the CPU path, libyuv uses SIMD (AVX2/SSE/NEON) for all YUV→RGB conversions.
+
+**The most efficient theoretical path** would be to receive frames already in RGBA/RGBX format, avoiding YUV→RGB conversion entirely. However, this is not controllable by the application -- `VideoDecoder` provides no API to request a specific output format (there was [spec discussion](https://github.com/w3c/webcodecs/issues/92) about a format conversion API, but it remains unresolved). The output format is determined by the platform's hardware decoder pipeline.
+
+**WebGPU alternative:** For applications processing frames at high resolutions or high frame rates, [`GPUQueue.copyExternalImageToTexture()`](https://developer.mozilla.org/en-US/docs/Web/API/GPUQueue/copyExternalImageToTexture) accepts `VideoFrame` directly and can achieve near-zero-copy rendering by keeping the frame data on the GPU ([WebGPU spec issue #1380](https://github.com/gpuweb/gpuweb/issues/1380)). This is irrelevant for the thumbnail worker's use case (low resolution, non-real-time) but would matter for a real-time video effects pipeline.
+
+**For the thumbnail worker specifically:** The frame size is 426x240 (~102K pixels). At this resolution, even the most expensive conversion (I420→RGBA via CPU libyuv) takes ~0.03ms. The VideoDecoder decode time itself is orders of magnitude larger (typically 1-5ms per frame). Format conversion overhead is therefore completely negligible and not worth optimizing.
+
+### Summary
+
+The VideoDecoder pixel format variation across browsers (I420 on Chromium/Edge, BGRX on Firefox, NV12 on macOS WebKit) is **entirely handled by the browser's canvas implementation** and requires no application-level code.
+
+**Key findings across all questions:**
+
+1. **Format is implementation-defined** (Q1): The WebCodecs spec deliberately leaves output format up to the implementation. There is no `outputPixelFormat` config option, and no way to request a specific format from `VideoDecoder`. The format depends on the platform's hardware decoder pipeline (VideoToolbox, VA-API, D3D11, software FFmpeg).
+
+2. **No normalization API exists** (Q2): While `VideoFrame.copyTo()` now supports format conversion to RGBA/BGRA (Chromium Intent to Ship, 2024), this copies pixel data to CPU memory and is not suitable for the decode-to-canvas pipeline. The only practical normalization path is through canvas drawing or `createImageBitmap()`, which is exactly what the codebase already does.
+
+3. **Conversion path varies by format** (Q3): BGRX→RGBA is a trivial channel swap (microseconds). I420/NV12→RGBA requires full YUV→RGB matrix multiplication but is highly optimized via libyuv SIMD (AVX2/NEON) or GPU shaders. At thumbnail resolution (426x240), all conversions take <0.1ms.
+
+4. **Browser handles all conversion automatically** (Q4): The spec mandates that any `VideoFrame` can be drawn to canvas via `drawImage()`. Chromium uses GPU shaders for hardware-decoded frames and libyuv for software-decoded frames. Firefox and WebKit have equivalent internal pipelines.
+
+5. **RGBA is theoretically fastest but uncontrollable** (Q5): RGBA frames skip conversion entirely, but the application cannot request this format. YUV formats (I420, NV12) have the highest conversion cost, but at 426x240 the cost is ~0.03ms -- completely negligible vs. the ~1-5ms decode time.
+
+**Assessment of current approach:** The codebase's current approach (no workaround, let `drawImage` + `createImageBitmap` handle it) is **optimal**. There is:
+- No user-visible impact from format differences
+- No measurable performance impact at thumbnail resolution
+- No available API to control or optimize the output format
+- No code changes recommended
+
+**One minor observation:** The worker uses `ctx2d.drawImage(frame, ...) → createImageBitmap(canvas)` which performs two conversions (YUV→RGB for drawImage, then RGB→ImageBitmap). A marginally more direct path would be `createImageBitmap(videoFrame, { resizeWidth, resizeHeight })` which combines conversion and resize in one step. However, this optimization would save <0.05ms per frame at thumbnail resolution and is not worth the code change.
+
+**Status: RESOLVED -- no action needed.** The current implementation is correct and performant. Format variations are a platform implementation detail fully abstracted by the browser's canvas and ImageBitmap APIs.
+
 ---
 
 ## Topic 12: Linux WebKitGTK Frame Height Rounding
@@ -3806,5 +3954,5 @@ Ordered by impact on user experience and engineering complexity:
 8. **Topic 7: Edge stale `currentTime`** -- RESOLVED. Root cause: Chromium's multi-threaded media pipeline updates `currentTime` asynchronously via `PostTask`; Playwright IPC round-trips expose this staleness. Edge's Media Foundation integration widens the window. Current workaround (`pressKeyNTimesAndSettle`) is optimal.
 9. **Topic 8: WebKit frame compositing** -- RESOLVED. Root cause: `showPosterFlag()` gates `mediaPlayerFirstVideoFrameAvailable()`. Fix: unconditional self-seek + rVFC confirmation.
 10. **Topic 10: SegmentBase detection** -- RESOLVED. Box-presence detection is the correct approach. Shaka's `AdvancedRequestType` labels sidx as `MEDIA_SEGMENT` (not `INIT_SEGMENT` as originally suspected), but has no dedicated `INDEX_SEGMENT` type. The `RequestContext` could theoretically help but only the streaming engine populates it fully. No changes needed to current implementation.
-11. **Topic 11: Pixel format variations** -- No user impact; informational.
+11. **Topic 11: Pixel format variations** -- RESOLVED. Browser canvas APIs handle all YUV/BGRX/NV12→RGBA conversion automatically per spec; at 426x240 thumbnail resolution, conversion cost is <0.1ms (negligible vs decode time). No code changes needed.
 12. **Topic 12: Height rounding** -- No user impact; informational.
