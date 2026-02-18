@@ -3443,6 +3443,294 @@ Box-presence detection: check for `moov` box (init) vs `moof` box (media) in `sr
 - Shaka Player GitHub issues: search for `AdvancedRequestType` + `INIT_SEGMENT` + `sidx`
 - DASH-IF guidelines: segment addressing modes
 
+### Findings
+
+#### Q1: Is Shaka Player's labeling of sidx requests as INIT_SEGMENT documented behavior or a bug?
+
+**It is neither a bug nor exactly as described in the original observation.** A careful reading of Shaka Player's source code reveals a more nuanced situation than the comment in `softwareDecrypt.ts:210-214` suggests. There are actually **two separate code paths** that fetch different segment types, and they label requests differently:
+
+**Path 1 — Manifest parsing (sidx fetch):** When Shaka parses a SegmentBase DASH manifest, it calls `SegmentBase.generateSegmentIndexFromUris()` ([lib/dash/segment_base.js, line 153](https://github.com/shaka-project/shaka-player/blob/main/lib/dash/segment_base.js)). This function fetches the sidx (index range) data by calling the `requestSegment` callback with `/* isInit= */ false` (line 170). The callback resolves to `DashParser.requestSegment_()` ([lib/dash/dash_parser.js, line 3285](https://github.com/shaka-project/shaka-player/blob/main/lib/dash/dash_parser.js)), which maps `isInit=false` to `AdvancedRequestType.MEDIA_SEGMENT` (lines 3287-3289):
+
+```javascript
+async requestSegment_(uris, startByte, endByte, isInit) {
+    const requestType = shaka.net.NetworkingEngine.RequestType.SEGMENT;
+    const type = isInit ?
+        shaka.net.NetworkingEngine.AdvancedRequestType.INIT_SEGMENT :
+        shaka.net.NetworkingEngine.AdvancedRequestType.MEDIA_SEGMENT;
+    // ...
+    const response = await this.makeNetworkRequest_(request, requestType, {type});
+```
+
+So the sidx request is labeled as `MEDIA_SEGMENT`, not `INIT_SEGMENT`. The `RequestContext` passed to the response filter only contains `{type: MEDIA_SEGMENT}` — no `segment` or `stream` fields.
+
+**Path 2 — Streaming (init segment fetch):** When the streaming engine needs to fetch the actual init segment (containing `moov`/`ftyp` boxes), it calls `StreamingEngine.dispatchFetch()` ([lib/media/streaming_engine.js, line 2957](https://github.com/shaka-project/shaka-player/blob/main/lib/media/streaming_engine.js)). This method uses `instanceof` to check if the reference is a `SegmentReference` (media) or `InitSegmentReference` (init), and sets the `AdvancedRequestType` accordingly (lines 2961-2965):
+
+```javascript
+const segment = reference instanceof shaka.media.SegmentReference ?
+    reference : undefined;
+const type = segment ?
+    shaka.net.NetworkingEngine.AdvancedRequestType.MEDIA_SEGMENT :
+    shaka.net.NetworkingEngine.AdvancedRequestType.INIT_SEGMENT;
+```
+
+The init segment fetch here correctly gets `INIT_SEGMENT`.
+
+**The real problem for response filters:** For SegmentBase streams, all three request types (init, sidx, media) use the same base `RequestType.SEGMENT`. A response filter that only checks the base `RequestType` (as `softwareDecrypt.ts` does on line 200) sees all three as `SEGMENT` requests. The `AdvancedRequestType` does distinguish them — sidx gets `MEDIA_SEGMENT` and real init gets `INIT_SEGMENT` — but this is only available through the optional `RequestContext` parameter, not the primary `RequestType`.
+
+The sidx fetch happens lazily during `createSegmentIndex()` (not during initial manifest parsing), so it arrives as a `SEGMENT` request with `AdvancedRequestType.MEDIA_SEGMENT`. This is technically correct — the sidx is not an init segment and not a playable media segment either, but Shaka has no `INDEX_SEGMENT` advanced type, so it falls into `MEDIA_SEGMENT` as the default for `isInit=false`.
+
+**Conclusion:** The labeling is intentional design, not a bug. Shaka's `AdvancedRequestType` enum only has `INIT_SEGMENT` and `MEDIA_SEGMENT` for segment subtypes — there is no `INDEX_SEGMENT` or `SIDX` type. The sidx is labeled `MEDIA_SEGMENT` because it's "not init" in the boolean sense. The `AdvancedRequestType` was introduced in response to [issue #4966](https://github.com/shaka-project/shaka-player/issues/4966) (HEVC codec workaround) specifically to distinguish init segments from media segments, not to handle all possible segment subtypes.
+
+**Sources:**
+- [Shaka Player `segment_base.js` — sidx fetch with `isInit=false`](https://github.com/shaka-project/shaka-player/blob/main/lib/dash/segment_base.js) (line 170)
+- [Shaka Player `dash_parser.js` — `requestSegment_()` mapping `isInit` to `AdvancedRequestType`](https://github.com/shaka-project/shaka-player/blob/main/lib/dash/dash_parser.js) (lines 3285-3300)
+- [Shaka Player `streaming_engine.js` — `dispatchFetch()` using `instanceof` for type detection](https://github.com/shaka-project/shaka-player/blob/main/lib/media/streaming_engine.js) (lines 2957-2977)
+- [Shaka Player `networking_engine.js` — `AdvancedRequestType` enum definition](https://github.com/shaka-project/shaka-player/blob/main/lib/net/networking_engine.js)
+- [GitHub issue #4966 — original motivation for `AdvancedRequestType`](https://github.com/shaka-project/shaka-player/issues/4966)
+- [Shaka Player API docs — `AdvancedRequestType`](https://shaka-player-demo.appspot.com/docs/api/shaka.net.NetworkingEngine.html)
+
+#### Q2: Is there a Shaka Player API to distinguish sidx from true init segment requests?
+
+**Yes, partially — but with caveats.** There are several potential approaches, each with limitations:
+
+**Approach 1: `AdvancedRequestType` via `RequestContext` (viable but imperfect)**
+
+The `RequestContext` object (third parameter of response filters) contains `context.type` with the `AdvancedRequestType`. For SegmentBase streams:
+- Init segment (moov) → `AdvancedRequestType.INIT_SEGMENT`
+- Sidx (index) → `AdvancedRequestType.MEDIA_SEGMENT`
+- Media segment (moof+mdat) → `AdvancedRequestType.MEDIA_SEGMENT`
+
+This distinguishes init from sidx, but **cannot distinguish sidx from real media segments** — both get `MEDIA_SEGMENT`. For the `softwareDecrypt.ts` use case, this would actually suffice: the filter could use `context.type === INIT_SEGMENT` to identify real init segments, and treat everything else as potential media. The sidx would pass through without triggering either the init or media processing paths (since it has neither `moov` nor `moof`).
+
+**Approach 2: `RequestContext.segment` field (limited)**
+
+The `RequestContext` includes a `segment` field of type `shaka.media.SegmentReference | undefined`. During streaming, init segment fetches have `segment = undefined` while media segment fetches have a `SegmentReference`. However, during manifest parsing (when the sidx is fetched), the context only contains `{type}` — no `segment` or `stream` fields. So this field is not useful for distinguishing sidx requests.
+
+**Approach 3: `response.uri` and byte range (unreliable)**
+
+The `Response` object includes `uri` and the original request is available via `response.originalRequest`. For SegmentBase streams, the init segment, sidx, and media segments may all share the **same base URL** — they differ only in the `Range` header. One could inspect `response.originalRequest.headers['Range']` and compare against known byte ranges from the manifest. This is fragile and requires manifest-level knowledge that a response filter shouldn't need.
+
+**Approach 4: Box-presence detection (current approach, most robust)**
+
+The current approach in `softwareDecrypt.ts` — scanning for `moov` and `moof` boxes — is actually the most reliable. It is content-based rather than metadata-based, making it immune to labeling inconsistencies. An init segment always contains `moov`; a media segment always contains `moof`+`mdat`; a sidx segment contains only `sidx` (and possibly `styp`). The sidx bytes pass through harmlessly because they match neither `isInit` nor `isMedia`.
+
+**Recommendation:** The box-presence approach is the correct solution. It could be supplemented with `AdvancedRequestType` as a first-pass filter (skip processing for `INIT_SEGMENT` type and only parse boxes for `MEDIA_SEGMENT` type), but the box check is the authoritative mechanism. The `AdvancedRequestType` alone is insufficient because it conflates sidx with media segments.
+
+A potential improvement to the current code would be to use `context.type` as an optimization hint:
+
+```typescript
+// Fast path: if AdvancedRequestType says INIT_SEGMENT, trust it
+if (context?.type === shaka.net.NetworkingEngine.AdvancedRequestType.INIT_SEGMENT) {
+  // Process as init segment (moov is guaranteed)
+} else {
+  // Fall back to box-presence detection for MEDIA_SEGMENT
+  // (which includes both real media and sidx)
+}
+```
+
+However, this optimization adds complexity for minimal gain — the `findBoxData` scan is fast on typical segment sizes. The current pure box-detection approach is simpler and correct.
+
+**Sources:**
+- [Shaka Player `externs/shaka/net.js` — `RequestContext` typedef](https://shaka-player-demo.appspot.com/docs/api/externs_shaka_net.js.html) (defines `type`, `stream`, `segment`, `isPreload` fields)
+- [Shaka Player `externs/shaka/net.js` — `Response` typedef](https://shaka-player-demo.appspot.com/docs/api/externs_shaka_net.js.html) (defines `uri`, `originalUri`, `data`, `originalRequest` fields)
+- [Shaka Player `networking_utils.js` — `createSegmentRequest()`](https://github.com/shaka-project/shaka-player/blob/main/lib/net/networking_utils.js) (sets `Range` header for byte-range requests)
+- [Shaka Player `networking_engine.js` — `filterResponse_()`](https://github.com/shaka-project/shaka-player/blob/main/lib/net/networking_engine.js) (line 731 — passes `context` to response filters)
+- [Shaka Player `dash_parser.js` — `requestSegment_()` context](https://github.com/shaka-project/shaka-player/blob/main/lib/dash/dash_parser.js) (line 3297 — only passes `{type}`, no `segment` or `stream`)
+- [Shaka Player `streaming_engine.js` — `dispatchFetch()` context](https://github.com/shaka-project/shaka-player/blob/main/lib/media/streaming_engine.js) (line 2977 — passes full `{type, stream, segment, isPreload}`)
+
+#### Q3: Does this affect other Shaka Player response filter use cases?
+
+**Yes, this is a general pitfall that affects any response filter processing segment data for SegmentBase streams.** Several categories of use cases are impacted:
+
+**1. DRM / Decryption filters (directly affected)**
+
+This is exactly the use case in `softwareDecrypt.ts`. Any response filter that caches init segment data for later use in media segment processing must correctly identify which responses are init segments. If a filter blindly caches any `SEGMENT`-type response as init data, a sidx response will overwrite the cached init segment. This breaks all subsequent media segment processing because mp4box/parsers expect init data (moov/trak/stsd boxes) to extract sample tables. The sidx contains only a segment index — no codec configuration, track info, or sample descriptions.
+
+**2. Segment modification / rewriting filters (potentially affected)**
+
+Filters that modify segment data (e.g., rewriting codec parameters in init segments as in [issue #4966](https://github.com/shaka-project/shaka-player/issues/4966) for HEVC workarounds, or injecting custom boxes) need to identify init segments correctly. Attempting to parse and modify a sidx response as if it were an init segment would cause parsing errors or corrupt data. The `AdvancedRequestType` can help here — checking for `INIT_SEGMENT` type would correctly identify real init segments — but only for the streaming engine path. During manifest parsing, init segments are not fetched through the response filter at all (they're fetched later by the streaming engine).
+
+**3. Ad insertion / SSAI filters (indirectly affected)**
+
+Server-side ad insertion (SSAI) that uses response filters to stitch ad segments into the content stream needs to understand segment boundaries. For SegmentBase streams, the sidx response arriving as a `MEDIA_SEGMENT` type could confuse ad insertion logic that expects all `MEDIA_SEGMENT` responses to contain actual media data (moof+mdat). However, most SSAI implementations work at the manifest level (rewriting segment URLs) rather than the response level, so this is a lesser concern in practice.
+
+**4. Analytics / logging filters (minimally affected)**
+
+Filters that count segments, measure sizes, or log segment types would incorrectly classify sidx responses. A sidx response would be counted as a media segment, slightly skewing segment counts and bandwidth calculations. This is typically harmless but could confuse debugging.
+
+**5. Bandwidth estimation filters (edge case)**
+
+Custom bandwidth estimation that processes segment responses to compute per-segment bitrates would include the sidx response in its calculations. The sidx is typically small (a few hundred bytes) and fetched once, so this has negligible impact.
+
+**Broader context:** This issue is specific to SegmentBase (on-demand profile) streams. SegmentTemplate and SegmentList streams do not have this problem because their segment index information is embedded in the manifest (via `SegmentTimeline` or `@duration`) rather than fetched as a separate network request. The sidx fetch only occurs for `SegmentBase@indexRange` and `SegmentTemplate@index` addressing modes.
+
+Shaka Player's own codebase handles this internally by using the `isInit` parameter in the `RequestSegmentCallback` passed to `SegmentBase.createStreamInfo()`, and by using `instanceof InitSegmentReference` in the streaming engine. These are internal mechanisms not exposed to response filters. The `AdvancedRequestType` enum was designed as a partial solution but only covers two subtypes (`INIT_SEGMENT` and `MEDIA_SEGMENT`), leaving sidx as an undifferentiated `MEDIA_SEGMENT`.
+
+**Impact assessment for `softwareDecrypt.ts`:** The current box-presence detection is the correct approach and handles all cases:
+- Init segment (moov) → detected by `hasMoov`, processed as init
+- Sidx (no moov, no moof) → falls through both checks, passed through unmodified
+- Media segment (moof) → detected by `hasMoof`, processed as media
+- Combined init+media (moov+moof, rare) → detected by `hasMoov`, processed as init (correct for first encounter)
+
+No changes are recommended to the current implementation.
+
+**Sources:**
+- [GitHub issue #4966 — AdvancedRequestType motivation (HEVC init segment modification)](https://github.com/shaka-project/shaka-player/issues/4966)
+- [GitHub issue #3093 — sidx in separate file from media segments](https://github.com/shaka-project/shaka-player/issues/3093)
+- [GitHub issue #6010 — DASH + ad insertion exception](https://github.com/shaka-project/shaka-player/issues/6010)
+- [Shaka Player DeepWiki — Request/Response Filters](https://deepwiki.com/shaka-project/shaka-player/5.1-requestresponse-filters)
+- [Shaka Player API docs — NetworkingEngine](https://shaka-player-demo.appspot.com/docs/api/shaka.net.NetworkingEngine.html)
+- [Shaka Player API docs — RequestContext](https://shaka-player-demo.appspot.com/docs/api/shaka.extern.html)
+- [Shaka Packager docs — sidx generation for on-demand profile](https://shaka-project.github.io/shaka-packager/html/documentation.html)
+
+#### Q4: Is box-presence detection the standard approach for response filters?
+
+**Box-presence detection is not a "standard" documented pattern, but it is the most robust approach and aligns with how Shaka Player itself handles segment type identification internally.** There is no official Shaka Player documentation recommending a specific approach for response filters that need to distinguish segment types. The research reveals three key findings:
+
+**1. Shaka Player's own internal code uses box parsing for segment type identification.**
+
+Shaka's `content_workarounds.js` ([lib/media/content_workarounds.js](https://github.com/shaka-project/shaka-player/blob/main/lib/media/content_workarounds.js)) distinguishes init segments from media segments by parsing their MP4 box structure. The `fakeEncryption()` method processes `moov` box trees (init segments), while `fakeMediaEncryption()` processes `moof` box trees (media segments). This is the same pattern used in `softwareDecrypt.ts`. Shaka uses its built-in `shaka.util.Mp4Parser` for this, which is a box-level parser that traverses `ftyp`, `moov`, `trak`, `mdia`, `minf`, `stbl`, `stsd` hierarchies for init segments, and `styp`, `moof`, `traf`, `tfhd`, `trun` hierarchies for media segments.
+
+**2. The `AdvancedRequestType` API is the recommended Shaka API, but it has gaps.**
+
+Shaka Player introduced `AdvancedRequestType` (via [PR #5006](https://github.com/shaka-project/shaka-player/pull/5006), closing [issue #4966](https://github.com/shaka-project/shaka-player/issues/4966)) specifically to let response filters distinguish init segments from media segments. The third parameter of the response filter callback is a `RequestContext` object containing `context.type` with the `AdvancedRequestType` value. The API documentation ([shaka.extern.ResponseFilter](https://shaka-player-demo.appspot.com/docs/api/shaka.extern.html)) states that "the optional RequestContext will be provided where applicable to provide additional information about the request."
+
+However, as documented in Q1-Q3, this API has gaps:
+- The sidx request gets `MEDIA_SEGMENT` (not a dedicated `INDEX_SEGMENT` type)
+- There are only two segment subtypes: `INIT_SEGMENT` (0) and `MEDIA_SEGMENT` (1)
+- The context's `segment` and `stream` fields are only populated by the streaming engine path, not the manifest parser path
+- [PR #5113](https://github.com/shaka-project/shaka-player/pull/5113) ("fix: Add missing AdvancedRequestType in some requests") shows that even Shaka's own codebase had missing type assignments after the initial implementation
+
+**3. The ISO BMFF (MP4) specification makes box-presence detection authoritative.**
+
+Per ISO 14496-12 (ISOBMFF), the box structure unambiguously identifies segment types:
+- **Init segments** always contain a `moov` box (movie metadata container with `trak`, `stsd`, codec configuration)
+- **Media segments** always contain a `moof` box (movie fragment) followed by `mdat` (media data)
+- **Index segments** contain a `sidx` box (segment index) and optionally `styp` (segment type)
+- These are mutually exclusive at the top level: a valid ISO BMFF segment cannot contain both `moov` and `moof` at the top level (except in the rare case of a single-segment file with an appended fragment, which is non-standard for DASH)
+
+This makes box-presence detection a ground-truth mechanism rather than a heuristic. The current code in `softwareDecrypt.ts` effectively performs a simplified version of what Shaka's own `Mp4Parser` does internally.
+
+**4. Hybrid approach as a potential optimization.**
+
+A response filter could use `AdvancedRequestType` as a fast-path hint and fall back to box detection for ambiguous cases:
+
+```typescript
+const responseFilter: shaka.extern.ResponseFilter = async (type, response, context) => {
+  if (type !== shaka.net.NetworkingEngine.RequestType.SEGMENT) return;
+
+  // Fast path: trust AdvancedRequestType when available
+  if (context?.type === shaka.net.NetworkingEngine.AdvancedRequestType.INIT_SEGMENT) {
+    return processInitSegment(response);
+  }
+
+  // For MEDIA_SEGMENT (or undefined context), use box detection
+  // because MEDIA_SEGMENT includes both real media and sidx
+  const data = new Uint8Array(response.data);
+  const hasMoov = findBoxData(data, "moov") !== null;
+  const hasMoof = findBoxData(data, "moof") !== null;
+  if (hasMoov) return processInitSegment(response);
+  if (hasMoof) return processMediaSegment(response);
+  // Neither moov nor moof: sidx or other index data — pass through
+};
+```
+
+This adds complexity for negligible performance gain. The `findBoxData` scan reads only the first 8 bytes of each top-level box (4-byte size + 4-byte type) and terminates on first match, making it effectively O(number of top-level boxes) which is typically 2-4 for any segment type.
+
+**Conclusion:** Box-presence detection is the correct and most robust approach. It is not explicitly documented as a recommended pattern by Shaka Player, but it mirrors Shaka's own internal approach, is grounded in the ISO BMFF specification, and handles all edge cases (sidx, combined segments, unknown future types) that `AdvancedRequestType` cannot cover. The current implementation in `softwareDecrypt.ts` is optimal.
+
+**Sources:**
+- [Shaka Player `content_workarounds.js` — internal box-based segment type detection](https://github.com/shaka-project/shaka-player/blob/main/lib/media/content_workarounds.js)
+- [Shaka Player PR #5006 — `AdvancedRequestType` introduction](https://github.com/shaka-project/shaka-player/pull/5006)
+- [Shaka Player PR #5113 — fix for missing `AdvancedRequestType` assignments](https://github.com/shaka-project/shaka-player/pull/5113)
+- [Shaka Player issue #4966 — original motivation for `AdvancedRequestType`](https://github.com/shaka-project/shaka-player/issues/4966)
+- [Shaka Player API docs — `ResponseFilter` typedef](https://shaka-player-demo.appspot.com/docs/api/shaka.extern.html)
+- [Shaka Player API docs — `AdvancedRequestType` enum](https://shaka-player-demo.appspot.com/docs/api/shaka.net.NetworkingEngine.html)
+- [ISO 14496-12:2022 (ISOBMFF) — box structure specification](https://www.iso.org/standard/83102.html)
+
+#### Q5: Are there other DASH packaging modes that produce similar ambiguities?
+
+**Yes, but the impact is limited to one additional mode. The ambiguity is fundamentally a property of indexed addressing (byte-range-based), not of DASH packaging in general.** The five DASH segment addressing modes fall into two categories with respect to this problem:
+
+**Modes with the sidx ambiguity (indexed addressing):**
+
+**1. `SegmentBase` with `@indexRange` — the known case**
+
+This is the mode used by Shaka Packager's on-demand profile and the mode documented in `softwareDecrypt.ts`. A single CMAF track file contains the init segment, sidx, and all media segments at different byte ranges. Shaka fetches the sidx via a separate HTTP Range request during `createSegmentIndex()`, and this request passes through response filters as `RequestType.SEGMENT` with `AdvancedRequestType.MEDIA_SEGMENT`.
+
+**2. `SegmentTemplate` with `@index` template — same problem, different syntax**
+
+`SegmentTemplate` can include an `@index` attribute containing a URL template (e.g., `index-$RepresentationID$.mp4`) that points to an external file containing the sidx box. Shaka's `segment_template.js` handles this by calling `SegmentBase.generateSegmentIndexFromIndexTemplate_()`, which delegates to the same `generateSegmentIndexFromUris()` method used by `SegmentBase`. The sidx fetch follows the identical code path with `isInit=false`, producing the same `AdvancedRequestType.MEDIA_SEGMENT` labeling ([lib/dash/segment_template.js](https://shaka-player-demo.appspot.com/docs/api/lib_dash_segment_template.js.html)).
+
+This mode is less common than `SegmentBase` but is supported by Shaka Player and documented in the [DASH-IF timing model guidelines](https://dashif-documents.azurewebsites.net/Guidelines-TimingModel/master/Guidelines-TimingModel.html) under "indexed addressing."
+
+**Modes WITHOUT the sidx ambiguity:**
+
+**3. `SegmentTemplate` with `@duration` (simple addressing)**
+
+Segment timing is derived from a fixed nominal duration (`SegmentTemplate@duration`) and segment number substitution (`$Number$` or `$Time$`). No sidx fetch occurs — Shaka computes segment references directly from the duration and template. Init segments are fetched via `SegmentTemplate@initialization` template URL and correctly tagged as `INIT_SEGMENT`. Media segments use the `@media` template and are correctly tagged as `MEDIA_SEGMENT`. No ambiguity.
+
+**4. `SegmentTemplate` with `SegmentTimeline` (explicit addressing)**
+
+Exact per-segment timing is specified inline in the MPD via `SegmentTimeline/S` elements with `@t` (start time) and `@d` (duration) attributes. Like simple addressing, no sidx is fetched — timing comes from the manifest. Init and media segments are fetched via template URLs and correctly typed. No ambiguity.
+
+**5. `SegmentList` (explicit segment URL list)**
+
+Each segment has an explicit `SegmentURL` element in the MPD. The `Initialization` element within `SegmentList` specifies the init segment via `@sourceURL` and optional `@range`. There is no separate index fetch. However, there is a related edge case: `SegmentURL` can include an `@indexRange` attribute pointing to per-segment sidx data ([Shaka Player issue #765](https://github.com/google/shaka-player/issues/765)). If supported, this would produce the same ambiguity. In practice, `SegmentList` is prohibited by DASH-IF IOP v5.0.0 ("Shall be absent" per [DASH-IF IOP Part 5](https://dashif.org/docs/IOP-Guidelines/DASH-IF-IOP-Part5-v5.0.0.pdf)) and is extremely rare in production.
+
+**Summary table:**
+
+| Addressing Mode | Sidx Fetch? | Ambiguity? | DASH-IF IOP Status |
+|----------------|-------------|------------|-------------------|
+| `SegmentBase` + `@indexRange` | Yes (byte-range) | **Yes** | Allowed (VOD) |
+| `SegmentTemplate` + `@index` | Yes (template URL) | **Yes** | Allowed (rare) |
+| `SegmentTemplate` + `@duration` | No | No | Recommended (live) |
+| `SegmentTemplate` + `SegmentTimeline` | No | No | Recommended (live/VOD) |
+| `SegmentList` | No (unless `@indexRange`) | Rare edge case | **Prohibited** |
+
+**Impact on `softwareDecrypt.ts`:** The current box-presence detection handles all five modes correctly:
+- For modes with sidx fetches (`SegmentBase`, `SegmentTemplate@index`): the sidx response has no `moov` or `moof`, so it passes through unmodified. Correct.
+- For modes without sidx fetches (`SegmentTemplate@duration`, `SegmentTemplate+SegmentTimeline`): init and media segments contain `moov` and `moof` respectively. Correct.
+- For the rare `SegmentList` with `@indexRange`: same as `SegmentBase` — box detection handles it. Correct.
+
+No additional handling is needed for any packaging mode.
+
+**Sources:**
+- [DASH-IF timing model guidelines — segment addressing modes](https://github.com/Dash-Industry-Forum/Guidelines-TimingModel/blob/master/22-Addressing.inc.md)
+- [DASH-IF IOP v5.0.0 — SegmentList prohibition](https://dashif.org/docs/IOP-Guidelines/DASH-IF-IOP-Part5-v5.0.0.pdf)
+- [DASH-IF IOP v4.2 — interoperability guidelines](https://dashif.org/docs/DASH-IF-IOP-v4.2-clean.htm)
+- [Shaka Player `segment_template.js` — `@index` template handling](https://shaka-player-demo.appspot.com/docs/api/lib_dash_segment_template.js.html)
+- [Shaka Player `segment_base.js` — sidx fetch code path](https://github.com/shaka-project/shaka-player/blob/main/lib/dash/segment_base.js)
+- [Shaka Player issue #765 — `SegmentURL@indexRange` support](https://github.com/google/shaka-player/issues/765)
+- [Shaka Player issue #3093 — sidx in separate file from media segments](https://github.com/shaka-project/shaka-player/issues/3093)
+- [Bitmovin DASH overview — segment addressing explained](https://bitmovin.com/dynamic-adaptive-streaming-http-mpeg-dash/)
+- [GPAC DASH basics — SegmentBase vs SegmentTemplate vs SegmentList](https://wiki.gpac.io/Howtos/dash/DASH-basics/)
+
+### Summary
+
+The research into SegmentBase vs SegmentTemplate detection in response filters confirms that the current box-presence detection approach in `softwareDecrypt.ts` is correct, robust, and effectively the best available solution. Key findings across all five questions:
+
+**1. The `AdvancedRequestType` labeling is by design, not a bug.** Shaka Player's sidx requests are tagged as `MEDIA_SEGMENT` (not `INIT_SEGMENT` as the code comment originally suggested). The `AdvancedRequestType` enum has only two segment subtypes (`INIT_SEGMENT` and `MEDIA_SEGMENT`) with no dedicated `INDEX_SEGMENT` type. This is intentional — the feature was designed to distinguish init from non-init, not to categorize all segment subtypes.
+
+**2. No Shaka API fully solves the problem.** The `RequestContext` parameter (available since Shaka Player 4.3) provides `AdvancedRequestType` which can distinguish init segments from everything else, but conflates sidx with real media segments. The `context.segment` and `context.stream` fields are only populated during streaming engine fetches, not during manifest-time sidx fetches. Byte-range inspection of the request is theoretically possible but fragile and requires manifest-level knowledge.
+
+**3. Box-presence detection is the authoritative mechanism.** It mirrors Shaka Player's own internal pattern (used in `content_workarounds.js`), is grounded in the ISO BMFF specification (where `moov`, `moof`, and `sidx` are mutually exclusive top-level structures), and handles all edge cases including sidx, combined segments, and future unknown types. The scan cost is negligible (reads only 8 bytes per top-level box).
+
+**4. Two DASH addressing modes produce the sidx ambiguity.** `SegmentBase` with `@indexRange` (the current case) and `SegmentTemplate` with `@index` both fetch sidx data through response filters. The remaining three modes (`SegmentTemplate@duration`, `SegmentTemplate+SegmentTimeline`, `SegmentList`) embed timing in the manifest and do not fetch sidx separately. The box-detection approach handles all five modes correctly.
+
+**5. No changes are recommended to the current implementation.** The only minor improvement would be to correct the code comment at `softwareDecrypt.ts:211-214`, which states that Shaka "may tag [the sidx] as INIT_SEGMENT" — in reality, it tags it as `MEDIA_SEGMENT`. The comment should be updated to reflect the actual labeling, while keeping the explanation of why box detection is preferred over relying on `AdvancedRequestType`.
+
+**Recommended comment update for `softwareDecrypt.ts:210-214`:**
+
+```typescript
+// Detect segment type by box presence rather than relying on
+// AdvancedRequestType. Shaka's AdvancedRequestType only distinguishes
+// INIT_SEGMENT from MEDIA_SEGMENT — sidx (index) requests are tagged
+// as MEDIA_SEGMENT since there is no INDEX_SEGMENT type. Box detection
+// (moov for init, moof for media) is authoritative per ISO BMFF and
+// correctly ignores sidx responses that contain neither box.
+```
+
 ---
 
 ## Topic 11: `VideoDecoder` Output Pixel Format Variations
@@ -3517,6 +3805,6 @@ Ordered by impact on user experience and engineering complexity:
 7. **Topic 9: ImageBitmap memory** -- RESOLVED. 400 KB/bitmap (426x240 RGBA), `close()` frees immediately, transfer is zero-copy. 3x eviction is sound; add hard cap (~2,000 bitmaps).
 8. **Topic 7: Edge stale `currentTime`** -- RESOLVED. Root cause: Chromium's multi-threaded media pipeline updates `currentTime` asynchronously via `PostTask`; Playwright IPC round-trips expose this staleness. Edge's Media Foundation integration widens the window. Current workaround (`pressKeyNTimesAndSettle`) is optimal.
 9. **Topic 8: WebKit frame compositing** -- RESOLVED. Root cause: `showPosterFlag()` gates `mediaPlayerFirstVideoFrameAvailable()`. Fix: unconditional self-seek + rVFC confirmation.
-10. **Topic 10: SegmentBase detection** -- Current box-detection approach is robust. Research would confirm it's the recommended pattern.
+10. **Topic 10: SegmentBase detection** -- RESOLVED. Box-presence detection is the correct approach. Shaka's `AdvancedRequestType` labels sidx as `MEDIA_SEGMENT` (not `INIT_SEGMENT` as originally suspected), but has no dedicated `INDEX_SEGMENT` type. The `RequestContext` could theoretically help but only the streaming engine populates it fully. No changes needed to current implementation.
 11. **Topic 11: Pixel format variations** -- No user impact; informational.
 12. **Topic 12: Height rounding** -- No user impact; informational.
