@@ -488,6 +488,15 @@ export async function seekTo(page: Page, time: number) {
       requestAnimationFrame(() => requestAnimationFrame(r)),
     );
   }, time);
+  // For non-zero seeks, sleep on the Node side to let the compositor
+  // present the seeked frame. Chromium's compositor runs on its own
+  // thread and updates asynchronously from currentTime — under load
+  // (especially with encrypted content), the old frame may still be
+  // displayed when the page.evaluate returns. Sleeping here keeps
+  // the browser main thread idle so the compositor can catch up.
+  if (time > 0) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 /**
