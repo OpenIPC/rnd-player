@@ -3046,6 +3046,376 @@ The filmstrip feature decodes potentially thousands of video frames as `ImageBit
 - Chromium source: `ImageBitmap` backing store implementation
 - Worker memory limits: any browser documentation on worker resource constraints
 
+### Findings
+
+#### Q1: Actual memory footprint of an ImageBitmap
+
+**Short answer**: In practice, an ImageBitmap consumes `width * height * 4` bytes of RGBA pixel data. In a Web Worker context, this is always CPU-backed memory (not GPU textures). The pixel format from VideoDecoder output (I420, NV12, BGRX) does not affect the final ImageBitmap size — all formats are converted to 4-byte-per-pixel RGBA/BGRA during `createImageBitmap()`.
+
+**Spec level**: The HTML spec ([ImageBitmap section](https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html)) is deliberately vague about the internal representation. It defines an ImageBitmap as having abstract "bitmap data" without specifying pixel format, memory location, or backing store. The spec says an ImageBitmap "represents a bitmap image that can be painted to a canvas without undue latency" and notes that "if making use of the bitmap requires network I/O, or even local disk I/O, then the latency is probably undue; whereas if it only requires a blocking read from a GPU or system RAM, the latency is probably acceptable."
+
+**Chromium implementation**: In Chromium's Blink renderer, `ImageBitmap` holds a `scoped_refptr<StaticBitmapImage> image_` member ([image_bitmap.h](https://github.com/chromium/chromium/blob/master/third_party/blink/renderer/core/imagebitmap/image_bitmap.h)). `StaticBitmapImage` has two concrete subclasses:
+
+- **`AcceleratedStaticBitmapImage`** — wraps a GPU-backed texture (via SharedImage/mailbox). Used on the main thread when GPU acceleration is available. Holds a reference to a GL resource.
+- **`UnacceleratedStaticBitmapImage`** — wraps a CPU-side `SkImage` built from an `SkBitmap`. Used when no GPU context is available, which is the typical case in Web Workers.
+
+Chromium's memory tracking in `UpdateImageBitmapMemoryUsage()` (image_bitmap.cc, lines 811-829) explicitly assumes **4 bytes per pixel**:
+```cpp
+// Assumes 4 bytes per pixel
+base::CheckedNumeric<int32_t> memory_usage_checked = 4;
+memory_usage_checked *= image_->width();
+memory_usage_checked *= image_->height();
+```
+This value is reported to V8 via `v8::Isolate::GetCurrent()->AdjustAmountOfExternalAllocatedMemory()` so the GC knows about external memory pressure.
+
+The underlying `SkBitmap` uses `kN32_SkColorType` which maps to `kBGRA_8888_SkColorType` on little-endian platforms (x86/ARM). This is 4 bytes per pixel with premultiplied alpha (`kPremul_SkAlphaType`). Row bytes are at minimum `width * 4`, potentially with padding for alignment.
+
+**In a Web Worker**: Workers typically lack a GPU context, so `ImageBitmap` objects created via `createImageBitmap(offscreenCanvas)` in a worker are backed by `UnacceleratedStaticBitmapImage` (CPU `SkBitmap`), not GPU textures. The memory lives in the renderer process heap, not GPU memory.
+
+**Firefox implementation**: Firefox's `ImageBitmap` internally stores a Moz2D `SourceSurface` (`mSurface` in `dom/canvas/ImageBitmap.cpp`). `SourceSurface` is an opaque buffer handle; `DataSourceSurface` is its subclass providing direct pixel access. The surface format is typically BGRX8 (4 bytes per pixel). In workers, Firefox uses `DataSourceSurface` backed by CPU memory (no GPU surfaces).
+
+**VideoDecoder output format conversion**: When the thumbnail worker calls `createImageBitmap(offscreenCanvas)` after drawing a `VideoFrame` via `ctx.drawImage(frame, ...)`, the VideoDecoder's native output format (I420 on Chromium/Edge, BGRX on Firefox via GStreamer/VideoToolbox, NV12 on macOS WebKit) is converted to the canvas's internal RGBA/BGRA format during the `drawImage` call. The resulting ImageBitmap is always 4 bytes per pixel regardless of the decoder's native format.
+
+**Concrete numbers for this project**: The thumbnail worker creates bitmaps at `THUMBNAIL_WIDTH = 160` pixels wide, with height scaled proportionally (e.g., 90px for 16:9 content). Each thumbnail ImageBitmap = `160 * 90 * 4 = 57,600 bytes` (~56 KB). For a 60-second stream with 2-second segments (30 segments), the I-frame thumbnails alone consume ~1.7 MB. Intra-frame bitmaps (gap mode with e.g. 60 frames per segment) can reach `30 * 60 * 56 KB = ~100 MB` if not evicted.
+
+**`createImageBitmap()` from VideoFrame always copies**: The [WebCodecs spec discussion](https://github.com/w3c/webcodecs/issues/159) confirms that `createImageBitmap(videoFrame)` performs a deep copy including YUV-to-RGB color space conversion. The proposal explicitly states: "We would copy from a buffer that is effectively 'owned' by the decoder...to a buffer that is owned by the ImageBitmap." Zero-copy is only used "when it cannot cause a decoder stall" and only for specific rendering paths (like `drawImage` on canvas, `texImage2D` for WebGL). In the thumbnail worker's pipeline (`drawImage` to `OffscreenCanvas` then `createImageBitmap`), there are two copies: VideoFrame to canvas, then canvas to ImageBitmap.
+
+#### Q2: Does ImageBitmap.close() immediately free memory?
+
+**Short answer**: Yes, in both Chromium and Firefox, `close()` immediately releases the underlying pixel data (CPU buffer or GPU texture). The JS wrapper object itself still requires GC, but this is tiny (~dozens of bytes). The spec guarantees the bitmap data is "unset" but does not use the word "free" — however, both major implementations treat this as immediate deallocation.
+
+**Spec guarantee**: The [HTML spec for `close()`](https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-imagebitmap-close) defines the steps as:
+> 1. Set this's [[Detached]] internal slot value to true.
+> 2. Unset this's bitmap data.
+
+After `close()`, the `width` and `height` getters return 0 (spec: "If this's [[Detached]] internal slot's value is true, then return 0"). The spec says "unset" rather than "free" or "release" — it operates at the abstract data model level. The spec does not distinguish between "detach" (mark unusable) and "free" (release memory); it only guarantees the bitmap data is no longer associated with the object.
+
+**Chromium implementation** (image_bitmap.cc, lines 960-966):
+```cpp
+void ImageBitmap::close() {
+  if (!image_ || is_neutered_)
+    return;
+  image_ = nullptr;       // Releases the scoped_refptr<StaticBitmapImage>
+  is_neutered_ = true;
+  UpdateImageBitmapMemoryUsage();  // Reports negative adjustment to V8
+}
+```
+
+Setting `image_ = nullptr` drops the `scoped_refptr`, which decrements the reference count on the `StaticBitmapImage`. If this was the last reference (typical case), the `StaticBitmapImage` destructor runs immediately, freeing either the `SkBitmap` pixel buffer (CPU path) or releasing the GPU texture/mailbox (GPU path). The call to `UpdateImageBitmapMemoryUsage()` then calls `v8::Isolate::AdjustAmountOfExternalAllocatedMemory()` with a negative value, informing V8 that external memory has decreased.
+
+This means `close()` provides **immediate, deterministic deallocation** of the pixel data — not deferred to GC. The remaining JS wrapper object (~dozens of bytes) is collected by normal GC, but this is negligible.
+
+**Firefox implementation**: Firefox's `close()` releases the internal `SourceSurface` reference. Firefox Bug [1312148](https://bugzilla.mozilla.org/show_bug.cgi?id=1312148) documented a severe memory leak where workers sending ImageBitmaps caused OOM because `createImageBitmap` allocations were not reported to the GC via `JS_updateMallocCounter`. The fix added memory reporting across 8 creation pathways (from ImageData, Blob, HTMLCanvasElement, CanvasRenderingContext2D, structured clones, transfers, OffscreenCanvas, and ArrayBuffer/TypedArray). Without `close()`, Firefox's GC could be overwhelmed — the bug report describes "memory is usually exhausted quickly, and swap space soon afterwards" at high ImageBitmap creation rates. The `close()` method bypasses this GC pressure by releasing the `DataSourceSurface` immediately.
+
+**GC is still needed for the wrapper**: After `close()`, the JavaScript `ImageBitmap` object itself (the thin wrapper with `is_neutered_=true`, `width=0`, `height=0`) still occupies a small amount of JS heap memory until garbage collected. This is typically under 100 bytes and inconsequential. The heavy resource — the pixel data — is already freed.
+
+**Known Chromium issues**: There have been version-specific bugs where `close()` did not fully release GPU memory. [Electron issue #37569](https://github.com/electron/electron/issues/37569) reported that transferring ImageBitmaps to workers via `postMessage` with transferables leaked memory in Electron 22+ (newer Chromium). [Three.js issue #23953](https://github.com/mrdoob/three.js/issues/23953) found that `texture.dispose()` alone did not free ImageBitmap memory — calling `texture.source.data.close()` was required. These are edge cases in GPU-backed scenarios; for CPU-backed bitmaps in workers (this project's case), `close()` is reliable.
+
+**Practical implication for this project**: The eviction code in `useThumbnailGenerator.ts` (lines 470-491) correctly calls `bmp.close()` for evicted thumbnails. This immediately frees the pixel data. The 3x viewport eviction window is a reasonable heuristic — it keeps nearby bitmaps cached while ensuring distant ones are freed promptly. Without `close()`, the bitmaps would persist until GC runs, which on Firefox in particular can cause catastrophic memory growth.
+
+#### Q3: ImageBitmap transfer semantics between worker and main thread
+
+**Short answer**: When an ImageBitmap is transferred via `postMessage(msg, [bitmap])` (transferable), the backing store ownership moves to the receiving context in a zero-copy operation. The sender's ImageBitmap becomes neutered (width=0, height=0). When sent without the transfer list (`postMessage({bitmap})`), the bitmap data is deep-copied (structured clone). In this project's worker, all bitmaps are correctly transferred: `post({ type: "thumbnail", ..., bitmap }, [bitmap])`.
+
+**Spec semantics**: The HTML spec defines two distinct paths for ImageBitmap in `postMessage`:
+
+*Transfer steps* (when listed in the transferable array):
+> Set dataHolder.[[BitmapData]] to value's bitmap data. Unset value's bitmap data.
+
+*Transfer-receiving steps*:
+> Set value's bitmap data to dataHolder.[[BitmapData]].
+
+This is a move, not a copy. The sender's bitmap data is "unset" (same as `close()`), and the receiver gets the original bitmap data. After transfer, the sender's ImageBitmap has `width=0, height=0` and is effectively neutered.
+
+*Serialization steps* (structured clone, no transfer list):
+> Set dataHolder.[[BitmapData]] to a copy of value's bitmap data.
+
+This is a deep copy — both sender and receiver end up with independent bitmap data, doubling memory usage.
+
+**Chromium implementation**: The `ImageBitmap::Transfer()` method (image_bitmap.cc, lines 803-809):
+```cpp
+scoped_refptr<StaticBitmapImage> ImageBitmap::Transfer() {
+  DCHECK(!IsNeutered());
+  is_neutered_ = true;
+  image_->Transfer();
+  UpdateImageBitmapMemoryUsage();
+  return std::move(image_);
+}
+```
+
+This moves the `scoped_refptr<StaticBitmapImage>` to the receiving context. For CPU-backed bitmaps (the worker case), this is a pointer handoff — the `SkBitmap` pixel buffer stays at the same memory address, and only the pointer/refcount is transferred. For GPU-backed bitmaps, `image_->Transfer()` may perform additional work to hand off the GPU mailbox/SharedImage.
+
+**Zero-copy verified by benchmarks**: The Chrome developer blog on [transferable objects](https://developer.chrome.com/blog/transferable-objects-lightning-fast) measured a 32 MB `ArrayBuffer` round-trip: structured clone took ~302ms vs ~6.6ms for transfer (45x speedup). ImageBitmap transfer uses the same zero-copy mechanism — the pixel data pointer is handed off without copying the buffer.
+
+**Memory accounting after transfer**: When the worker transfers an ImageBitmap to the main thread:
+1. The worker's `ImageBitmap` is neutered — its `image_` becomes null, and `AdjustAmountOfExternalAllocatedMemory` is called with a negative value in the worker's V8 isolate.
+2. The main thread's V8 isolate receives the `StaticBitmapImage` and creates a new `ImageBitmap` wrapper, calling `AdjustAmountOfExternalAllocatedMemory` with a positive value.
+3. Net result: the pixel data exists in exactly one place, and memory accounting moves from the worker's budget to the main thread's budget.
+
+At no point do both contexts hold the same backing store simultaneously. The transfer is atomic from the spec's perspective — the sender loses access before the receiver gains it.
+
+**What this project does correctly**: The thumbnail worker's `post()` function uses transfer:
+```typescript
+function post(msg: WorkerResponse, transfer?: Transferable[]) {
+  self.postMessage(msg, { transfer: transfer ?? [] });
+}
+// Usage:
+post({ type: "thumbnail", timestamp: targetTime, bitmap }, [bitmap]);
+```
+
+The `[bitmap]` transfer list ensures zero-copy transfer from the worker to the main thread. After posting, the worker's reference to the bitmap is neutered. This is correct and optimal — without the transfer list, each bitmap would be deep-copied, doubling memory usage and wasting CPU on the copy.
+
+**Clone vs transfer — the pitfall**: If the worker used `postMessage({bitmap})` without the transfer list, the bitmap would be deep-copied via structured clone. Both the worker and main thread would hold independent copies of the pixel data. This is a common source of memory leaks — the worker keeps accumulating bitmaps that are never freed (since there is no explicit `close()` on the worker side for cloned bitmaps). The explicit transfer list prevents this.
+
+**Firefox transfer bug history**: Firefox Bug [1312148](https://bugzilla.mozilla.org/show_bug.cgi?id=1312148) documented that transferring ImageBitmaps from workers caused memory leaks. The root cause was that `DataSourceSurfaceD2D1` objects could not be properly mapped when transferred between threads, and memory allocations were not reported to the GC. The fix involved calling `JS_updateMallocCounter` to inform the GC about bitmap allocations. After the fix, transfer works correctly, but this history underscores the importance of always using `close()` as a safety net rather than relying solely on transfer semantics for memory management.
+
+**Can both sides share the same GPU texture?** No. The spec requires that transfer "unsets" the sender's bitmap data. In Chromium, GPU-backed `AcceleratedStaticBitmapImage` uses non-sharable GL resources by default — the mailbox/SharedImage is handed off, not shared. For CPU-backed bitmaps in workers (this project's case), the `SkBitmap` pointer is moved, not shared. There is no scenario where both contexts simultaneously reference the same backing store after a transfer completes.
+
+#### Q4: transferToImageBitmap() vs createImageBitmap() efficiency
+
+**Short answer**: `transferToImageBitmap()` is theoretically zero-copy but practically worse for the filmstrip use case. `createImageBitmap(videoFrame)` is the better choice.
+
+**How `transferToImageBitmap()` works**:
+
+The `OffscreenCanvas.transferToImageBitmap()` method creates an `ImageBitmap` from the canvas's current content by *transferring ownership* of the backing store rather than copying it. The canvas then allocates a fresh backing store for subsequent rendering. Per the [MDN spec](https://developer.mozilla.org/en-US/docs/Web/API/OffscreenCanvas/transferToImageBitmap), this is designed as a zero-copy operation — the bitmap references the same GPU texture or CPU buffer that the canvas was using.
+
+**How `createImageBitmap(videoFrame)` works**:
+
+When called on a `VideoFrame`, `createImageBitmap()` performs a deep copy that includes YUV-to-RGB color space conversion. The [WebCodecs spec discussion](https://github.com/w3c/webcodecs/issues/159) confirms that `createImageBitmap(videoFrame)` converts YUV planes to an RGBA `ImageBitmap`, which involves a pixel format conversion plus a memory copy. The resulting `ImageBitmap` may be GPU-backed (Chromium) or CPU-backed (Firefox).
+
+**Why `transferToImageBitmap()` is NOT better for this use case**:
+
+To use `transferToImageBitmap()` from a `VideoFrame`, the pipeline would be:
+1. Create an `OffscreenCanvas` at the target dimensions (426x240)
+2. Get a 2D context: `canvas.getContext('2d')`
+3. Draw the frame: `ctx.drawImage(videoFrame, 0, 0, 426, 240)`
+4. Transfer: `canvas.transferToImageBitmap()`
+
+This is actually **more** work than `createImageBitmap(videoFrame)`:
+- Step 3 (`drawImage`) already performs the YUV-to-RGB conversion and copies pixels into the canvas backing store
+- Step 4 transfers that backing store to an `ImageBitmap` (zero-copy)
+- But the canvas must then allocate a *new* backing store for future use
+- Net result: one conversion + one allocation, vs `createImageBitmap()` which does one conversion + one allocation in a single optimized call
+
+**Browser-specific behavior**:
+
+| Browser | `createImageBitmap(videoFrame)` | `transferToImageBitmap()` |
+|---------|-------------------------------|--------------------------|
+| Chromium | Optimized path, may use GPU | Zero-copy transfer, but canvas must reallocate |
+| Firefox | CPU-backed ImageData internally ([Bug 1788206](https://bugzilla.mozilla.org/show_bug.cgi?id=1788206)) | Up to 10x slower than Chrome — Firefox incurs a copy despite the spec saying "transfer" |
+| WebKit/Safari | Works, NV12 pixel format on macOS | Significantly faster than `createImageBitmap()` on Safari specifically |
+
+**GPU vs CPU backing in workers**:
+
+In Chromium, `ImageBitmap` objects created in a worker can be GPU-backed (GL textures shared via Chromium's mailbox system) or CPU-backed, depending on the creation path. The backing type is opaque to JavaScript — there is no API to query it. In Firefox, `ImageBitmap` objects are always CPU-backed (`ImageData` internally), as confirmed in [Bug 1788206](https://bugzilla.mozilla.org/show_bug.cgi?id=1788206). The [WebGPU design doc](https://github.com/gpuweb/gpuweb/blob/main/design/ImageBitmapToTexture.md) notes that even in Chromium, many fallback paths cause `ImageBitmap` to be CPU-backed.
+
+**Recommendation for the filmstrip worker**: Continue using `createImageBitmap(videoFrame)`. It is simpler, avoids the canvas allocation overhead, and is the path that browser vendors have optimized for `VideoDecoder` output. The `transferToImageBitmap()` path only makes sense when you already have an `OffscreenCanvas` you are rendering to (e.g., an animation loop), not when creating standalone bitmaps from decoded frames.
+
+#### Q5: Maximum practical ImageBitmap count
+
+**Per-bitmap memory cost**:
+
+Each 426x240 RGBA bitmap occupies:
+- Raw pixel data: `426 × 240 × 4 = 408,960 bytes ≈ 400 KB`
+- Plus overhead: object headers, alignment, GC tracking — negligible for this size
+- GPU-backed variant (Chromium): similar memory on the GPU side, plus a small JS-side handle
+
+**Filmstrip memory budget at different scales**:
+
+| Scenario | Bitmap count | Memory |
+|----------|-------------|--------|
+| I-frame thumbnails only (30 segments × 1) | 30 | ~12 MB |
+| Zoomed in, all segments decoded (30 seg × 60 frames) | 1,800 | ~720 MB |
+| 3x viewport eviction (e.g., 10 visible segments × 3 × 60 frames) | ~1,800 | ~720 MB |
+| Typical zoomed view (5 visible segments × 7x span × 60 frames) | ~2,100 | ~840 MB |
+
+**Browser memory limits (no per-ImageBitmap count limit exists)**:
+
+There is no hard-coded maximum number of `ImageBitmap` objects in any browser. The limit is purely a function of total memory consumption:
+
+- **Chromium 64-bit**: Renderer process sandbox limit starts at 4 GB base, scales up to 16 GB based on system RAM ([Browser Memory Limits](https://textslashplain.com/2020/09/15/browser-memory-limits/)). The V8 heap has a 4 GB pointer compression cage (since M92), but `ImageBitmap` pixel data is stored *outside* the V8 heap (in Blink's native memory or GPU memory), so V8's 4 GB limit does not constrain bitmap count. The internal PartitionAlloc allocator has a historical ~2 GB implicit limit per allocation slab. This means **~4,800 bitmaps at 400 KB** before hitting the 2 GB slab, or **~9,600 bitmaps** before the 4 GB sandbox base.
+- **Firefox**: Workers run as threads within the same process, sharing the process memory pool. There is no per-worker memory limit ([Bug 1286895](https://bugzilla.mozilla.org/show_bug.cgi?id=1286895)). Since Firefox `ImageBitmap` objects are CPU-backed, all memory comes from the process heap. On 64-bit systems, Firefox processes can grow well past 4 GB before OOM, but the GC may struggle with coordination between main thread and worker threads, historically leading to memory climbing when "lots of stuff happened on workers where GC was not allowed" ([Bug 617569](https://bugzilla.mozilla.org/show_bug.cgi?id=617569)).
+- **WebKit**: No documented per-worker memory limit. Worker memory is part of the web process.
+
+**What happens when memory is exhausted**:
+
+- **Chromium**: `createImageBitmap()` returns a rejected promise. If total process memory exceeds the sandbox limit, the renderer crashes with `SBOX_FATAL_MEMORY_EXCEEDED` and the user sees the "Aw, Snap!" page. The tab is killed, not the entire browser.
+- **Firefox**: `createImageBitmap()` may fail with an allocation error, or the system OOM killer may terminate the process. Firefox historically had issues where worker memory growth would not trigger GC, leading to runaway consumption ([Bug 617569](https://bugzilla.mozilla.org/show_bug.cgi?id=617569)).
+- **All browsers**: There is no throttling or graceful degradation — it is either a successful allocation or a failure/crash.
+
+**GPU-backed vs CPU-backed limits**:
+
+GPU-backed bitmaps (Chromium) are constrained by GPU memory (typically 256 MB–8 GB on discrete GPUs, ~50% of system RAM for integrated). When GPU memory is exhausted, Chromium falls back to CPU-backed bitmaps. There is no API to query remaining GPU memory from JavaScript.
+
+**Real-world observations**: The [ITK-Wasm project](https://github.com/InsightSoftwareConsortium/ITK-Wasm/issues/245) reported Chrome OOM crashes when processing 512×512×210 image data in workers (~50 MB raw). The crash occurred because intermediate allocations (copies, format conversions) multiplied the effective memory usage well beyond the raw data size.
+
+**Practical safe limit for the filmstrip**: With the 3x viewport eviction, the maximum in-memory bitmap count is bounded by the viewport span. For a typical viewport showing 5–10 segments at full zoom (60 frames/segment), that is 300–600 bitmaps in view × 7 (1 + 3 + 3 spans) = 2,100–4,200 bitmaps = 840 MB–1.7 GB. This is within Chromium's limits but approaching the danger zone on memory-constrained devices.
+
+#### Q6: ImageData vs ImageBitmap for memory predictability
+
+**ImageData memory model**:
+
+`ImageData` stores pixels in a `Uint8ClampedArray` backed by an `ArrayBuffer`. The memory is always CPU-allocated, always exactly `width × height × 4` bytes, and always managed by the JavaScript garbage collector. For 426x240: `408,960 bytes` per `ImageData`, identical to `ImageBitmap` raw pixel size.
+
+**Advantages of ImageData**:
+
+1. **Predictable memory**: No ambiguity about CPU vs GPU backing. Each object's memory footprint is exactly `width * height * 4` bytes plus a small JS object overhead (~64 bytes).
+2. **GC-managed**: The `ArrayBuffer` is tracked by the GC and freed when unreachable. No need for explicit `.close()` calls (though explicit cleanup is still recommended for large collections).
+3. **No GPU resource management**: No risk of exhausting GPU memory, no opacity about whether the bitmap is GPU- or CPU-backed.
+4. **Debuggable**: The `ArrayBuffer` shows up clearly in Chrome DevTools heap snapshots with its exact byte size.
+
+**Disadvantages of ImageData**:
+
+1. **Slower canvas rendering**: `putImageData()` is significantly slower than `drawImage(imageBitmap)`. Benchmarks on [MeasureThat.net](https://www.measurethat.net/Benchmarks/Show/9510/0/putimagedata-vs-drawimage) show `drawImage(ImageBitmap)` can be 2–10x faster because it can leverage GPU texture upload, while `putImageData()` always copies from CPU to the canvas pixel-by-pixel. For the filmstrip, which repaints on every scroll/zoom at 60fps, this difference is critical.
+2. **No hardware-accelerated scaling**: `drawImage(imageBitmap, 0, 0, w, h)` can use GPU bilinear filtering for resizing. `putImageData()` always writes pixels 1:1 — any scaling requires manual resampling.
+3. **Larger transfer overhead (without detach)**: Structured cloning an `ImageData` between worker and main thread copies the entire pixel buffer (~400 KB per image). `ImageBitmap` transfer is zero-copy.
+
+**ImageData transferability**:
+
+`ImageData` itself is *not* a `Transferable` object. However, its underlying `ArrayBuffer` is transferable. The pattern:
+
+```js
+// Worker side:
+const imageData = new ImageData(width, height);
+// ... fill pixels ...
+postMessage({ width, height, buffer: imageData.data.buffer }, [imageData.data.buffer]);
+// imageData is now neutered (buffer detached)
+
+// Main thread side:
+const received = new ImageData(new Uint8ClampedArray(msg.buffer), msg.width, msg.height);
+```
+
+This achieves zero-copy transfer, but the `ImageData` on the sender side becomes unusable (buffer detached). This is functionally identical to `ImageBitmap` transfer behavior. However, reconstructing `ImageData` on the receiving side requires creating a new `Uint8ClampedArray` view over the transferred buffer, which is ~0 cost.
+
+Per [ECMAScript 2024](https://2ality.com/2024/06/array-buffers-es2024.html), `ArrayBuffer.prototype.transfer()` provides explicit same-agent transfer, and [Chrome's transferable objects blog](https://developer.chrome.com/blog/transferable-objects-lightning-fast) measured structured clone at ~302ms for 32 MB vs ~6.6ms for transfer — a 45x speedup.
+
+**Memory fragmentation**:
+
+With many small `ArrayBuffer` allocations (~400 KB each), heap fragmentation is a theoretical concern but unlikely to be problematic in practice:
+- V8's `ArrayBuffer` allocator uses the system malloc (not the V8 heap), and modern allocators (PartitionAlloc in Chrome, jemalloc in Firefox) handle 400 KB allocations efficiently with size-class bucketing.
+- Fragmentation becomes a real issue primarily with many different-sized small allocations (<1 KB) or with very large allocations (>1 MB). 400 KB falls in a well-handled middle range.
+
+**Verdict**: `ImageBitmap` is the better choice for the filmstrip use case because canvas rendering performance (`drawImage` vs `putImageData`) is the primary bottleneck — the filmstrip repaints the entire visible viewport at 60fps during scroll/zoom. The memory predictability advantage of `ImageData` does not outweigh the rendering performance cost. If memory tracking is needed, `ImageBitmap.close()` with manual bookkeeping provides sufficient control.
+
+#### Q7: Worker memory limits and monitoring
+
+**Worker memory isolation by browser**:
+
+| Browser | Worker memory model | Shared with main thread? |
+|---------|-------------------|-------------------------|
+| Chromium | Dedicated workers run in the same renderer process as the page. JS heap is a separate V8 Isolate but shares the process memory pool. ImageBitmap pixel data is in Blink native memory (same process). | Yes — same process, same sandbox limit |
+| Firefox | Workers run as OS threads within the same content process. No per-worker memory limit. JS heap is separate but process memory is shared. ([Bug 1286895](https://bugzilla.mozilla.org/show_bug.cgi?id=1286895)) | Yes — same process |
+| WebKit | Workers run in the same web content process. No documented per-worker limit. | Yes — same process |
+
+Key insight: In all major browsers, **dedicated workers share the same process memory pool as the main thread**. A worker allocating 1 GB of `ImageBitmap` objects reduces available memory for the main thread by the same amount. There is no per-worker memory quota or isolation.
+
+**`performance.measureUserAgentSpecificMemory()`**:
+
+- **Spec**: [WICG Performance Measure Memory](https://wicg.github.io/performance-measure-memory/). Estimates total memory usage of the web application including all iframes and workers.
+- **Browser support**: Chromium-based browsers only (Chrome 89+, Edge 89+). Firefox: "under consideration." WebKit: "no signal." ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Performance/measureUserAgentSpecificMemory))
+- **Worker availability**: The API is available in `DedicatedWorkerGlobalScope`, `SharedWorkerGlobalScope`, and `ServiceWorkerGlobalScope` per the spec.
+- **Critical requirement**: Requires `crossOriginIsolated === true`, which means the page must serve `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers. Without these, the API throws a `SecurityError`. The Vite dev server does not set these headers by default.
+- **What it measures**: Returns a `Promise<{bytes, breakdown}>` where `breakdown` lists memory attributed to each realm (main page, workers, iframes). It measures the *entire* web application, not just the calling context.
+- **Limitations**: Results are not real-time — the spec recommends calling at random intervals. Accuracy varies; the result is "an estimate" that browsers may fuzz to prevent fingerprinting. There was a temporary experiment in Chrome M120-M121 to relax the COOP/COEP requirement, but it has expired.
+
+**`performance.memory` (Chrome-specific, legacy)**:
+
+- **NOT available in workers**. The `performance.memory` property (`MemoryInfo`) is only exposed on `Window`, not on `WorkerGlobalScope` ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Performance/memory)).
+- Provides `usedJSHeapSize`, `totalJSHeapSize`, `jsHeapSizeLimit` — but these only measure the V8 JS heap, not native memory where `ImageBitmap` pixel data is stored. It would undercount bitmap memory significantly.
+- Deprecated in favor of `measureUserAgentSpecificMemory()`.
+
+**`navigator.deviceMemory`**:
+
+- Returns approximate device RAM in GiB, rounded to nearest power of 2 (e.g., 0.25, 0.5, 1, 2, 4, 8). Upper bound reported is 8 GiB.
+- **Available in workers** via `WorkerNavigator.deviceMemory` ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Navigator/deviceMemory)).
+- **Browser support**: Chromium-based only (Chrome 63+, Edge 79+). Not supported in Firefox or Safari.
+- **HTTPS required** (secure context only).
+- Useful for setting initial eviction thresholds (e.g., more aggressive eviction on 2 GB devices), but too coarse for runtime monitoring.
+
+**`navigator.hardwareConcurrency`**:
+
+- Returns number of logical CPU cores. Available in all major browsers and in workers via `WorkerNavigator.hardwareConcurrency`.
+- **Browser support**: Chrome 37+, Firefox 48+, Safari 10.1+, Edge 15+ ([Can I Use](https://caniuse.com/hardwareconcurrency)).
+- Not directly related to memory, but useful for deciding worker pool sizes or concurrent decode limits.
+
+**Chrome DevTools memory profiling for workers**:
+
+Chrome DevTools Memory panel supports profiling workers directly. You can select a specific JavaScript VM instance (including Web Workers) from a dropdown in the Memory panel and take heap snapshots, allocation timelines, or allocation sampling profiles for that worker. The DevTools documentation confirms: "Renderer memory is all memory of the process where an inspected page is rendered: native memory + JS heap memory of the page + JS heap memory of all dedicated workers started by the page." ([Chrome DevTools](https://developer.chrome.com/docs/devtools/memory-problems/heap-snapshots))
+
+However, `ImageBitmap` pixel data stored in Blink native memory (or GPU memory) does **not** appear in V8 heap snapshots. It shows up only in Chrome's Task Manager (per-tab memory) or in the `performance.measureUserAgentSpecificMemory()` aggregate.
+
+**GPU memory monitoring**:
+
+There is no standard Web API for querying GPU memory usage. The `WEBGL_debug_renderer_info` extension exposes the GPU vendor/renderer string but not memory. The WebGPU spec has no memory query API. Chrome's `chrome://gpu` page shows GPU memory stats but this is not accessible from JavaScript.
+
+The closest approximation: monitor `createImageBitmap()` promise rejections, which indicate allocation failure (likely due to GPU or CPU memory exhaustion).
+
+**Practical monitoring strategy for the filmstrip worker**:
+
+```js
+// In the worker:
+function estimateMemoryUsage(thumbnails, intraFrames) {
+  const BYTES_PER_BITMAP = 426 * 240 * 4; // 408,960 bytes
+  let count = thumbnails.size;
+  for (const arr of intraFrames.values()) {
+    count += arr.length;
+  }
+  return count * BYTES_PER_BITMAP;
+}
+
+// Check device memory for initial budget (Chromium only):
+const deviceGB = navigator.deviceMemory || 4; // default 4 GB
+const MAX_BITMAP_BYTES = deviceGB * 1024 * 1024 * 1024 * 0.25; // 25% of device RAM
+```
+
+This manual bookkeeping approach is more practical than relying on `measureUserAgentSpecificMemory()` (which requires COOP/COEP and is Chrome-only) or `performance.memory` (which is unavailable in workers and does not count bitmap native memory).
+
+#### Summary
+
+**Concrete memory numbers for the filmstrip use case**:
+
+Per-bitmap: 426 × 240 × 4 = 408,960 bytes ≈ 400 KB
+
+| Zoom level | Visible segments | Bitmaps in 3x viewport | Total memory |
+|------------|-----------------|----------------------|--------------|
+| Packed (min zoom) | All 30 | 30 I-frame thumbnails | ~12 MB |
+| Medium zoom | ~15 segments | 15 × 1 I-frame = 15 | ~6 MB |
+| High zoom (gap mode) | ~8 segments | 8 × 7 spans × ~30 intra-frames = ~1,680 | ~672 MB |
+| Max zoom (per-frame) | ~4 segments | 4 × 7 spans × ~60 frames = ~1,680 | ~672 MB |
+
+The I-frame thumbnails (30 total, ~12 MB) are negligible. The intra-frame bitmaps at high zoom are the real cost. With the 3x eviction strategy (keep 1x visible + 3x on each side = 7x total span), the worst case for a 60-second/30fps/2-second-segment video is ~1,680 bitmaps = ~672 MB.
+
+**Evaluation of the current 3x viewport eviction strategy**:
+
+The 3x strategy is reasonable but slightly aggressive in the worst case:
+- **Good**: It ensures smooth scrolling — pre-loaded bitmaps 3x beyond the viewport mean the user can scroll a full viewport width in any direction without seeing blank thumbnails.
+- **Concern**: At maximum zoom with 60 frames/segment and 4 visible segments, the 7x total span holds ~1,680 bitmaps (~672 MB). This approaches the PartitionAlloc 2 GB slab limit if combined with other page memory.
+- **Safe in practice**: For the target use case (60-second video, 30fps, 2-second segments), the numbers stay within safe limits on 64-bit systems with 4+ GB RAM. On low-memory devices (2 GB), the 672 MB peak could cause issues.
+
+**Recommended improvements**:
+
+1. **Add a memory budget cap**: Instead of relying solely on viewport distance, add a maximum bitmap count (e.g., 2,000 bitmaps = ~800 MB). When the count exceeds the cap, evict the most distant bitmaps first. This prevents runaway allocation at extreme zoom levels.
+
+2. **Use `navigator.deviceMemory` to scale the budget**: On devices reporting 2 GB or less, reduce the eviction multiplier from 3x to 1.5x or cap at ~500 bitmaps.
+
+3. **Keep `ImageBitmap` over `ImageData`**: The rendering performance advantage of `drawImage(imageBitmap)` over `putImageData(imageData)` is essential for 60fps filmstrip scrolling. The memory footprint is identical (400 KB per image either way). `ImageBitmap.close()` provides explicit deallocation that `ImageData` lacks.
+
+4. **Keep `createImageBitmap(videoFrame)` over `transferToImageBitmap()`**: The current approach is correct. `createImageBitmap()` is the optimized path for `VideoDecoder` output across all browsers. `transferToImageBitmap()` adds unnecessary OffscreenCanvas allocation overhead and is 10x slower on Firefox.
+
+5. **Manual memory bookkeeping**: Track bitmap count in the hook and expose it for debugging. The formula `count × 400KB` gives an accurate estimate since all bitmaps are the same resolution. This is more reliable than any browser memory API for this specific use case.
+
+6. **Handle allocation failures**: Wrap `createImageBitmap()` calls in try/catch and treat rejection as a signal to trigger aggressive eviction, reducing the viewport multiplier temporarily.
+
+**Verdict — ImageBitmap vs ImageData**:
+
+**ImageBitmap is the correct choice for this use case.** The deciding factors:
+- `drawImage(ImageBitmap)` is 2–10x faster than `putImageData(ImageData)` for canvas rendering, which is critical for the filmstrip's 60fps scroll/zoom paint loop
+- `ImageBitmap` supports zero-copy transfer from worker to main thread; `ImageData` requires manual `ArrayBuffer` transfer with reconstruction overhead
+- `ImageBitmap.close()` provides immediate memory release without waiting for GC; `ImageData` relies on GC to free the `ArrayBuffer`
+- Memory footprint is identical: both use 400 KB per 426x240 image
+- The predictability advantage of `ImageData` can be replicated with manual bitmap counting (`count × 400KB`)
+- The current 3x eviction strategy with `bmp.close()` is sound; adding a hard cap (~2,000 bitmaps) would provide additional safety
+
 ---
 
 ## Topic 10: SegmentBase vs SegmentTemplate Detection in Response Filters
@@ -3144,7 +3514,7 @@ Ordered by impact on user experience and engineering complexity:
 4. **Topic 2: `isConfigSupported` false positives** -- Prevents filmstrip thumbnails on some platforms. A reliable WebCodecs probe would unlock filmstrip on more platforms.
 5. **Topic 5: WebKitGTK seek stalls** -- CI reliability issue. Understanding the root cause could eliminate timeout-based workarounds.
 6. **Topic 6: Firefox frame boundary precision** -- RESOLVED. The 1ms epsilon is mathematically safe for fps < 500. Root cause: historical float-to-double and fencepost bugs (fixed 2011) with residual sub-ms MSE timestamp conversion differences. Half-frame-duration epsilon (`0.5/fps`) is a cleaner alternative.
-7. **Topic 9: ImageBitmap memory** -- The 3x viewport eviction is empirical. Understanding memory semantics would enable optimal eviction strategies.
+7. **Topic 9: ImageBitmap memory** -- RESOLVED. 400 KB/bitmap (426x240 RGBA), `close()` frees immediately, transfer is zero-copy. 3x eviction is sound; add hard cap (~2,000 bitmaps).
 8. **Topic 7: Edge stale `currentTime`** -- RESOLVED. Root cause: Chromium's multi-threaded media pipeline updates `currentTime` asynchronously via `PostTask`; Playwright IPC round-trips expose this staleness. Edge's Media Foundation integration widens the window. Current workaround (`pressKeyNTimesAndSettle`) is optimal.
 9. **Topic 8: WebKit frame compositing** -- RESOLVED. Root cause: `showPosterFlag()` gates `mediaPlayerFirstVideoFrameAvailable()`. Fix: unconditional self-seek + rVFC confirmation.
 10. **Topic 10: SegmentBase detection** -- Current box-detection approach is robust. Research would confirm it's the recommended pattern.
