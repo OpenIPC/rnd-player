@@ -1768,6 +1768,105 @@ Topic 6 research is comprehensive. All 6 research questions answered with spec-l
 - Firefox developers themselves suggested epsilon tolerance for seek comparisons (Bug 463358, 2009)
 - The W3C acknowledges the rounding problem (Issue #4, 2018) with no resolution
 
+### Cross-reference with ChatGPT deep research
+
+Two independent ChatGPT deep research reports (7 pages and 9 pages) were cross-referenced against our findings. Both reports were unable to access RESEARCH.md directly and worked from the topic title "Firefox frame boundary precision" alone.
+
+#### Agreement areas
+
+Both reports and our research agree on:
+
+1. **Firefox has frame boundary precision issues** that differ from Chromium/Safari
+2. **Bug 587465** (`audio.currentTime` low precision) is a key reference for the behavior
+3. **W3C Issue #4** (frame-accurate seeking, open since 2018) documents the standards gap
+4. **WHATWG Issue #609** (rational time seek, open since 2016) proposes a fix with no implementation
+5. **`requestVideoFrameCallback`** is the most promising alternative API for frame-accurate operations
+6. **WebCodecs** can bypass `currentTime` entirely for frame-accurate decoding (our player already does this for filmstrip thumbnails via `thumbnailWorker.ts`)
+7. **No off-the-shelf fix exists** — frame-accurate seeking via `HTMLMediaElement.currentTime` is a known limitation across all browsers
+
+#### New information from the PDFs
+
+**Video.js Issue #5142 (2018):** A Video.js user reported seeking to 9.562167s yields frame 269 on Chrome/Safari but frame 268 on Firefox (one frame behind). This is independent field confirmation of the same off-by-one behavior we observe. Frame 268 starts at `floor(9.562167 × 30) / 30 = 9.53333s`, consistent with Firefox's floor/truncation bias at the boundary.
+
+Source: [Video.js Issue #5142](https://github.com/videojs/video.js/issues/5142)
+
+**Biigle/Core Issue #433 (2022):** A developer reports that `video.currentTime = video.currentTime` can unexpectedly advance the frame, demonstrating non-deterministic behavior. Concludes "frame-accurate handling in browsers is not really possible." This aligns with our finding that the boundary comparison in `DropVideoUpToSeekTarget` is sensitive to exact tick values.
+
+Source: [Biigle/Core Issue #433](https://github.com/biigle/core/issues/433)
+
+**Shaka Player Issue #234 (2015):** Frame-by-frame seeking via small `currentTime` increments often requires 20-40 steps before a frame change. Marked "working as intended." This confirms that naive increment-based frame stepping is unreliable — our approach of computing exact `(currentFrame ± 1) / fps + epsilon` is the correct strategy rather than small increments.
+
+Source: [Shaka Player Issue #234](https://github.com/shaka-project/shaka-player/issues/234)
+
+**Hoernig et al. 2014 (OJWT):** Academic study testing HTML5 video seeking across Chrome, Firefox, IE, Safari. Found that *Chrome* was less accurate than Firefox for seeking (1-2 frame error on average), while Firefox 31 was exact in their test conditions. This is interesting historical context — the situation has since reversed, suggesting that the `std::round()` in `TimeUnit::FromSeconds` may have been introduced or its interaction with MSE changed in later Firefox versions.
+
+Source: [Hoernig et al., OJWT 2014](https://www.ronpub.com/OJWT-v1i2n01_Hoernig.pdf)
+
+**WHATWG mailing list 2011:** Rob Coenen observed "it's currently impossible to play HTML5 video frame-by-frame, or seek to a SMPTE-compliant (frame accurate) time-code." This predates our other references and establishes the issue as a 15-year-old unsolved problem.
+
+Source: [WHATWG mailing list, Jan 2011](https://lists.w3.org/Archives/Public/public-whatwg-archive/2011Jan/0120.html)
+
+#### Critical correction: `privacy.reduceTimerPrecision` is NOT the cause
+
+Both PDFs heavily emphasize Firefox's `privacy.reduceTimerPrecision` (2ms default) as a primary cause of frame boundary imprecision. PDF 1 states: "Firefox deliberately limits time precision (2 ms or 100 ms steps), making truly frame-level accuracy impossible under normal conditions." PDF 2 states: "any JavaScript that reads or sets currentTime in Firefox will inherently be step-wise (multiples of 0.002s)."
+
+**This is incorrect.** Our research found:
+
+1. **Bug 1217238** explicitly determined that `ReduceTimePrecision` is **NOT applied** to `HTMLMediaElement.currentTime`. The decision was to "leave HTMLMediaElement as it is" because the inherent ~40ms update interval already provides natural anti-fingerprinting protection.
+
+2. The MDN documentation's 2ms note refers to the **getter read precision** of `currentTime`, not the **setter seek accuracy**. When you *set* `currentTime = T`, Firefox's internal seek pipeline converts `T` to microsecond ticks via `TimeUnit::FromSeconds` (using `std::round`), which operates at full `double` precision — no 2ms quantization occurs in the seek path.
+
+3. The 40ms `AUDIO_DURATION_USECS` constant controls `timeupdate` event firing frequency, not seek precision. PDF 1 conflates these two mechanisms: "Firefox snaps currentTime updates to video frame boundaries using a fixed audio 'frame' of 40ms" describes `timeupdate` behavior, not the seek-to-frame-boundary issue we observe.
+
+4. **Our actual root cause** — `std::round()` in `TimeUnit::FromSeconds` interacting with `target >= endTime` in `DropVideoUpToSeekTarget` — is entirely unrelated to timer precision settings. It is a microsecond-level rounding issue in the seek pipeline, not a millisecond-level privacy quantization.
+
+5. **Empirical proof**: Our OCR E2E tests achieve exact frame-number matching on Firefox across all CI platforms, confirming that the `currentTime` setter delivers sub-frame accuracy when the epsilon workaround is applied. If 2ms quantization were actually applied to seeks, the epsilon approach would not work reliably at 30 fps (frame duration 33ms, 2ms is 6% of a frame).
+
+#### Our findings not in the PDFs
+
+The PDFs worked from the topic title without access to our research. Our investigation is significantly deeper in the following areas:
+
+1. **Source-code root cause**: Firefox `TimeUnit::FromSeconds` uses `std::round()` while Chromium `Seconds()` uses truncation — the 1-microsecond difference at frame boundaries causes the off-by-one
+2. **`DropVideoUpToSeekTarget` mechanism**: The `target >= endTime` comparison discards frames when the rounded tick exactly hits the boundary
+3. **Bug 626273**: Float-to-double fix + fencepost error (2011) — the historical fix that partially addressed the problem
+4. **Bug 463358**: Robert O'Callahan's epsilon tolerance suggestion (2009) — Firefox developers themselves proposed the same approach 17 years ago
+5. **Bug 1217238**: `ReduceTimePrecision` NOT applied to `currentTime` — directly contradicts the PDFs' central claim
+6. **Bug 1193124**: `fastSeek` reporting `currentTime` as requested time, not actual keyframe position
+7. **Bug 1022913**: `fastSeek` directional constraint violation
+8. **Bug 1336404**: `seekToNextFrame()` removed in Firefox 128
+9. **SeekTarget enum** (PrevSyncPoint/Accurate/NextFrame) and 6 `IsFast()` check locations
+10. **Mathematical safety proof**: Epsilon safe for fps < 500, with frame-rate table
+11. **Half-frame-duration alternative** (`0.5/fps`) as a theoretically cleaner approach
+12. **WHATWG Issue #1362**: `fastSeek` official playback position spec discussion
+13. **Chromium `SourceBufferRange::Seek`**: `lower_bound` + backup pattern for keyframe selection
+14. **`ToBase` rounding policies**: Firefox's configurable TruncatePolicy/FloorPolicy/RoundPolicy for timescale conversion
+
+#### Evaluation of PDF recommendations
+
+| PDF recommendation | Status | Assessment |
+|---|---|---|
+| Adjust seek logic to snap to frame boundaries | **Already done** | Our `FRAME_SEEK_EPSILON = 0.001` in `useKeyboardShortcuts.ts` does exactly this |
+| Use `requestVideoFrameCallback` | **Evaluated** | Analyzed as Alternative 2; added complexity not justified given epsilon works on all 6 CI platforms |
+| Use WebCodecs for precise frame access | **Already done** | `thumbnailWorker.ts` uses WebCodecs `VideoDecoder` for filmstrip thumbnails, bypassing `currentTime` |
+| Engage with standards (W3C/WHATWG) | **Low priority** | W3C Issue #4 (2018) and WHATWG #609 (2016) have been stalled for years |
+| Disable `reduceTimerPrecision` | **Not applicable** | Bug 1217238 shows it's NOT applied to `currentTime`, so disabling it has no effect on seeking |
+| Cross-browser testing with tolerance | **Already done** | OCR E2E tests verify exact frame numbers on all 6 CI platforms with 0 tolerance |
+
+#### Verdict
+
+**No additional workarounds needed.** The PDFs provide useful community-level corroboration (Video.js, Biigle, Shaka Player issues confirming the cross-browser behavior in the field) but their central technical claim — that `privacy.reduceTimerPrecision` causes the issue — is incorrect. Our source-code-level analysis identified the actual root cause (`std::round` vs truncation in time conversion, interacting with the `>=` boundary comparison in frame discard logic), and the existing epsilon workaround addresses it correctly.
+
+The new references from the PDFs (Video.js #5142, Biigle #433, Shaka #234, Hoernig 2014) are valuable as independent field confirmation of the same behavior, but do not suggest any untried mitigation approach.
+
+#### Additional references from the PDFs
+
+- [Video.js Issue #5142](https://github.com/videojs/video.js/issues/5142) — Firefox one-frame-behind on fractional seek times (2018)
+- [Biigle/Core Issue #433](https://github.com/biigle/core/issues/433) — `currentTime` self-assignment advances frame (2022)
+- [Shaka Player Issue #234](https://github.com/shaka-project/shaka-player/issues/234) — frame-by-frame seeking requires 20-40 steps (2015)
+- [Hoernig et al., OJWT 2014](https://www.ronpub.com/OJWT-v1i2n01_Hoernig.pdf) — Chrome less accurate than Firefox for seeking in 2014
+- [WHATWG mailing list, Jan 2011](https://lists.w3.org/Archives/Public/public-whatwg-archive/2011Jan/0120.html) — "impossible to play HTML5 video frame-by-frame"
+- [WebMSX Issue #32](https://github.com/ppeccin/WebMSX/issues/32) — browser security/privacy measures impacting performance
+
 ---
 
 ## Topic 7: Edge MSE Pipeline Stale `currentTime` After Rapid Seeks
