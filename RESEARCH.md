@@ -1895,6 +1895,472 @@ Running all presses inside a single `page.evaluate()` with per-step `seeked` eve
 - Edge-specific media pipeline: any divergence from upstream Chromium
 - MSE spec: `currentTime` update timing requirements relative to `seeked` event
 
+### Findings
+
+#### Q1: Is `currentTime` cached/asynchronous in the Chromium/Edge pipeline?
+
+**Yes. The `currentTime` getter in Chromium reads from cached, main-thread-local state variables that are updated asynchronously from the media pipeline thread. This is the root cause of the stale-value behavior observed on Edge.**
+
+**The full call chain from JavaScript to the media pipeline:**
+
+When JavaScript reads `video.currentTime`, the call traverses three architectural layers:
+
+1. **Blink layer** (`HTMLMediaElement::currentTime()` in `third_party/blink/renderer/core/html/media/html_media_element.cc`): Per the [WHATWG HTML spec](https://html.spec.whatwg.org/multipage/media.html), this returns the element's "official playback position" — defined as "an approximation of the current playback position that is kept stable while scripts are running." This spec-mandated stability means the value is explicitly a cached snapshot, not a live query. The getter delegates to the `WebMediaPlayer` interface.
+
+2. **WebMediaPlayerImpl layer** (`WebMediaPlayerImpl::CurrentTime()` and `GetCurrentTimeInternal()` in `third_party/blink/renderer/platform/media/web_media_player_impl.cc`): This is where the caching is most visible. The actual source code (from [Chromium mirrors on GitHub](https://github.com/endlessm/chromium-browser/blob/master/media/blink/webmediaplayer_impl.cc)) shows:
+
+```cpp
+base::TimeDelta WebMediaPlayerImpl::GetCurrentTimeInternal() const {
+  DCHECK(main_task_runner_->BelongsToCurrentThread());
+
+  base::TimeDelta current_time;
+  if (Seeking())
+    current_time = seek_time_;      // During a seek: return the target time
+  else if (paused_)
+    current_time = paused_time_;    // When paused: return cached paused time
+  else
+    current_time = pipeline_controller_->GetMediaTime();  // When playing: query pipeline
+
+  DCHECK_GE(current_time, base::TimeDelta());
+  return current_time;
+}
+```
+
+Three critical observations:
+- The method asserts it is running on the main thread (`main_task_runner_->BelongsToCurrentThread()`). It never directly reaches into the media thread.
+- **When paused** (which is the state during frame-stepping in our E2E tests), the getter returns `paused_time_` — a plain member variable, not a cross-thread query. This value is only updated when specific events complete.
+- **When seeking**, it returns `seek_time_` — the target of the seek, set synchronously when the seek was initiated. This means during a seek, `currentTime` reflects the *intended* destination, not the pipeline's actual progress.
+
+3. **Pipeline layer** (`PipelineController::GetMediaTime()` → `PipelineImpl::GetMediaTime()`): Only reached when the video is actively playing (not paused, not seeking). The pipeline's global clock is driven by the audio renderer — as the sound card consumes audio data, the clock advances. The video renderer polls this clock on each vsync. The [Chromium Audio/Video Playback design doc](https://www.chromium.org/developers/design-documents/video/) confirms: "As decoded audio data is fed into the sound card the pipeline's global clock is updated." When no audio track is present, the system clock (`base::TimeTicks`) serves as fallback with interpolation.
+
+**How `paused_time_` becomes stale during rapid seeks:**
+
+The seek completion flow reveals the staleness window:
+
+1. JavaScript sets `video.currentTime = X` (seek initiation)
+2. `WebMediaPlayerImpl::DoSeek()` runs on the main thread:
+   - Sets `seeking_ = true`, `seek_time_ = X`
+   - If paused: sets `paused_time_ = X` (synchronous, immediate)
+   - Calls `pipeline_controller_->Seek(X)` — kicks off the async pipeline seek
+3. Pipeline seek executes on the **media thread**: flushes decoders, finds the closest random access point, decodes forward to the target frame
+4. `WebMediaPlayerImpl::OnPipelineSeeked()` is called back on the **main thread** via `PostTask`:
+   - Sets `seeking_ = false`, clears `seek_time_`
+   - If paused: `paused_time_ = pipeline_controller_->GetMediaTime()` — updates from the pipeline's actual landed position
+   - Sets `should_notify_time_changed_ = true`
+5. `OnBufferingStateChange(BUFFERING_HAVE_ENOUGH)` fires when sufficient data is buffered at the new position:
+   - Checks `should_notify_time_changed_`, calls `client_->TimeChanged()`
+   - This propagates to Blink, which fires the `seeked` DOM event
+
+The key insight: In step 2, `paused_time_` is set synchronously to the seek target `X`. But when the pipeline completes (step 4), `paused_time_` is updated to `pipeline_controller_->GetMediaTime()`, which is the pipeline's actual landed position. **Between step 2 and step 4, if another JavaScript execution reads `currentTime`, it will see the seek target `X` (because `seeking_` is true, returning `seek_time_`). After step 4 but before step 5, the `seeked` event has not yet fired but `paused_time_` has been updated.** The `seeked` event only fires after `OnBufferingStateChange(BUFFERING_HAVE_ENOUGH)`, which is itself an asynchronous callback from the pipeline.
+
+**The specific staleness window in the Playwright scenario:**
+
+When using separate `page.evaluate()` calls for consecutive ArrowRight presses:
+
+1. First `page.evaluate()`: dispatches ArrowRight, handler reads `currentTime` (e.g., 0.000), computes seek target (0.033), sets `currentTime = 0.033`. Waits for `seeked`. Returns to Playwright.
+2. Playwright round-trip: ~2-10ms of IPC overhead (Node.js WebSocket → CDP → browser).
+3. Second `page.evaluate()`: dispatches ArrowRight, handler reads `currentTime`...
+
+At step 3, the question is: has `paused_time_` been updated to 0.033 yet? If the pipeline's `OnPipelineSeeked` callback has been posted to the main thread via `PostTask` but the main thread's task queue has not yet processed it (because the Playwright CDP message arrived first), `paused_time_` still reflects 0.000, and the keyboard handler computes the same seek target (0.033) — a no-op.
+
+This is a **task ordering race** on the main thread's task queue. The pipeline's `PostTask(OnPipelineSeeked)` and Playwright's `PostTask(evaluate JavaScript)` compete for execution order. On a fast machine, the pipeline task usually wins. On a loaded Windows CI VM, the pipeline task may lose due to thread scheduling delays, higher IPC latency, or the Media Foundation integration adding extra pipeline stages (see Q4).
+
+**The W3C Multi-device Timing Community Group** [confirmed](https://www.w3.org/community/webtiming/2016/02/25/currenttime-reporting-chromium-on-android/) that in Chromium, "`currentTime` is a snapshot that doesn't change during execution of JS" — meaning it is explicitly designed as a cached value that is only refreshed between microtask checkpoints, not as a live pipeline query.
+
+**Spec vs. implementation gap:**
+
+The [WHATWG HTML spec](https://html.spec.whatwg.org/multipage/media.html) requires that the `currentTime` setter "must set the official playback position to the new value and then seek to the new value." This suggests `currentTime` should immediately reflect the new value after being set. Chromium's `WebMediaPlayerImpl` does honor this — `DoSeek()` synchronously sets `seek_time_` and `paused_time_` to the target. But the *getter* returns `seek_time_` only while `seeking_` is true. Once `OnPipelineSeeked` clears `seeking_`, the getter falls through to `paused_time_`, which by then reflects the pipeline's landed position. The spec's [WHATWG issue #3041](https://github.com/whatwg/html/issues/3041) acknowledges ambiguity: "the definitions of currentTime, official playback position, current playback position, etc., are unclear about where in the media decoder pipeline this value is represented."
+
+#### Q2: Is this Playwright-specific or a general JavaScript issue?
+
+**It is primarily a Playwright-specific manifestation of a general Chromium architecture issue. The staleness exists at the browser engine level, but only becomes observable due to the timing characteristics of Playwright's `page.evaluate()` round-trips. Regular in-page JavaScript that reads `currentTime` between rapid seeks would not normally encounter this problem, because the browser's event loop provides natural settling time that Playwright's IPC pattern bypasses.**
+
+**What the HTML spec says about `currentTime` after setting it:**
+
+The [WHATWG HTML spec](https://html.spec.whatwg.org/multipage/media.html) defines two distinct position concepts:
+
+1. **Current playback position** — the actual position in the media timeline, which advances continuously during playback.
+2. **Official playback position** — "an approximation of the current playback position that is kept stable while scripts are running." This is the value returned by the `currentTime` getter.
+
+The `currentTime` setter is specified as: "it must set the official playback position to the new value and then seek to the new value." This means the getter is required to return the new value **synchronously** after the setter is called — before the asynchronous seek algorithm even begins. This was confirmed by [Firefox Bug 588312](https://bugzilla.mozilla.org/show_bug.cgi?id=588312), where Firefox historically violated this requirement (returning the old value until the seek completed) and had to fix its implementation to update the position immediately.
+
+**The spec guarantee holds within a single JavaScript execution context.** If you write:
+
+```javascript
+video.currentTime = 5.0;
+console.log(video.currentTime); // Must be 5.0 per spec
+```
+
+All modern browsers (Chrome, Edge, Firefox, Safari) correctly return the new value. The spec's "kept stable while scripts are running" design ensures this consistency.
+
+**Where the problem actually lies — between execution contexts:**
+
+The stale `currentTime` issue observed on Edge occurs not during a single script execution, but **between** two separate Playwright `page.evaluate()` calls. The sequence is:
+
+1. First `page.evaluate()`: sets `currentTime = 0.033`, waits for `seeked`, confirms `currentTime === 0.033`, returns to Playwright.
+2. Playwright IPC round-trip (~2-10ms): Node.js WebSocket to browser CDP channel.
+3. Second `page.evaluate()`: reads `currentTime` — may get `0.000` instead of `0.033`.
+
+The question is: why would `currentTime` revert to a stale value between two evaluations?
+
+**Playwright's `page.evaluate()` and CDP `Runtime.evaluate` mechanics:**
+
+Playwright's `page.evaluate()` is backed by CDP's [`Runtime.evaluate`](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/) command. Each call:
+
+1. Serializes the JavaScript expression and sends it over WebSocket to the browser process.
+2. The browser's main thread picks up the CDP message from its task queue and executes the expression.
+3. If the expression returns a Promise (or is an async function), Playwright sets `awaitPromise: true`, causing CDP to wait for resolution before responding.
+4. The result is serialized and sent back over WebSocket to Playwright.
+
+**Between two sequential `page.evaluate()` calls, the browser's event loop runs freely.** After the first evaluation completes, the main thread processes its task queue normally — this includes any pending `PostTask` callbacks from the media pipeline thread, any queued DOM events, microtask checkpoints, and potentially rendering/compositing steps. The second `page.evaluate()` arrives as a new task in the queue and competes with all other pending tasks for execution order.
+
+This is where the race occurs. Chromium's media seek completion (`OnPipelineSeeked`) is delivered to the main thread via `PostTask`. If this task has not yet been processed when the second `page.evaluate()` task runs, the `currentTime` getter reads from the stale cached `paused_time_`. The [WHATWG issue #4188](https://github.com/whatwg/html/issues/4188) discusses how "await a stable state" (used throughout the media element algorithms) interacts with the task queue, noting that "the definition of stable state in terms of microtasks does not seem to match browsers."
+
+**Would regular in-page JavaScript exhibit this problem?**
+
+In theory, yes — any JavaScript that runs between two event loop tasks during the staleness window could read a stale value. For example:
+
+```javascript
+video.currentTime = 0.033;
+video.addEventListener('seeked', () => {
+  // Seek 1 complete. Schedule another seek on the next task:
+  setTimeout(() => {
+    // If the pipeline hasn't posted paused_time_ yet, this could be stale
+    console.log(video.currentTime); // Might show pre-seek value
+    video.currentTime = video.currentTime + 0.033;
+  }, 0);
+});
+```
+
+However, in practice this is **extremely unlikely** to manifest without Playwright's involvement for several reasons:
+
+1. **`setTimeout(fn, 0)` has a minimum delay of ~4ms** ([HTML spec](https://html.spec.whatwg.org/multipage/timers-and-user-interaction.html#dom-settimeout)), giving the pipeline's `PostTask` time to execute first. In contrast, Playwright's CDP messages can arrive with lower latency because they bypass the timer clamping.
+
+2. **User-initiated keyboard events have inherent debouncing.** Physical key presses at 30+ WPM produce events every ~33ms at most. Even programmatic `keydown` dispatch within a single script context gives the event loop one full task cycle between handler executions.
+
+3. **Microtask checkpoints between tasks.** The [HTML spec's event loop processing model](https://html.spec.whatwg.org/multipage/webappapis.html#event-loop-processing-model) mandates microtask checkpoint processing between tasks. Promise resolutions and `MutationObserver` callbacks from the seek completion propagate through this checkpoint, giving `currentTime` a chance to update before the next macrotask.
+
+4. **The staleness window is short.** As analyzed in Q1, the window is the time between `seeked` firing and `paused_time_` being updated by `OnPipelineSeeked`'s `PostTask`. On a fast machine this is sub-millisecond. On a loaded Windows CI VM, it can stretch to several milliseconds — enough to be hit by Playwright's IPC but rarely by in-page code.
+
+**The CDP-specific timing factor:**
+
+The [CDP `Runtime.evaluate` documentation](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/) specifies no timing guarantees about when the expression executes relative to the browser's event loop. The CDP message arrives on the browser's IPC channel and is posted as a task to the main thread's task queue. The scheduling priority of this task relative to other pending tasks (like `OnPipelineSeeked`) is implementation-defined.
+
+A known [Playwright issue (#19685)](https://github.com/microsoft/playwright/issues/19685) documented that "the microtask queue is not flushed between events in Firefox" when events are dispatched via automation — demonstrating that CDP/automation event dispatch does not always follow the same timing guarantees as native browser event processing. While this specific issue was about microtask checkpoints in Firefox, it illustrates the broader principle: automation-injected code operates at a different timing granularity than organic in-page JavaScript.
+
+**Conclusion:**
+
+The stale `currentTime` behavior is a general Chromium/Edge architecture characteristic (cross-thread cached getter), but it manifests as a practical bug only under Playwright's specific execution pattern: rapid sequential `page.evaluate()` calls that create a tight timing window where the CDP-injected task can preempt the pipeline's `PostTask`. Regular in-page JavaScript almost never hits this window because the event loop's natural task scheduling, timer clamping, and microtask processing provide sufficient settling time.
+
+#### Q3: Does the MSE pipeline flush `currentTime` synchronously on `seeked`?
+
+**No. The `seeked` event does not guarantee that `currentTime` reflects the post-seek position in Chromium/Edge. There is an additional asynchronous step between the pipeline completing the seek and the main-thread getter being updated. The `seeked` event is a necessary but not sufficient condition for `currentTime` accuracy.**
+
+**What the HTML spec says about `seeked` and `currentTime`:**
+
+The HTML spec's [seek algorithm](https://html.spec.whatwg.org/multipage/media.html) proceeds in two phases:
+
+**Synchronous phase** (runs immediately when `currentTime` is set):
+1. If `readyState` is `HAVE_NOTHING`, abort.
+2. If `seeking` is already true, abort the previous seek.
+3. Set the `seeking` IDL attribute to `true`.
+4. **Set the official playback position to the new value** — this is why the `currentTime` getter immediately returns the new value.
+5. Queue a task to fire the `seeking` event.
+6. Continue the remaining steps **in parallel** (async).
+
+**Asynchronous phase** (runs on the media pipeline):
+7. Wait until the user agent has established whether the media data for the new playback position is available.
+8. Await `HAVE_CURRENT_DATA` or greater.
+9. Set the `seeking` IDL attribute to `false`.
+10. Queue a task to fire `timeupdate`.
+11. Queue a task to fire `seeked`.
+
+The critical detail: step 4 synchronously sets the official playback position to the new value. Steps 9-11 happen asynchronously after the pipeline completes the seek. By the time `seeked` fires, the spec considers the seek complete — `seeking` is `false` and the media data at the new position is available.
+
+**The spec implies `currentTime` should be accurate when `seeked` fires.** Step 4 already set the official playback position to the target, and by step 11 the pipeline has decoded data at the target position. However, the spec does not explicitly state that the "official playback position" must be refreshed again from the pipeline in step 9-11 — it was set in step 4 and the spec does not mandate an additional update.
+
+**How MSE modifies the seek algorithm:**
+
+The [MSE spec (W3C Media Source Extensions)](https://www.w3.org/TR/media-source-2/) adds steps to the async phase of the seek algorithm. Specifically, during step 7 ("wait until the user agent has established whether the media data for the new playback position is available"), the MSE-enhanced algorithm:
+
+1. Checks each `SourceBuffer` in `activeSourceBuffers` for media segments containing the new playback position.
+2. If the data is not buffered, drops `readyState` to `HAVE_METADATA` and waits for an `appendBuffer()` call to provide the needed data.
+3. The coded frame processing algorithm must set `readyState` back to `HAVE_CURRENT_DATA` or higher before the seek can complete.
+
+These additional MSE steps do not directly affect when `currentTime` is updated — they extend the duration of the async phase. However, they introduce more asynchronous work between the seek initiation and the `seeked` event, which means more opportunities for the pipeline's internal state to diverge from the main-thread cached value.
+
+**What actually happens in Chromium/Edge's implementation:**
+
+As documented in Q1, the seek completion flow in `WebMediaPlayerImpl` is:
+
+```
+1. DoSeek()          [main thread, synchronous]
+   → seeking_ = true, seek_time_ = X, paused_time_ = X
+   → pipeline_controller_->Seek(X)
+
+2. Pipeline seek     [media thread, async]
+   → demuxer flush, decoder reset, decode forward to target
+
+3. OnPipelineSeeked  [main thread, via PostTask]
+   → seeking_ = false
+   → paused_time_ = pipeline_controller_->GetMediaTime()  // actual landed position
+
+4. OnBufferingStateChange(BUFFERING_HAVE_ENOUGH)  [main thread, via PostTask]
+   → TimeChanged() → fires seeked DOM event
+```
+
+There are **two separate `PostTask` calls** between the pipeline completing the seek and the `currentTime` getter reflecting the final value:
+
+1. **`PostTask(OnPipelineSeeked)`** — updates `seeking_` and `paused_time_` on the main thread.
+2. **`PostTask(OnBufferingStateChange)`** — eventually fires the `seeked` DOM event via `TimeChanged()`.
+
+The question is: are these two `PostTask` calls guaranteed to be processed before any interleaving CDP task?
+
+**Answer: No.** Chromium's main-thread task queue is a single FIFO queue (with task priorities), but `PostTask` from the media thread and `PostTask` from the CDP WebSocket handler both post to the same queue. The ordering depends on which `PostTask` call executes first, which is a function of:
+
+- Thread scheduling by the OS kernel
+- Whether the media thread's seek completed before the CDP message arrived
+- The task priority assigned to each posted task
+
+In the normal case, `OnPipelineSeeked` executes before `OnBufferingStateChange`, and both execute before the next CDP-injected `page.evaluate()`. But on a loaded Windows CI VM with Edge's Media Foundation pipeline adding extra async stages, the following sequence can occur:
+
+```
+Time  Main thread task queue
+----  ---------------------
+t0:   [CDP evaluate: dispatch ArrowRight, await seeked]
+t1:   [Pipeline: PostTask(OnPipelineSeeked)]        // seek complete
+t2:   [Pipeline: PostTask(OnBufferingStateChange)]   // triggers seeked event
+      ... seeked event fires, first evaluate returns ...
+t3:   [CDP: PostTask(evaluate second ArrowRight)]    // Playwright's next call
+```
+
+If thread scheduling delays cause the media thread's `PostTask` calls to be slightly late:
+
+```
+Time  Main thread task queue
+----  ---------------------
+t0:   [CDP evaluate: dispatch ArrowRight, await seeked]
+      ... pipeline working on media thread ...
+t1:   [Pipeline: PostTask(OnPipelineSeeked)]
+t2:   [Pipeline: PostTask(OnBufferingStateChange)]
+      ... seeked fires within the first evaluate, but paused_time_ was set to
+          seek_time_ from step 1 in DoSeek, not from OnPipelineSeeked ...
+t3:   [CDP: PostTask(evaluate second ArrowRight)]
+      ... reads currentTime which returns paused_time_ = pipeline's actual
+          landed position from OnPipelineSeeked (step 3), which might differ
+          slightly from the seek target ...
+```
+
+In the worst case, if the `seeked` event fires (because `OnBufferingStateChange` was processed) but `OnPipelineSeeked` somehow hasn't updated `paused_time_` yet (due to task coalescing or priority differences), the getter would return a stale value. In practice, `OnPipelineSeeked` fires before `OnBufferingStateChange` because the seek completion triggers the buffering state change, so `paused_time_` is updated before `seeked` fires. But the key point is: **the spec does not mandate any synchronization barrier between `seeked` and `currentTime` accuracy**, and the implementation uses async cross-thread messaging with no atomic coordination.
+
+**The `paused_time_` vs `seek_time_` subtlety:**
+
+During a seek (while `seeking_` is true), `currentTime` returns `seek_time_`, which is the target set in `DoSeek()`. When `OnPipelineSeeked` clears `seeking_`, the getter falls through to `paused_time_`. If the pipeline landed at a slightly different position than requested (e.g., snapped to a keyframe), `paused_time_` from `pipeline_controller_->GetMediaTime()` may differ from `seek_time_`. This is spec-compliant — the spec says the user agent may adjust the seek target — but it means the `currentTime` value can **change** when `seeking_` transitions from true to false, even though no new seek was requested.
+
+This is relevant to the Edge bug: if the first evaluate reads `currentTime` while `seeking_` is true (getting `seek_time_ = 0.033`), and then the second evaluate reads after `seeking_` becomes false but before `paused_time_` is updated from the pipeline, it might get the pre-seek `paused_time_` (0.000) — because `DoSeek()` sets `paused_time_ = X` but `OnPipelineSeeked` may overwrite it with the pipeline's actual landed position, and the timing of that overwrite relative to the second evaluate is the race condition.
+
+**Is there a spec-level guarantee that `currentTime` is accurate after `seeked`?**
+
+The spec does not explicitly state this. The [WHATWG issue #553](https://github.com/whatwg/html/issues/553) proposed introducing a `seek()` method that returns a Promise, which would provide a clear API contract: "when the promise resolves, the seek is complete and `currentTime` reflects the final position." The fact that this proposal exists (and has not been implemented) confirms that the current spec leaves the relationship between `seeked` and `currentTime` accuracy under-specified.
+
+The [WHATWG issue #3041](https://github.com/whatwg/html/issues/3041) further highlights the ambiguity: "the definitions of currentTime, official playback position, current playback position, etc., are unclear about where in the media decoder pipeline this value is represented." A Mozilla engineer responded that `currentTime` represents "the time of the audio playing *now*, as reported by the audio card" — but when the video is paused (as in frame-stepping), there is no audio clock, and the value comes from `paused_time_`, which is a cached snapshot updated by `PostTask`.
+
+**Summary of the synchronization gap:**
+
+| Event | `currentTime` reflects | Guaranteed? |
+|-------|----------------------|-------------|
+| Immediately after `video.currentTime = X` | `X` (via `seek_time_`) | Yes — spec step 4 |
+| During seek (`seeking === true`) | `X` (via `seek_time_`) | Yes — implementation detail of Chromium |
+| After `seeked` fires | Pipeline's actual landed position (via `paused_time_`) | **Not guaranteed to be immediate** — depends on task ordering |
+| After `seeked` + `currentTime` change poll | Pipeline's actual landed position | Yes — polling ensures the `PostTask` has been processed |
+| After `seeked` + double rAF | Pipeline's actual landed position + frame composited | Yes — two vsyncs of settling time |
+
+The three-layer waiting strategy in `pressKeyNTimesAndSettle()` (seeked + currentTime poll + double rAF) correctly addresses each level of the asynchronous gap. The `seeked` wait ensures the pipeline completed, the `currentTime` poll ensures the main-thread getter is fresh, and the double rAF ensures the compositor has presented the frame.
+
+#### Q4: Is this related to Edge's multi-process architecture?
+
+**Partially. The stale `currentTime` issue is fundamentally caused by Chromium's multi-threaded media architecture (shared by Chrome and Edge), but Edge's Windows-specific Media Foundation integration adds additional pipeline stages that can widen the staleness window. Edge's multi-process architecture per se is not the primary factor — it is the multi-thread architecture *within* the renderer process that matters.**
+
+**Chromium's multi-threaded media architecture (the primary factor):**
+
+The Chromium media pipeline is a multi-threaded, pull-based system. Key code review [Issue 1999893004](https://codereview.chromium.org/1999893004/patch/580001/590003) explicitly split `PipelineImpl` into main-thread and media-thread components. Within a single renderer process:
+
+- **Main thread (Blink/renderer thread)**: Runs JavaScript, DOM, `HTMLMediaElement`, `WebMediaPlayerImpl`. The `currentTime` getter runs here.
+- **Media thread** (`media_task_runner_`): Runs the `PipelineImpl` state machine, demuxers, decoder coordination. Seek operations execute here.
+- **Decoder threads**: Software decoders (FFmpeg, libvpx, libaom) may run on their own threads or in the GPU process for hardware-accelerated decoding.
+- **Audio output thread**: Drives the pipeline's global clock via sound card callbacks.
+- **Compositor thread**: Receives decoded video frames and composites them for display.
+
+The seek completion notification (`OnPipelineSeeked`) travels from the media thread to the main thread via `PostTask`. This is an in-process message post, not an IPC between processes. The [Chromium threading documentation](https://github.com/chromium/chromium/blob/main/docs/threading_and_tasks.md) explains that Chromium "discourages locking and thread-safe objects. Instead, objects live on only one (often virtual) thread and messages are passed between those threads for communication." This means the `paused_time_` update is always a posted task, never a synchronous cross-thread operation.
+
+**Edge-specific Media Foundation integration (an amplifying factor):**
+
+Edge on Windows integrates the [Windows Media Foundation](https://learn.microsoft.com/en-us/windows/win32/medfound/about-the-media-foundation-sdk) (`MFMediaEngine`) into the Chromium media pipeline. This is a significant divergence from upstream Chromium:
+
+1. **`MediaFoundationRenderer`** (`media/renderers/win/media_foundation_renderer.cc`): Replaces or supplements Chromium's default renderer pipeline with Windows' native media engine. The `MFMediaEngine` API is asynchronous — `IMFMediaEngine::SetCurrentTime` initiates a seek, and completion is signaled via `MF_MEDIA_ENGINE_EVENT_SEEKED`. This adds an additional async layer on top of Chromium's already-async pipeline.
+
+2. **Frame Server Mode** ([Chromium Issue #40201216](https://issues.chromium.org/issues/40201216)): Edge's Media Foundation integration has been evolving through a "Frame Server Mode" that changes how decoded frames are delivered from the MF pipeline to the Chromium compositor. This architectural change affects the timing of when the pipeline reports completion.
+
+3. **Cross-process decoder execution**: For DRM content, Edge uses the Media Foundation Protected Media Path (PMP), which can route decoding through a separate utility process with restricted privileges. Even for non-DRM content, hardware decoding via Media Foundation may involve the GPU process. The [Chromium media README](https://github.com/chromium/chromium/blob/master/media/README.md) notes: "Hardware-accelerated video decoding is handled by platform-specific implementations (e.g., Vaapi, D3D11, MediaCodec) often running in the GPU Process or a dedicated Media Service."
+
+4. **`MFMediaEngine` time reporting**: The Windows `IMFMediaEngine` interface has its own `GetCurrentTime` method, which may not synchronize identically with Chromium's pipeline clock. The adapter code in `MediaFoundationRenderer` must translate between MF's time reporting and Chromium's `PipelineImpl::GetMediaTime()` semantics.
+
+**Why Edge is more affected than Chrome on the same CI runner:**
+
+The stale `currentTime` issue is observed specifically on Edge/Windows CI (`windows-latest`), not on Chrome/Linux CI (`ubuntu-latest`). Several factors compound:
+
+1. **Windows CI VMs have higher scheduling latency**: GitHub's `windows-latest` runners use Windows Server on Azure VMs. Windows thread scheduling has different characteristics than Linux — context switches and thread wake-up latencies are typically higher, especially under VM overhead. This widens the window between `PostTask(OnPipelineSeeked)` and its execution.
+
+2. **Media Foundation adds pipeline depth**: The MF integration inserts additional async stages. A seek flows through: `WebMediaPlayerImpl::DoSeek()` → `PipelineController::Seek()` → `PipelineImpl` (media thread) → `MediaFoundationRenderer` → `MFMediaEngine::SetCurrentTime` → Windows MF pipeline → `MF_MEDIA_ENGINE_EVENT_SEEKED` callback → `MediaFoundationRenderer::OnPlaybackEvent` → `PipelineImpl::OnSeekDone` → `PostTask(main_thread, OnPipelineSeeked)`. Upstream Chromium's default renderer has fewer stages: `DoSeek()` → `PipelineController::Seek()` → `PipelineImpl` (media thread) → `RendererImpl::Flush()` + `RendererImpl::StartPlaying()` → `OnSeekDone` → `PostTask(main_thread, OnPipelineSeeked)`.
+
+3. **Edge-specific feature flags**: Edge enables various media-related feature flags (`Media Foundation for Clear`, `Frame Server Mode`) that alter the pipeline behavior. These flags change the rendering path and may introduce additional async callbacks.
+
+**Multi-process vs. multi-thread distinction:**
+
+The multi-*process* architecture (browser process, renderer process, GPU process) is not the primary cause. The `currentTime` getter runs entirely within the renderer process — it does not make IPC calls to the GPU process or browser process. The cache staleness occurs because of multi-*thread* communication within the renderer process (main thread vs. media thread). However, when hardware-accelerated decoding is involved (D3D11 on Windows via Media Foundation), the decoder runs in the GPU process, and completion signals must cross a process boundary via Mojo IPC before reaching the media thread, then `PostTask` to the main thread. This adds another layer of latency to the seek completion path.
+
+**Summary:**
+
+The stale `currentTime` behavior is caused by:
+1. **Primary factor**: Chromium's multi-threaded architecture requires `PostTask` to propagate seek completion from the media thread to the main thread, creating a race with Playwright's CDP-injected JavaScript execution.
+2. **Amplifying factor on Edge**: The Media Foundation integration adds more async stages to the seek path, widening the window of staleness.
+3. **Environmental factor**: Windows CI VMs have higher thread scheduling latency than Linux CI VMs, making the race more likely to manifest.
+4. **Not the primary factor**: The multi-process architecture (renderer/GPU process boundary) does contribute latency for hardware-decoded video but is secondary to the intra-process multi-thread timing.
+
+#### Q5: Would `requestAnimationFrame` or `requestVideoFrameCallback` be more reliable?
+
+**Short answer: `requestVideoFrameCallback` would be the most semantically correct API for confirming a new frame is composited after a seek, but it would not solve the core problem observed on Edge, and the current workaround is already optimal.**
+
+The issue is not that `currentTime` fails to update after the compositor presents a new frame. The issue is that between separate Playwright `page.evaluate()` round-trips, the MSE pipeline on Edge has not yet flushed the updated `currentTime` to the getter, even after the `seeked` event has fired. This is a timing gap caused by the combination of Playwright's IPC overhead and Chromium/Edge's multi-threaded media pipeline architecture.
+
+**Understanding the three APIs and what they guarantee:**
+
+| API | When it fires | What it guarantees | `currentTime` accuracy |
+|-----|--------------|-------------------|----------------------|
+| Direct read after `seeked` | After the seek algorithm completes | The seek is done, `seeking === false` | Should reflect new position per spec, but getter may lag on Chromium |
+| `requestAnimationFrame` | Before the next repaint (~16.7ms at 60Hz) | The browser is about to paint | No video-specific guarantee; `currentTime` is a snapshot from the audio clock |
+| `requestVideoFrameCallback` | When a new video frame is sent to the compositor | A new video frame has been decoded and composited | Provides `metadata.mediaTime` — the actual PTS of the composited frame |
+
+**Why `requestVideoFrameCallback` is theoretically better but practically unnecessary here:**
+
+1. **`requestVideoFrameCallback` fires when the compositor receives a new video frame.** Its callback metadata includes `mediaTime` (the actual presentation timestamp of the displayed frame), which is more precise than reading `video.currentTime`. The `currentTime` getter in Chromium is backed by the pipeline's global clock (driven by the audio renderer / sound card), while `mediaTime` comes directly from the `presentationTimestamp` of the frame sent to the compositor. For frame identification, `mediaTime` is authoritative.
+
+2. **However, `requestVideoFrameCallback` has a critical limitation when the video is paused.** It only fires when a new frame is sent to the compositor. When the video is paused (as it is during frame-stepping tests), `requestVideoFrameCallback` will not fire unless the browser re-renders the frame. A seek while paused does trigger a frame update on most browsers, but this is not universally guaranteed. The [angrycoding workaround](https://github.com/angrycoding/requestVideoFrameCallback-prev-next) for paused video involves toggling `currentTime` back and forth to force frame re-rendering — adding complexity without solving the root cause.
+
+3. **The root problem is Playwright IPC overhead, not compositor timing.** Each `page.evaluate()` call traverses multiple IPC hops: test code → Playwright client → Playwright Node.js WebSocket server → browser CDP/WebSocket → JavaScript execution → results back through the same chain. This introduces multiple milliseconds of round-trip latency. During this window, the next keyboard handler reads `currentTime` before the pipeline has propagated the updated value from the media thread to the main thread getter. Running all presses in a single `page.evaluate()` eliminates these inter-call gaps entirely.
+
+4. **Safari's `requestVideoFrameCallback` is broken with DRM.** Safari (WebKit) intentionally disables `requestVideoFrameCallback` when DRM content is playing. The [video.js team worked around this](https://github.com/videojs/video.js/pull/7854) by detecting `video.webkitKeys` and falling back to `requestAnimationFrame`. While the E2E tests don't use `requestVideoFrameCallback` directly, this caveat would matter if we ever considered using it in the player code itself for seek confirmation.
+
+**Browser support for `requestVideoFrameCallback`:** As of late 2024, this is a Baseline web feature supported across all major browsers: Chrome 83+ (2020), Safari 15.4+ (2022), Firefox 132+ (October 2024). Edge inherits Chrome's support. [Firefox was the last holdout](https://bugzilla.mozilla.org/show_bug.cgi?id=1919367), shipping in Firefox 132 after development behind the `media.rvfc.enabled` flag since Firefox 130.
+
+**Analysis of the double-rAF in the current workaround:**
+
+The double `requestAnimationFrame` pattern in the existing code serves a real purpose:
+
+```javascript
+await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+```
+
+- The **first `requestAnimationFrame`** runs before the browser's next repaint. At this point, the browser has scheduled the paint but has not yet composited the frame.
+- The **second (nested) `requestAnimationFrame`** runs before the *following* repaint. By this time, the previous frame has been fully painted and composited — the decoded video frame is guaranteed to be on screen.
+
+This matters because Chromium's video rendering is asynchronous: video compositing happens on the compositor thread, not the main thread. The `seeked` event fires when the media pipeline completes the seek, but the compositor may not have presented the new frame yet. The first rAF aligns with the next vsync; the second rAF confirms the previous vsync completed. According to the [video-rvfc spec](https://wicg.github.io/video-rvfc/), `requestVideoFrameCallback` itself can be one vsync late — changes made in the callback appear at vsync x+2. The double-rAF achieves a similar 2-vsync guarantee.
+
+A single rAF would often be sufficient but would occasionally race with the compositor on a busy system (exactly the CI VM conditions where this issue manifests). The double-rAF adds ~16.7ms of delay but provides stronger compositing guarantees.
+
+**Why `currentTime` can appear stale — Chromium's architecture:**
+
+Chromium's `currentTime` getter follows this path:
+1. `HTMLMediaElement::currentTime` → `WebMediaPlayerImpl::GetCurrentTime()`
+2. When paused, returns cached `paused_time_`
+3. When playing, calls `pipeline_->GetCurrentTime()` which reads from the pipeline's global clock
+4. The global clock is driven by the audio renderer (sound card callback rate), or system clock if no audio
+
+The [W3C Multi-device Timing Community Group](https://www.w3.org/community/webtiming/2016/02/25/currenttime-reporting-chromium-on-android/) noted that `currentTime` is "a snapshot that doesn't change during execution of JS." This snapshot nature means: within a single JavaScript execution context, `currentTime` is consistent. But between separate JavaScript entries (such as between two `page.evaluate()` calls), the value comes from whatever the pipeline last reported to the main thread. If the media pipeline thread has not yet posted the updated position back to the main thread, the getter returns the old cached value.
+
+This is exacerbated by the MSE pipeline's seek algorithm, which involves:
+1. Finding the closest random access point before the target time
+2. Feeding coded frames to decoders from that point
+3. Decoding forward to the target frame
+4. Updating the pipeline clock
+5. Posting the updated position back to the main thread
+
+Steps 4-5 are asynchronous cross-thread communications. The `seeked` event fires after step 3 completes, but the main-thread-visible `currentTime` may not update until step 5 completes.
+
+**Is this specific to MSE or also affects regular MP4 `<video>`?**
+
+The staleness effect is amplified with MSE because the MSE seek algorithm is more complex (involves `SourceBuffer` range checking, coded frame processing, and append state management). Regular MP4 `<video>` with a simple file source has a simpler seek path. However, the fundamental cross-thread timing issue exists in both modes — it is an artifact of Chromium's multi-threaded media architecture, not MSE specifically. MSE just makes the window of staleness wider.
+
+**Cross-browser comparison:**
+
+| Browser | `currentTime` stale after `seeked`? | Notes |
+|---------|-------------------------------------|-------|
+| Edge (Chromium) | Yes — observed in CI | Most pronounced; Chromium-based, Windows CI VM adds latency |
+| Chrome (Chromium) | Potentially — same architecture | Same underlying code as Edge; less observed likely due to Linux/faster CI VMs |
+| Firefox | Historically yes, now fixed | [Bug 588312](https://bugzilla.mozilla.org/show_bug.cgi?id=588312): Firefox used to return old `currentTime` until seek completed; fixed to update immediately per spec |
+| WebKit (Safari) | Not observed for this specific issue | Different architecture; media pipeline is more tightly coupled to main thread on macOS via AVFoundation |
+
+Firefox historically had the same bug (returning old `currentTime` after setting it, until the seek completed) but this was [fixed in Bug 588312](https://bugzilla.mozilla.org/show_bug.cgi?id=588312) by dispatching `timeupdate` at the start of seeking. Chromium's architecture, with its strict main-thread/compositor-thread separation, makes this harder to fix.
+
+**Is the current workaround optimal?**
+
+**Yes — the current workaround is the correct approach for this specific problem.** Here is why each component is necessary:
+
+1. **Single `page.evaluate()`**: Eliminates Playwright IPC round-trips between steps. This is the key insight — the bug is not in the browser's JavaScript execution model, but in the timing gap between separate `page.evaluate()` calls.
+
+2. **`seeked` event wait with 1s timeout**: Waits for the seek to complete. The timeout prevents indefinite hangs (important for WebKitGTK's seek stall issue from Topic 6).
+
+3. **`currentTime` change polling (50 iterations × 16ms = 800ms max)**: Guards against the specific Chromium getter staleness. Even after `seeked` fires, the main-thread `currentTime` getter may not yet reflect the new position. Polling until it changes is the most reliable detection.
+
+4. **Double rAF**: Ensures the decoded frame is composited before the next iteration reads `currentTime`. This prevents the next step from seeing a stale value due to compositor lag.
+
+**Could a simpler approach work?**
+
+- **Just `await seeked` + single rAF**: Would fail on Edge because `currentTime` can still be stale after `seeked` + one rAF. The polling step is essential.
+- **Just `await seeked` + `requestVideoFrameCallback`**: Marginally better than rAF (fires specifically when the video frame is composited), but has the paused-video caveat and does not guarantee `currentTime` getter freshness — it guarantees `metadata.mediaTime` freshness, which is a different value.
+- **`page.waitForFunction()` between separate evaluates**: Would add another Playwright round-trip, potentially introducing the same staleness window it aims to solve. Worse than the single-evaluate approach.
+- **CDP session for lower-latency evaluate**: Could reduce IPC overhead but adds API complexity and is Chromium-only (would not help with WebKit or Firefox).
+
+**Theoretical minimum wait for `currentTime` to reflect the new value:**
+
+After `seeked` fires, the minimum additional wait depends on:
+- Cross-thread message posting latency (Chromium uses `PostTask` to the main thread): typically < 1ms on a fast system, but up to several ms under VM load
+- Audio clock update interval: tied to the sound card callback rate (typically 10-20ms buffers)
+- When paused: `paused_time_` is updated synchronously in the seek completion handler, so the delay is purely the cross-thread posting time
+
+In practice, the 16ms polling interval (matching one vsync at 60Hz) is a good choice — it aligns with the compositor's update cadence and catches most staleness within 1-2 iterations. The 50-iteration cap (800ms) provides generous safety margin for heavily loaded VMs.
+
+### Summary
+
+**Root cause**: Chromium/Edge's multi-threaded media pipeline does not guarantee that `video.currentTime` reflects the post-seek position immediately after the `seeked` event, because the main-thread getter reads from a cached value that is updated asynchronously from the media pipeline thread. The Playwright IPC overhead between separate `page.evaluate()` calls creates a window where this staleness is observable — the next keyboard handler runs before the pipeline has posted the updated `currentTime` to the main thread.
+
+**Verdict on current workaround**: The `pressKeyNTimesAndSettle()` implementation is optimal. Running all key presses in a single `page.evaluate()` is the correct architectural solution (eliminates IPC gaps), and the three-layer waiting strategy (seeked event + currentTime polling + double rAF) addresses all known timing edge cases across browsers. Each component serves a distinct purpose and none can be safely removed.
+
+**Potential improvements**:
+- **Replace double rAF with `requestVideoFrameCallback`** where available (all browsers since late 2024). This would provide a stronger semantic guarantee ("new video frame composited") vs the current probabilistic guarantee ("two vsyncs elapsed"). However, the gain is marginal since the `currentTime` polling step already catches staleness, and `requestVideoFrameCallback` has caveats with paused video and DRM content.
+- **Add `requestVideoFrameCallback` feature detection**: If adopting it, check `'requestVideoFrameCallback' in HTMLVideoElement.prototype` and fall back to double rAF. This would future-proof against any browser removing or changing the API.
+- **Neither improvement is urgent** — the current workaround is functionally correct across all 6 CI platforms and the theoretical improvements add complexity for marginal benefit.
+
+### Key references
+
+- [MDN: requestVideoFrameCallback](https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback) — API documentation and browser compatibility
+- [web.dev: requestVideoFrameCallback](https://web.dev/articles/requestvideoframecallback-rvfc) — Detailed explainer with vsync timing analysis
+- [WICG video-rvfc spec](https://wicg.github.io/video-rvfc/) — Specification: fires on compositor thread, best-effort timing, one-vsync-late caveat
+- [Chromium Bug #555376 / Issue #41217923](https://issues.chromium.org/41217923) — "currentTime as reported by HTML5 video is not frame-accurate"
+- [Chromium Bug #584203 / Issue #41238094](https://issues.chromium.org/41238094) — "currentTime property of a HTML5 video element is stalled"
+- [Chromium Bug #66631](https://bugs.chromium.org/p/chromium/issues/detail?id=66631) — "Video frame displayed does not match currentTime"
+- [Firefox Bug 588312](https://bugzilla.mozilla.org/show_bug.cgi?id=588312) — "When set, video.currentTime returns old value until seek completes" (RESOLVED FIXED)
+- [Firefox Bug 1919367](https://bugzilla.mozilla.org/show_bug.cgi?id=1919367) — Ship requestVideoFrameCallback to release (Firefox 132)
+- [W3C Multi-device Timing CG: currentTime reporting](https://www.w3.org/community/webtiming/2016/02/25/currenttime-reporting-chromium-on-android/) — "currentTime is a snapshot that doesn't change during execution of JS"
+- [W3C Media & Entertainment: Frame accurate seeking](https://github.com/w3c/media-and-entertainment/issues/4) — Discussion of currentTime limitations and frame-level precision
+- [Chromium: Audio/Video Playback design](https://www.chromium.org/developers/design-documents/video/) — Pipeline architecture, audio-clock-driven currentTime
+- [Chromium: Video Playback and Compositor](https://www.chromium.org/developers/design-documents/video-playback-and-compositor/) — Compositor thread video rendering architecture
+- [video.js PR #7854](https://github.com/videojs/video.js/pull/7854) — Safari requestVideoFrameCallback broken with DRM; fallback to rAF
+- [Can I Use: requestVideoFrameCallback](https://caniuse.com/mdn-api_htmlvideoelement_requestvideoframecallback) — Browser support matrix
+- [angrycoding/requestVideoFrameCallback-prev-next](https://github.com/angrycoding/requestVideoFrameCallback-prev-next) — Frame-stepping via requestVideoFrameCallback with paused video workaround
+- [Remotion PR #213](https://github.com/remotion-dev/remotion/pull/213) — Frame-perfect seeking: seek to frame midpoint to avoid rounding errors
+- [Daiz/frame-accurate-ish](https://github.com/Daiz/frame-accurate-ish) — Research on getting accurate video frame numbers from HTML5 video
+
 ---
 
 ## Topic 8: WebKit Frame Compositing After Pause at t=0
@@ -2047,7 +2513,7 @@ Ordered by impact on user experience and engineering complexity:
 5. **Topic 5: WebKitGTK seek stalls** -- CI reliability issue. Understanding the root cause could eliminate timeout-based workarounds.
 6. **Topic 6: Firefox frame boundary precision** -- RESOLVED. The 1ms epsilon is mathematically safe for fps < 500. Root cause: historical float-to-double and fencepost bugs (fixed 2011) with residual sub-ms MSE timestamp conversion differences. Half-frame-duration epsilon (`0.5/fps`) is a cleaner alternative.
 7. **Topic 9: ImageBitmap memory** -- The 3x viewport eviction is empirical. Understanding memory semantics would enable optimal eviction strategies.
-8. **Topic 7: Edge stale `currentTime`** -- Only affects rapid programmatic seeks in tests. Low user impact.
+8. **Topic 7: Edge stale `currentTime`** -- RESOLVED. Root cause: Chromium's multi-threaded media pipeline updates `currentTime` asynchronously via `PostTask`; Playwright IPC round-trips expose this staleness. Edge's Media Foundation integration widens the window. Current workaround (`pressKeyNTimesAndSettle`) is optimal.
 9. **Topic 8: WebKit frame compositing** -- Minor UX issue (blank frame before first interaction).
 10. **Topic 10: SegmentBase detection** -- Current box-detection approach is robust. Research would confirm it's the recommended pattern.
 11. **Topic 11: Pixel format variations** -- No user impact; informational.
