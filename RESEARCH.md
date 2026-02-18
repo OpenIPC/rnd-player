@@ -2462,6 +2462,565 @@ All `loadPlayerWith*()` functions include an explicit `video.currentTime = 0` se
 - WebKit Bugzilla: "first frame" + paused, "video blank" + paused
 - WebKit source: `HTMLMediaElement::updateActiveTextTrackCues` / compositing path
 
+### Findings
+
+#### Q1: Is this a known WebKit behavior?
+
+**Yes — this is a well-documented WebKit behavior with multiple manifestations across platforms.**
+
+**The `show poster flag` mechanism (WebKit Changeset 269407)**
+
+WebKit changeset 269407 replaced the old `displayMode`-based system with the spec's `show poster flag`. The critical implementation detail:
+
+- `selectMediaResource()` sets `m_showPoster = true`
+- `playInternal()` sets `m_showPoster = false` (the *only* code path that clears it during normal playback)
+- `seekWithTolerance()` does NOT clear the flag — it can only set it to `true` (for seeks past the end)
+- `HTMLVideoElement::mediaPlayerFirstVideoFrameAvailable()` checks: `if (showPosterFlag()) return;` — when the poster flag is set, the compositor layer update is **skipped entirely**
+
+This means after loading + pausing (without ever calling `play()`), the poster flag remains `true`, and even though the media backend has decoded the first frame and `readyState` reaches `HAVE_CURRENT_DATA`, the compositor never receives the pixel data.
+
+**GStreamer backend (WebKitGTK / Linux)**
+
+The GStreamer media player backend (`MediaPlayerPrivateGStreamer.cpp`) handles first-frame rendering through:
+
+1. `VideoSinkGStreamer` emits `"repaint-requested"` signal when the first sample reaches the sink (logged as "First sample reached the sink, triggering video dimensions update")
+2. `MediaPlayerPrivateGStreamer::triggerRepaint()` processes the `GstSample` and calls `pushTextureToCompositor()`
+3. However, `pushTextureToCompositor()` requires the compositing layer to be set up, which depends on `mediaPlayerFirstVideoFrameAvailable()` having NOT returned early due to the poster flag
+
+There is also a known deadlock risk: "The main thread can be waiting for the GStreamer thread to pause, but the GStreamer thread is locked waiting for the main thread to draw." Accelerated compositing mode avoids this because the sample is processed on the compositor thread rather than the main thread. Without AC (e.g., in headless/CI environments), this can contribute to the blank-frame issue.
+
+**AVFoundation backend (macOS)**
+
+On macOS, `MediaPlayerPrivateMediaSourceAVFObjC` uses `AVSampleBufferDisplayLayer` for MSE content. WebKit Bug #276453 documented "blank video frames seen before" in fullscreen — the fix was calling `renderingModeChanged()` as soon as the `AVSampleBufferDisplayLayer` is staged, rather than waiting for a compositing layer transition. This confirms the display layer can exist without pixel data being visible.
+
+The `hasAvailableVideoFrame()` method on the AVFoundation backend checks `readyForDisplay` on the display layer, which is a separate signal from `readyState`. A frame can be decoded (readyState=2) without the display layer reporting `readyForDisplay = YES`.
+
+**iOS Safari first-frame behavior**
+
+iOS Safari exhibits a more aggressive version of the same issue: it never fetches the first frame without autoplay or user interaction, regardless of `preload` settings. The widely-used workaround is the `#t=0.001` fragment URL hack (WordPress/Gutenberg #51995), which forces the browser to initiate a seek to a non-zero position, triggering the decode + composite pipeline. This is functionally equivalent to our `video.currentTime = 0` workaround.
+
+**WebKit Bugzilla references**:
+- Bug #125157: [MSE][Mac] Support painting MSE video-element to canvas — established the MSE inline painting path
+- Bug #86410: [texmap][GStreamer][GTK] Composited Video support — the original GStreamer compositor integration
+- Bug #206812: MSE video is not drawn onto canvas — related compositing issue for MSE content
+- Changeset 288025: Blank frames in fullscreen with MSE, fixed by `renderingModeChanged()` timing
+- Changeset 269407: The `show poster flag` implementation that is the root cause
+
+#### Q2: HTML spec requirements for first frame display
+
+**Summary**: The HTML Living Standard requires that a paused video element at `readyState >= HAVE_CURRENT_DATA` display "the frame of video corresponding to the current playback position." However, the spec's `show poster flag` mechanism creates a special case for the first frame after load: the poster (or first frame as fallback) is shown until `play()` is called, not until a seek completes. This means a paused video that has never been played is spec-compliant even if it shows the poster instead of the decoded first frame.
+
+**readyState definitions (Section 4.8.11.7 "Ready states")**
+
+The spec defines five readyState levels. The critical transition for frame display is from `HAVE_METADATA` (1) to `HAVE_CURRENT_DATA` (2):
+
+> **HAVE_METADATA (1)**: "Enough of the resource has been obtained that the duration of the resource is available. In the case of a video element, the dimensions of the video are also available. No media data is available for the immediate current playback position."
+
+> **HAVE_CURRENT_DATA (2)**: "Data for the immediate current playback position is available, but either not enough data is available that the user agent could successfully advance the current playback position in the direction of playback at all without immediately reverting to the HAVE_METADATA state, or there is no more data to obtain in the direction of playback. For example, in video this corresponds to the user agent having data from the current frame, but not the next frame."
+
+The `loadeddata` event fires when `readyState` first reaches `HAVE_CURRENT_DATA` or greater. The spec describes this as: "The user agent can render the media data at the current playback position for the first time." This implies a renderable frame exists at this point, but it does not explicitly mandate that the frame be composited to the screen.
+
+**Video element rendering rules (Section 4.8.8 "The video element")**
+
+The spec defines what the video element "represents" (i.e., what should be visually painted) via a priority-ordered set of conditions:
+
+1. **No video data available** (`readyState` is `HAVE_NOTHING`, or `HAVE_METADATA` with no video data obtained, or no video channel): "The `video` element represents its poster frame, if any, or else transparent black with no intrinsic dimensions."
+
+2. **Paused, at first frame, show poster flag is set**: "The `video` element represents its poster frame, if any, or else the first frame of the video."
+
+3. **Paused, but current frame not available** (e.g., seeking/buffering), or **neither potentially playing nor paused** (e.g., seeking/stalled): "The `video` element represents the last frame of the video to have been rendered."
+
+4. **Paused** (general case, show poster flag not set): "The `video` element represents the frame of video corresponding to the current playback position."
+
+5. **Potentially playing**: "The `video` element represents the frame of video at the continuously increasing 'current' position."
+
+Condition 2 is the key to understanding the WebKit behavior. After loading a DASH stream and pausing at time 0, the current playback position IS the first frame, and the `show poster flag` IS set (it was set to `true` during the resource selection algorithm and has not been cleared). So the spec says the video element should represent "its poster frame, if any, or else the first frame of the video." If no `poster` attribute is set, the spec says to show the first frame. In practice, WebKit may interpret "represents" loosely and defer actual compositing of the decoded frame.
+
+**The `show poster flag` lifecycle**
+
+The `show poster flag` controls the poster-to-video transition:
+
+- **Set to `true`**: During the resource selection algorithm (i.e., when `load()` runs or a source is selected). Also set to `true` on error and during certain failure recovery paths.
+
+- **Set to `false`**: Only during the **internal play steps** (i.e., when `play()` is called or autoplay triggers). The spec says: "Set the `paused` attribute to false. If the element's show poster flag is true, set it to false and run the time marches on steps." (Confirmed in WHATWG GitHub issue #4215.)
+
+- **NOT cleared by seeking**: The seeking algorithm does NOT include a step to set the `show poster flag` to `false`. Setting `currentTime` triggers the seeking algorithm, which updates the playback position and fires `seeking`/`seeked` events, but does not touch the poster flag.
+
+This is significant for the observed WebKit behavior: after `loadPlayerWithDash()` pauses at `t=0`, the `show poster flag` remains `true`. Even setting `currentTime = 0` (which triggers a seek) does not clear it per the spec. The video should therefore show the poster frame (condition 2), and since there is no `poster` attribute, it should show "the first frame of the video." The fact that WebKit sometimes shows a blank surface instead of the first frame in this state suggests a compositing timing issue rather than spec non-compliance -- the spec says it "represents" the first frame, but WebKit has not yet composited it.
+
+**Why the explicit seek workaround helps**
+
+Even though the seek does not clear the `show poster flag`, it does trigger the browser's internal seek pipeline: the media engine must locate the frame at the target position and make it available for rendering. This is what forces WebKit's compositor to actually decode and paint the frame. Without the seek, WebKit may have the frame data buffered (hence `readyState >= HAVE_CURRENT_DATA`) but has not yet pushed it through the compositing pipeline for display.
+
+The spec's condition 3 is also relevant: during seeking, the element "represents the last frame of the video to have been rendered." Once the seek completes, it falls back to condition 2 (paused at first frame with show poster flag set), which means "the first frame of the video." The seek-complete transition is what forces WebKit to actually composite the frame.
+
+**Spec ambiguity**: The word "represents" is not defined in terms of specific compositing requirements. The spec does not say "MUST be composited within N milliseconds" or "MUST be visible on the next animation frame." It says what the element "represents," leaving the timing of actual pixel output to implementations. This is the gap that WebKit's deferred compositing falls into.
+
+**References**:
+- HTML Living Standard, Section 4.8.8 "The video element": https://html.spec.whatwg.org/multipage/media.html#the-video-element
+- HTML Living Standard, Section 4.8.11.7 "Ready states": https://html.spec.whatwg.org/multipage/media.html#ready-states
+- HTML Living Standard, "Playing the media resource" (internal play steps): https://html.spec.whatwg.org/multipage/media.html#playing-the-media-resource
+- WHATWG GitHub issue #4215 (show poster flag in play steps): https://github.com/whatwg/html/issues/4215
+- WHATWG GitHub issue #9279 (HAVE_METADATA dimensions ambiguity): https://github.com/whatwg/html/issues/9279
+
+#### Q3: Effect of `video.poster` on first-frame compositing
+
+**Summary**: The `poster` attribute changes WHAT is displayed (a poster image instead of the decoded first frame) but does not fundamentally change WHEN the browser transitions to showing video frame content. The transition from poster to video frame is governed by the `show poster flag`, which is only cleared by `play()` or autoplay, not by `readyState` changes or seeking. In the absence of a `poster` attribute, the spec requires the first frame to be shown as a fallback -- but WebKit's deferred compositing means this fallback may not actually be painted without an explicit seek.
+
+**The poster attribute spec text (Section 4.8.8)**
+
+> "The `poster` attribute gives the URL of an image file that the user agent can show while no video data is available."
+
+> "The image given by the `poster` attribute, the *poster frame*, is intended to be a representative frame of the video (typically one of the first non-blank frames) that gives the user an idea of what the video is like."
+
+The poster frame is determined independently of the `show poster flag`:
+
+> "When the element is created or when the `poster` attribute is set, changed, or removed, the user agent must run the following steps to determine the element's poster frame (regardless of the value of the element's show poster flag)."
+
+If the `poster` attribute is absent or empty, there is no poster frame. The rendering rules then fall through to the "or else" branches.
+
+**How poster affects rendering at each state**
+
+Looking at the rendering rules from Q2 above, the poster attribute affects two conditions:
+
+1. **No video data available**: "represents its poster frame, if any, or else transparent black." With `poster` set, a poster image is shown. Without `poster`, the element is transparent black (no visible content).
+
+2. **Paused at first frame, show poster flag set**: "represents its poster frame, if any, or else the first frame of the video." With `poster` set, the poster image is shown. Without `poster`, the first decoded video frame should be shown.
+
+Once the `show poster flag` is cleared (by `play()`), the poster attribute has no effect on rendering -- the video always shows the frame at the current playback position regardless of whether a `poster` is set.
+
+**Does setting `poster` suppress first-frame compositing?**
+
+Yes, in a specific sense: when the `show poster flag` is set (which is the default after load), a `poster` attribute causes the browser to display the poster image INSTEAD of the first video frame. The browser has no obligation to decode or composite the first video frame while the poster is being shown. This means:
+
+- **With `poster`**: The browser shows the poster image. The first video frame may not be decoded/composited until `play()` is called.
+- **Without `poster`**: The spec says to show "the first frame of the video" as a fallback. The browser must decode and composite the first frame even while paused at position 0 with the show poster flag set.
+
+In theory, the absence of a `poster` attribute should FORCE the browser to show the first decoded frame sooner (since there is no poster image to fall back to). In practice, WebKit's behavior suggests it does not eagerly composite the first frame even when the spec requires it as the poster fallback.
+
+**Browser differences in poster-to-video transition timing**
+
+The transition from poster to video frame display varies across browsers:
+
+- **Chromium/Edge**: Transition happens reliably at `loadeddata` (readyState reaches `HAVE_CURRENT_DATA`). Even without calling `play()`, a paused video with no poster shows the first decoded frame immediately. Chromium appears to eagerly composite the first frame as soon as it is decoded.
+
+- **Firefox**: Similar to Chromium. The first frame is composited at `loadeddata` when no poster is set. Firefox also reliably shows the first frame on pause without needing an explicit seek.
+
+- **WebKit (macOS Safari, Playwright WebKit)**: The poster-to-first-frame transition is unreliable when paused. Even with `readyState >= HAVE_CURRENT_DATA` and no poster attribute, the video surface may remain blank until an explicit seek or `play()`/`pause()` cycle forces compositing. This is the behavior observed in the E2E tests.
+
+- **iOS Safari**: More restrictive still. The first frame is never fetched without autoplay or user interaction. Setting `preload="auto"` does not help -- iOS Safari only supports preloading up to "metadata" level. The common workaround is the `#t=0.001` media fragment URL, which forces the browser to seek to a non-zero position and triggers frame decoding.
+
+**The `#t=0.001` workaround and why it works**
+
+A widely-used workaround for iOS Safari (and sometimes desktop Safari) is appending `#t=0.001` to the video source URL. This works because:
+
+1. The media fragment triggers a seek to 0.001 seconds during resource loading.
+2. The seek forces the browser to decode the frame at that position.
+3. The decoded frame is then composited as the "current frame" at the seek target.
+
+This is analogous to the explicit `currentTime = 0` seek used in the E2E helpers -- both force the browser's seek pipeline to run, which triggers frame decoding and compositing as a side effect.
+
+**Practical implications for the player**
+
+Since the R&D Player does not use the `poster` attribute (no `poster` prop is set on the `<video>` element), the spec requires the first frame to be shown as the poster fallback when paused at position 0 with the show poster flag set. WebKit's failure to do so is a browser implementation gap, not spec-compliant behavior. The explicit `currentTime = 0` seek in `loadPlayerWith*()` functions is a valid workaround that forces WebKit to run its seek pipeline and composite the frame.
+
+An alternative workaround would be `play().then(() => pause())`, which would clear the `show poster flag` (since `play()` sets it to `false`) and trigger the "time marches on" steps. However, this introduces a brief moment of playback and may cause visible flicker, making the seek-based approach preferable.
+
+**WebKit source code evidence**
+
+WebKit changeset 269407 (https://trac.webkit.org/changeset/269407/webkit) refactored the poster/first-frame display logic. Key changes:
+- Replaced the old `displayMode` state machine (`Unknown`, `Poster`, `PosterWaitingForVideo`, `Video`) with a simpler `m_showPoster` boolean matching the spec's `show poster flag`.
+- `playInternal()` calls `setShowPosterFlag(false)` -- matching the spec.
+- `seekWithTolerance()` calls `setShowPosterFlag()` but sets it to `true` in certain conditions (not `false`), confirming that seeking does NOT clear the poster flag.
+- A test `video-poster-visible-after-first-video-frame.html` was added to verify poster visibility behavior.
+
+This changeset confirms that WebKit intentionally keeps the `show poster flag` set during seeks, consistent with the spec. The compositing of the first frame as a poster fallback (when no `poster` attribute is set) is a separate code path that may not be triggered as eagerly as the spec's "represents" language implies.
+
+**References**:
+- HTML Living Standard, Section 4.8.8, poster attribute: https://html.spec.whatwg.org/multipage/media.html#attr-video-poster
+- WebKit changeset 269407 (show poster flag refactor): https://trac.webkit.org/changeset/269407/webkit
+- WordPress/Gutenberg issue #51995 (iOS Safari first frame): https://github.com/WordPress/gutenberg/issues/51995
+- SiteLint blog on Safari video fixes: https://www.sitelint.com/blog/fixing-html-video-autoplay-blank-poster-first-frame-and-improving-performance-in-safari-and-ios-devices
+- Apple Developer Forums thread on poster visibility: https://developer.apple.com/forums/thread/129377
+
+#### Q4: readyState and compositing relationship
+
+**Summary**: Yes, WebKit can report `readyState >= HAVE_CURRENT_DATA` (2) while the video surface is still blank/transparent. The `readyState` transition is driven by the media pipeline's buffer state (data is available for the current position), but actual compositing of the frame to the screen is a separate, asynchronous process involving the compositor thread/layer tree. There is a temporal gap between "data is available" and "frame is painted," and this gap is most pronounced in WebKit's GStreamer backend (WebKitGTK) and AVFoundation backend (macOS WebKit) when the video is paused immediately after load.
+
+**The spec's readyState definition does not require compositing**
+
+The HTML Living Standard (Section 4.8.11.7) defines `HAVE_CURRENT_DATA` as:
+
+> "Data for the immediate current playback position is available, but either not enough data is available that the user agent could successfully advance the current playback position in the direction of playback at all without immediately reverting to the HAVE_METADATA state, or there is no more data to obtain in the direction of playback."
+
+The spec also states that the distinction between `HAVE_METADATA` and `HAVE_CURRENT_DATA` is primarily relevant "when painting a video element onto a canvas, where it distinguishes the case where something will be drawn (`HAVE_CURRENT_DATA` or greater) from the case where nothing is drawn." This implies that `HAVE_CURRENT_DATA` means the frame CAN be drawn, not that it HAS been drawn. The transition signals decodable data availability, not visual presentation completion.
+
+The `loadeddata` event fires when `readyState` first reaches `HAVE_CURRENT_DATA` or greater. The spec describes this as: "The user agent can render the media data at the current playback position for the first time." The word "can" is crucial -- it indicates capability, not confirmation of rendering.
+
+**WebKit's three-stage pipeline: decode -> readyState -> composite**
+
+In WebKit's architecture, the readyState transition and frame compositing are decoupled into separate stages:
+
+1. **Decode stage** (GStreamer or AVFoundation thread): The media backend decodes a frame and stores it in a sample buffer. On the GStreamer path, `MediaPlayerPrivateGStreamer::triggerRepaint(GRefPtr<GstSample>&&)` is called when a decoded sample reaches the video sink. The sample is stored in `m_sample` under `m_sampleMutex`. On AVFoundation, `AVPlayer.status == .readyToPlay` fires when the player item has enough data to begin playback, but the first frame may not yet be in the display pipeline.
+
+2. **readyState transition** (main thread, asynchronous): The GStreamer backend calls `updateStates()` from `handleMessage()` when it receives `GST_MESSAGE_STATE_CHANGED`. This method evaluates buffering state and calls `setReadyState(HaveCurrentData)` or higher. However, `updateStates()` runs asynchronously on the main thread via GLib's task scheduling -- it is NOT synchronous with the decode stage. The frame is available in `m_sample` before `setReadyState` fires. The `setReadyState` call fires the `loadeddata` event on the `HTMLMediaElement`.
+
+3. **Composite stage** (compositor thread, deferred): WebKit's `HTMLVideoElement::mediaPlayerFirstVideoFrameAvailable()` is the callback that triggers compositing. Its implementation (from WebKit source, `HTMLVideoElement.cpp`):
+
+```cpp
+void HTMLVideoElement::mediaPlayerFirstVideoFrameAvailable()
+{
+    if (showPosterFlag())
+        return;  // *** KEY: if poster flag is set, compositing is SKIPPED ***
+
+    invalidateStyleAndLayerComposition();
+
+    if (RefPtr player = this->player())
+        player->prepareForRendering();
+
+    if (CheckedPtr renderer = this->renderer()) {
+        renderer->updateFromElement();
+        // ...
+    }
+}
+```
+
+The critical line is: `if (showPosterFlag()) return;`. When the `show poster flag` is `true` (which it is after load, as established in Q2), this method returns WITHOUT calling `invalidateStyleAndLayerComposition()`. The compositing layer is never updated with the decoded frame data. This is the root cause.
+
+After this early return, the decoded frame exists in the media backend's sample buffer (hence `readyState >= HAVE_CURRENT_DATA`), but the compositor layer has not been given the pixel data. The video surface remains blank/transparent because the `GraphicsLayer` backing the `<video>` element has no texture to draw.
+
+**When does compositing actually happen?**
+
+The compositor receives frame data in one of these scenarios:
+
+- **`play()` is called**: Clears the `show poster flag` (via `setShowPosterFlag(false)`), and the rendering pipeline starts pulling frames from the media backend on each vsync via the compositor thread. The first frame is composited within 1-2 vsyncs.
+
+- **A seek completes**: The seeking algorithm triggers `seekTask()`, which calls `setShowPosterFlag()`. Per changeset 269407, `seekWithTolerance()` sets the poster flag based on conditions, but the seek completion path also calls into the media backend's seek pipeline, which causes the backend to push a new sample. After seek completion, `mediaPlayerFirstVideoFrameAvailable()` may be called again (if the poster flag is now `false`), or the rendering pipeline may be updated through `invalidateStyleAndLayerComposition()` from `setShowPosterFlag(false)`. Even if the poster flag remains `true`, the seek forces the backend to re-resolve the current frame, and this resolution path can trigger compositing through a different code path (the `RenderVideo::paintReplaced` method, which pulls from the media backend's current sample).
+
+- **The compositor requests a frame for painting**: During the normal paint cycle, `RenderVideo::paintReplaced()` calls `player()->paintCurrentFrameInContext()`, which retrieves the sample from the backend. However, this only happens if the compositor knows the layer is dirty -- which requires `invalidateStyleAndLayerComposition()` to have been called.
+
+**Does Chromium have the same behavior?**
+
+No. Chromium's pipeline handles this differently:
+
+In Chromium, `WebMediaPlayerImpl` delivers the first decoded frame directly to the `VideoFrameCompositor` (via `current_frame_`), and the compositor thread pulls it via `cc::VideoLayerImpl::WillDraw` -> `GetCurrentFrame()` on each vsync. The compositing layer always has the latest frame -- there is no poster flag gating on the compositor side. The `readyState` transition to `HAVE_CURRENT_DATA` and the first frame's arrival at the compositor happen in close succession because:
+
+1. The frame is delivered to `VideoFrameCompositor` by the decode thread.
+2. `DidReceiveFrame()` signals the compositor to schedule a redraw via `SetNeedsRedraw()`.
+3. On the next vsync, `VideoLayerImpl` uploads the frame texture.
+4. In parallel, `SetReadyState(kHaveCurrentData)` is called on the main thread.
+
+Steps 2-3 happen on the compositor thread independently of step 4 on the main thread. Chromium does not gate compositing on the poster flag at the compositor level -- the frame is composited as soon as it arrives, regardless of the HTMLMediaElement's poster state. The poster image, if any, is handled at a higher level as an overlay, not as a gate on the video layer's texture updates.
+
+This is why Chromium reliably shows the first frame at `loadeddata` time, while WebKit does not.
+
+**Does Firefox have the same behavior?**
+
+Firefox also does not exhibit this gap. Firefox's media pipeline (backed by GStreamer on Linux, and platform decoders on other OSes) pushes the first decoded frame to the compositor layer via `ImageContainer::SetCurrentImage()`, which triggers an asynchronous compositing update. The `readyState` transition and compositor update happen in parallel, and Firefox does not gate compositing on the `show poster flag` at the compositor level. The GStreamer `BGRX` pixel format output is converted and uploaded to a texture on the compositor thread, and the next vsync paints it.
+
+**The GStreamer path: decode to composite gap**
+
+On the GStreamer (WebKitGTK) path, the sequence is:
+
+1. GStreamer video sink receives a decoded buffer -> emits `repaint-requested` signal.
+2. `MediaPlayerPrivateGStreamer::triggerRepaint()` stores the `GstSample` in `m_sample`.
+3. In accelerated compositing (AC) mode: the sample is processed on the compositor thread, so `m_drawCondition` is signaled and the GStreamer thread continues. In non-AC mode: the main thread must process the sample, which can cause a deadlock if the player is paused while the GStreamer thread waits.
+4. `updateStates()` runs on the main thread (from GLib task queue), evaluates `firstVideoSampleReachedSink()` (which checks `!!m_sample`), and transitions `readyState` to `HaveCurrentData`.
+5. `loadeddata` event fires on the main thread.
+
+The gap is between steps 2 and 5 (sample available in buffer) and whenever `invalidateStyleAndLayerComposition()` actually runs. If `mediaPlayerFirstVideoFrameAvailable()` bails out due to the poster flag (step 3 of the three-stage pipeline above), the compositor layer never learns about the new frame. The frame sits in `m_sample` indefinitely, and `readyState` is 2+ (HAVE_CURRENT_DATA), but the video surface shows nothing.
+
+Under CI VM load, this gap can be even wider because GLib task scheduling competes with other main-thread work, and the compositor thread may not get CPU time to process the sample promptly even if it is notified.
+
+**The AVFoundation path: `readyToPlay` vs composited**
+
+On the macOS AVFoundation path (`MediaPlayerPrivateMediaSourceAVFObjC`), `AVPlayer.status == .readyToPlay` fires when the player item has sufficient data to begin playback. However, `readyToPlay` does NOT mean a frame has been composited to the `AVPlayerLayer` or its equivalent in WebKit's compositing tree.
+
+`AVPlayerLayer` has a separate property `isReadyForDisplay` that indicates whether the layer has usable video data for display. In WebKit's integration, the transition from `readyToPlay` to actual frame display involves:
+
+1. `AVPlayer.status` changes to `.readyToPlay` -> triggers `readyState` update on the media element.
+2. `AVPlayerLayer.isReadyForDisplay` becomes `true` asynchronously -- typically within a few vsyncs.
+3. The layer's contents are composited to the screen via Core Animation.
+
+Steps 2 and 3 happen asynchronously after step 1. If the video is paused immediately after `readyToPlay`, the `AVPlayerLayer` may not yet have called `isReadyForDisplay = true`, meaning the compositor has no frame to show. This matches the observed behavior on macOS WebKit where `readyState >= 2` but the video surface is blank.
+
+**Practical verification: `readyState` alone is NOT a reliable frame-visibility signal**
+
+The following scenarios demonstrate the gap:
+
+| Scenario | `readyState` | Frame composited? | Notes |
+|----------|-------------|-------------------|-------|
+| After `loadeddata`, paused, never played (WebKit) | >= 2 | **No** | Poster flag gates `mediaPlayerFirstVideoFrameAvailable()` |
+| After `loadeddata`, paused, never played (Chromium) | >= 2 | **Yes** | Compositor layer always gets frames |
+| After `loadeddata`, `play()` then `pause()` (WebKit) | >= 2 | **Yes** | `play()` clears poster flag, triggers compositing |
+| After `loadeddata`, `currentTime = 0` seek (WebKit) | >= 2 | **Usually yes** | Seek pipeline forces frame resolution |
+| After `loadeddata`, WebKitGTK under VM load | >= 2 | **Sometimes no** | Seek can stall; compositor update delayed |
+
+**References**:
+- HTML Living Standard, Section 4.8.11.7 "Ready states": https://html.spec.whatwg.org/multipage/media.html#ready-states
+- MDN: HTMLMediaElement.readyState: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/readyState
+- WebKit source HTMLVideoElement.cpp (mediaPlayerFirstVideoFrameAvailable): https://github.com/WebKit/webkit/blob/main/Source/WebCore/html/HTMLVideoElement.cpp
+- WebKit changeset 269407 (showPosterFlag refactor): https://trac.webkit.org/changeset/269407/webkit
+- WebKit MediaPlayerPrivateGStreamer.cpp (triggerRepaint, updateStates): https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/gstreamer/MediaPlayerPrivateGStreamer.cpp
+- WebKit Bug 254399 (MSE readyState oscillation): https://bugs.webkit.org/show_bug.cgi?id=254399
+- Chromium VideoNG architecture (frame flow to compositor): https://developer.chrome.com/docs/chromium/videong
+- Chromium Video Playback and Compositor design doc: https://www.chromium.org/developers/design-documents/video-playback-and-compositor/
+- AVFoundation AVPlayerLayer.isReadyForDisplay: https://developer.apple.com/documentation/avfoundation/avplayerlayer/1389748-isreadyfordisplay
+
+#### Q5: Alternative workarounds to force first-frame compositing
+
+**Summary**: The current workaround (conditional seek to t=0 only when `currentTime !== 0`) has a critical weakness: it does nothing when the video is already at position 0. An unconditional self-seek (`video.currentTime = 0` always) is the simplest fix. Among alternative approaches, `play().then(() => pause())` is the most semantically correct (it clears the `show poster flag` per spec), while `requestVideoFrameCallback` provides the strongest confirmation of compositing. The recommended fix is: unconditional self-seek + `requestVideoFrameCallback` wait (with double-rAF fallback).
+
+**Analysis of the current workaround's weakness**
+
+The current code in `e2e/helpers.ts` (lines 92-104):
+
+```javascript
+if (video.currentTime !== 0) {
+  const seeked = new Promise((resolve) =>
+    video.addEventListener("seeked", resolve, { once: true }),
+  );
+  video.currentTime = 0;
+  await Promise.race([seeked, new Promise((r) => setTimeout(r, 5000))]);
+}
+```
+
+When the video is loaded and paused by Shaka Player, `currentTime` may already be `0`. In that case, the `if` condition is `false`, no seek is issued, and the `show poster flag` remains set. As established in Q4, WebKit's `mediaPlayerFirstVideoFrameAvailable()` returns early when the poster flag is set, so the compositor never receives the frame. The video surface remains blank.
+
+This explains the intermittent blank-frame issue: sometimes Shaka Player's internal DASH initialization seeks leave `currentTime` at a non-zero position (triggering the workaround), and sometimes they leave it at exactly 0 (skipping the workaround).
+
+**Alternative 1: Unconditional self-seek (`video.currentTime = video.currentTime`)**
+
+```javascript
+// Always seek, even if already at time 0
+video.pause();
+const seeked = new Promise((resolve) =>
+  video.addEventListener("seeked", resolve, { once: true }),
+);
+video.currentTime = 0;
+await Promise.race([seeked, new Promise((r) => setTimeout(r, 5000))]);
+```
+
+Setting `video.currentTime = 0` when `currentTime` is already `0` triggers a seek to the same position. Per the HTML spec (Section 4.8.11.9 "Seeking"), setting `currentTime` always runs the seek algorithm, even if the new value equals the current value. The seek algorithm:
+1. Sets the `seeking` IDL attribute to `true`.
+2. Fires a `seeking` event.
+3. The media backend resolves the frame at the target position.
+4. Fires a `seeked` event when complete.
+
+This forces WebKit's media backend to re-resolve the frame at t=0, which triggers the seek completion path in the compositor. The key insight is that the seek pipeline includes a frame resolution step that bypasses the `show poster flag` gate.
+
+**Pros**: Minimal change from current workaround (remove the `if` condition). Works on all browsers. Does not change the `show poster flag` state. Does not cause visible playback. **Cons**: On WebKitGTK under CI VM load, even self-seeks can stall (`video.seeking` stuck at `true`). The 5s timeout handles this but means occasional 5s delays. The seek is technically unnecessary on Chromium/Firefox (where compositing works without it), adding ~16ms latency.
+
+**Alternative 2: `video.play()` then `video.pause()`**
+
+```javascript
+video.pause();
+await video.play();
+video.pause();
+// Wait for the pause to settle
+await new Promise((resolve) =>
+  video.addEventListener("pause", resolve, { once: true }),
+);
+```
+
+This approach clears the `show poster flag` because `play()` calls `setShowPosterFlag(false)` (per the spec and confirmed in WebKit changeset 269407). Once the poster flag is cleared, `mediaPlayerFirstVideoFrameAvailable()` no longer returns early, and subsequent calls to `invalidateStyleAndLayerComposition()` trigger compositing.
+
+**Pros**: Semantically correct -- it clears the poster flag per spec, which is the root cause of the compositing gate. Works on all browsers. After the `play()`/`pause()` cycle, all future seeks will also trigger compositing because the poster flag remains `false`. **Cons**: Causes a brief moment of actual playback. Even with immediate `pause()` after `play()`, the media pipeline advances by at least one frame duration (~33ms at 30fps). This shifts `currentTime` away from exactly `0`, requiring an additional seek back to `0` to ensure the first frame is displayed. The `play()` promise may reject due to autoplay policy on some browsers (though unlikely in a Playwright test context). Also, `play()` on DRM content before the key is entered will fail. The combination of play + pause + seek is three async operations instead of one.
+
+**Alternative 3: `requestVideoFrameCallback` wait**
+
+```javascript
+video.pause();
+video.currentTime = 0;
+await new Promise((resolve) => {
+  const handle = video.requestVideoFrameCallback((now, metadata) => {
+    resolve();
+  });
+  // Timeout fallback
+  setTimeout(() => resolve(), 5000);
+});
+```
+
+`requestVideoFrameCallback` fires when a new video frame is sent to the compositor. Per the WICG spec discussion (issue #53), when a paused video is seeked, the callback fires once for the resulting frame. Dale Curtis (Chromium video team) confirmed: "When paused you're guaranteed to get the on-screen frame in the callback; it may just be a vsync late."
+
+**Important caveat**: The callback must be registered BEFORE the seek. If `requestVideoFrameCallback` is called after `video.currentTime = 0` completes, the callback may never fire because the frame was already composited.
+
+Correct pattern:
+
+```javascript
+video.pause();
+const frameReady = new Promise((resolve) => {
+  video.requestVideoFrameCallback(() => resolve());
+});
+video.currentTime = 0;
+await Promise.race([frameReady, new Promise((r) => setTimeout(r, 5000))]);
+```
+
+**Pros**: Provides a POSITIVE signal that the frame has been composited, rather than inferring from `seeked` event + double-rAF. The `metadata.mediaTime` in the callback gives the exact PTS of the composited frame, useful for debugging. Works across all modern browsers (Chrome 83+, Safari 15.4+, Firefox 132+, Edge). **Cons**: Safari disables `requestVideoFrameCallback` when DRM (FairPlay) content is playing ([video.js PR #7854](https://github.com/videojs/video.js/pull/7854)). ClearKey DRM may trigger this restriction on Safari, though the encrypted tests in this project would need to verify. Without a timeout fallback, a missing callback hangs forever. Adds API detection complexity (`'requestVideoFrameCallback' in HTMLVideoElement.prototype`).
+
+**Alternative 4: `getVideoPlaybackQuality().totalVideoFrames > 0` polling**
+
+```javascript
+video.pause();
+video.currentTime = 0;
+const start = Date.now();
+while (Date.now() - start < 5000) {
+  const quality = video.getVideoPlaybackQuality();
+  if (quality && quality.totalVideoFrames > 0) break;
+  await new Promise((r) => setTimeout(r, 16));
+}
+```
+
+`totalVideoFrames` counts frames that have been "displayed or dropped since the media was loaded." If it is `> 0`, at least one frame has been processed for display. This is the same heuristic used by the `requestVideoFrameCallback` polyfill ([ThaUnknown/rvfc-polyfill](https://github.com/ThaUnknown/rvfc-polyfill)).
+
+**Pros**: Works on all browsers including those without `requestVideoFrameCallback`. Simple polling pattern. **Cons**: `totalVideoFrames` includes dropped frames, so `> 0` does not guarantee a frame was PAINTED -- only that it was submitted for display. Polling at 16ms intervals is imprecise. On WebKit, `webkitDecodedFrameCount` and `webkitDroppedFrameCount` may be used via polyfill mapping but are non-standard. This is strictly weaker than `requestVideoFrameCallback`.
+
+**Alternative 5: `requestPictureInPicture()` then exit (force compositing side effect)**
+
+This was mentioned as a theoretical option. In practice, it is unsuitable:
+- Requires user gesture in most browsers.
+- Causes visible UI disruption (PiP window opens/closes).
+- Not supported in all test environments.
+- Playwright may not support PiP API interactions.
+
+**Not recommended.**
+
+**Alternative 6: CSS `willChange` toggling**
+
+```javascript
+video.style.willChange = "transform";
+await new Promise((r) => requestAnimationFrame(r));
+video.style.willChange = "";
+```
+
+Toggling `willChange: transform` forces the browser to promote the element to its own compositing layer and then demote it. Some developers have reported this forces a repaint of the video surface on Safari. However, this is an undocumented side effect, not a reliable mechanism. It also does not address the root cause (the `show poster flag` gating `mediaPlayerFirstVideoFrameAvailable()`).
+
+**Not recommended for production use.**
+
+**Comparison table**
+
+| Approach | Clears poster flag? | Guarantees compositing? | DRM-safe? | WebKitGTK-safe? | Complexity |
+|----------|-------------------|------------------------|-----------|----------------|------------|
+| Current (conditional seek) | No | No (skips when at t=0) | Yes | Partial (stalls) | Low |
+| Unconditional self-seek | No | Yes (forces seek pipeline) | Yes | Partial (stalls) | Low |
+| `play()` + `pause()` | **Yes** | Yes | No (may fail pre-key) | Yes | Medium |
+| `requestVideoFrameCallback` | No | **Yes** (positive signal) | Partial (Safari DRM) | Yes | Medium |
+| `totalVideoFrames` polling | No | Partial (includes drops) | Yes | Yes | Low |
+| CSS `willChange` toggle | No | No (undocumented) | Yes | Unknown | Low |
+
+**Recommended approach: unconditional self-seek + requestVideoFrameCallback confirmation**
+
+The optimal fix combines the simplest reliable trigger (unconditional self-seek) with the strongest confirmation signal (`requestVideoFrameCallback`):
+
+```javascript
+// Pause and force-seek to time 0 to ensure frame "0000" is composited.
+// The seek is unconditional because WebKit may not composite the first frame
+// after load even when currentTime is already 0 (show poster flag gates
+// mediaPlayerFirstVideoFrameAvailable in HTMLVideoElement.cpp).
+await page.evaluate(async () => {
+    const video = document.querySelector("video")!;
+    video.pause();
+
+    // Register rVFC BEFORE seeking so it catches the resulting frame.
+    // Falls back to double-rAF if rVFC is not available.
+    const frameComposited = ('requestVideoFrameCallback' in video)
+      ? new Promise<void>((resolve) => {
+          video.requestVideoFrameCallback(() => resolve());
+        })
+      : new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+
+    const seeked = new Promise((resolve) =>
+      video.addEventListener("seeked", resolve, { once: true }),
+    );
+    video.currentTime = 0;  // Unconditional — always trigger seek pipeline
+
+    await Promise.race([
+      seeked.then(() => frameComposited),
+      new Promise((r) => setTimeout(r, 5000)),  // Timeout for WebKitGTK stalls
+    ]);
+});
+```
+
+This approach:
+1. Always issues a seek (even if already at t=0), forcing the media backend to re-resolve the current frame.
+2. Waits for the `seeked` event (seek complete), then waits for `requestVideoFrameCallback` (frame composited).
+3. Falls back to double-rAF on browsers without `requestVideoFrameCallback` (though all CI browsers now support it).
+4. Retains the 5s timeout to handle WebKitGTK seek stalls.
+
+**Why not just use `play()` + `pause()`?**
+
+While `play()` + `pause()` is semantically correct (it clears the root-cause poster flag), it has practical downsides in the E2E test context:
+- It advances `currentTime` by at least one frame, requiring an additional seek back to `0`.
+- The `play()` promise may reject before a DRM key is entered (encrypted tests).
+- Three async operations (play + pause + seek) vs one (seek).
+- On WebKitGTK, the `play()` + `pause()` race under VM load may produce unpredictable results.
+
+The unconditional self-seek is simpler, compatible with all test scenarios (including encrypted), and addresses the symptom directly (forcing the compositor to receive frame data via the seek pipeline).
+
+**References**:
+- HTML Living Standard, Section 4.8.11.9 "Seeking" (self-seek triggers algorithm): https://html.spec.whatwg.org/multipage/media.html#seeking
+- WICG video-rvfc issue #53 (rVFC behavior when paused): https://github.com/WICG/video-rvfc/issues/53
+- MDN: requestVideoFrameCallback: https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback
+- video.js PR #7854 (Safari rVFC broken with DRM): https://github.com/videojs/video.js/pull/7854
+- web.dev: requestVideoFrameCallback explainer: https://web.dev/articles/requestvideoframecallback-rvfc
+- ThaUnknown/rvfc-polyfill (totalVideoFrames-based polyfill): https://github.com/ThaUnknown/rvfc-polyfill
+- WordPress/Gutenberg #51995 (#t=0.001 workaround): https://github.com/WordPress/gutenberg/issues/51995
+- WebKit changeset 269407 (setShowPosterFlag in play/seek): https://trac.webkit.org/changeset/269407/webkit
+- SiteLint blog on Safari video fixes: https://www.sitelint.com/blog/fixing-html-video-autoplay-blank-poster-first-frame-and-improving-performance-in-safari-and-ios-devices
+
+#### Q6: Does this affect real Safari or only Playwright's patched WebKit?
+
+**Both — but through different mechanisms.**
+
+**Playwright's WebKit is not the same as Safari.** Playwright ships a patched WebKit build based on the open-source WebKit trunk. On Linux, this is WebKitGTK (GStreamer-based media pipeline). On macOS, it uses the native AVFoundation backend but with Playwright-specific patches for automation. Neither is Safari — Safari uses a private WebKit fork with additional Apple-internal code (GPU process, AVFoundation integration, and media pipeline optimizations not present in the open-source trunk).
+
+**However, the core issue exists in both because it's in shared `HTMLMediaElement` code:**
+
+1. **The `show poster flag` mechanism** is implemented in `Source/WebCore/html/HTMLMediaElement.cpp` — shared code between Safari, WebKitGTK, and WPE. Changeset 269407 (the show poster flag refactor) affects all WebKit-based browsers equally.
+
+2. **`HTMLVideoElement::mediaPlayerFirstVideoFrameAvailable()`** with its `if (showPosterFlag()) return;` check is in `Source/WebCore/html/HTMLVideoElement.cpp` — also shared code.
+
+3. **The iOS Safari `#t=0.001` workaround** (WordPress/Gutenberg #51995, Stack Overflow answers, SiteLint blog post) demonstrates that real Safari has the same underlying issue. iOS Safari is even more aggressive — it refuses to fetch any video data without user interaction or autoplay, so `preload="auto"` is ignored. The `#t=0.001` hack works because the fragment URL forces a seek during load, which triggers the decode + composite pipeline.
+
+**Platform-specific differences in severity:**
+
+| Platform | Behavior | Why |
+|----------|----------|-----|
+| **WebKitGTK (Playwright Linux)** | Blank frame after load+pause, intermittent | GStreamer preroll may or may not push texture to compositor before poster flag check |
+| **macOS WebKit (Playwright)** | Blank frame after load+pause, more reliable | AVFoundation `AVSampleBufferDisplayLayer` requires explicit `renderingModeChanged()` call |
+| **Real Safari (macOS)** | Usually shows first frame, less affected | Safari's private media pipeline may eagerly composite, but the spec issue exists |
+| **Real Safari (iOS)** | Always blank without interaction/autoplay | iOS-specific preload restrictions compound the poster flag issue |
+
+**Why real Safari is less affected in practice**: Safari's private WebKit fork includes media pipeline optimizations not present in the open-source trunk. The GPU process architecture and `AVFoundation` integration in real Safari may eagerly push frames to the display layer on initial load, masking the poster-flag-gates-compositing issue. However, the race condition still exists — it's just harder to trigger because Safari's media pipeline is faster than WebKitGTK's GStreamer pipeline on CI VMs.
+
+**Playwright-specific considerations:**
+- Playwright patches WebKit's automation layer (`WebDriver`), not the media pipeline
+- The `--disable-web-security` and headless/headed mode flags can affect compositing behavior
+- WebKitGTK on Linux uses software compositing (TextureMapper) rather than GPU compositing, making the `triggerRepaint` → `pushTextureToCompositor` path slower and more sensitive to timing
+- Playwright issue #3261 confirms they ship WebKit builds targeting Safari-compatible behavior for `<video>`, but acknowledge differences exist
+
+**Conclusion**: The issue is fundamentally in shared WebKit code (HTMLMediaElement.cpp, HTMLVideoElement.cpp) and affects all WebKit-based browsers. The workaround (unconditional seek) is correct for all platforms, not just Playwright.
+
+#### Summary
+
+**Root cause**: WebKit's `HTMLVideoElement::mediaPlayerFirstVideoFrameAvailable()` returns early without calling `invalidateStyleAndLayerComposition()` when the `show poster flag` is `true`. After loading a DASH stream and pausing, the poster flag is `true` (set during resource selection per spec) and is NOT cleared by seeking (only `play()` clears it). This means the compositor layer never receives the decoded frame's pixel data, even though `readyState` reaches `HAVE_CURRENT_DATA` (2) -- the media backend has the frame, but the compositor does not.
+
+Chromium and Firefox do not have this behavior because their compositor layers receive frames independently of the poster flag state. In Chromium, `VideoFrameCompositor` receives frames directly from the decode thread, and `cc::VideoLayerImpl` pulls them via `GetCurrentFrame()` on each vsync. The poster flag is handled at the HTML element level, not as a compositor gate.
+
+**Verdict on current workaround**: The conditional seek (`if (video.currentTime !== 0)`) is partially effective but has a critical gap: when `currentTime` is already `0`, no seek is issued, and WebKit may show a blank surface. This explains intermittent first-frame failures on WebKit in CI.
+
+**Recommendations (ordered by priority)**:
+
+1. **Make the seek unconditional**: Remove the `if (video.currentTime !== 0)` guard. Setting `video.currentTime = 0` when already at `0` triggers the seek algorithm per spec, forcing WebKit's media backend to re-resolve the frame and push it to the compositor. This is the minimum necessary fix.
+
+2. **Add `requestVideoFrameCallback` confirmation**: After the seek, wait for `requestVideoFrameCallback` to fire (with double-rAF fallback). This provides a positive signal that the frame has been composited, replacing the current inferential approach (seeked event + timing). All 6 CI browser platforms support `requestVideoFrameCallback`.
+
+3. **Retain the 5s timeout**: WebKitGTK seeks can stall under CI VM load. The `Promise.race` with a 5s timeout is essential to prevent test hangs.
+
+4. **Do NOT use `play()` + `pause()`**: While semantically correct (clears the poster flag), it introduces complexity (three async operations), can fail before DRM key entry, and advances `currentTime` requiring an additional seek. The unconditional self-seek is simpler and sufficient.
+
 ---
 
 ## Topic 9: ImageBitmap Memory Management in Web Workers
@@ -2587,7 +3146,7 @@ Ordered by impact on user experience and engineering complexity:
 6. **Topic 6: Firefox frame boundary precision** -- RESOLVED. The 1ms epsilon is mathematically safe for fps < 500. Root cause: historical float-to-double and fencepost bugs (fixed 2011) with residual sub-ms MSE timestamp conversion differences. Half-frame-duration epsilon (`0.5/fps`) is a cleaner alternative.
 7. **Topic 9: ImageBitmap memory** -- The 3x viewport eviction is empirical. Understanding memory semantics would enable optimal eviction strategies.
 8. **Topic 7: Edge stale `currentTime`** -- RESOLVED. Root cause: Chromium's multi-threaded media pipeline updates `currentTime` asynchronously via `PostTask`; Playwright IPC round-trips expose this staleness. Edge's Media Foundation integration widens the window. Current workaround (`pressKeyNTimesAndSettle`) is optimal.
-9. **Topic 8: WebKit frame compositing** -- Minor UX issue (blank frame before first interaction).
+9. **Topic 8: WebKit frame compositing** -- RESOLVED. Root cause: `showPosterFlag()` gates `mediaPlayerFirstVideoFrameAvailable()`. Fix: unconditional self-seek + rVFC confirmation.
 10. **Topic 10: SegmentBase detection** -- Current box-detection approach is robust. Research would confirm it's the recommended pattern.
 11. **Topic 11: Pixel format variations** -- No user impact; informational.
 12. **Topic 12: Height rounding** -- No user impact; informational.
