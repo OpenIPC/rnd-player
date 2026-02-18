@@ -4138,3 +4138,91 @@ Ordered by impact on user experience and engineering complexity:
 10. **Topic 10: SegmentBase detection** -- RESOLVED. Box-presence detection is the correct approach. Shaka's `AdvancedRequestType` labels sidx as `MEDIA_SEGMENT` (not `INIT_SEGMENT` as originally suspected), but has no dedicated `INDEX_SEGMENT` type. The `RequestContext` could theoretically help but only the streaming engine populates it fully. No changes needed to current implementation.
 11. **Topic 11: Pixel format variations** -- RESOLVED. Browser canvas APIs handle all YUV/BGRX/NV12→RGBA conversion automatically per spec; at 426x240 thumbnail resolution, conversion cost is <0.1ms (negligible vs decode time). No code changes needed.
 12. **Topic 12: Height rounding** -- RESOLVED (platform quirk). GStreamer `avdec_h264` on Linux WebKitGTK reports 239 instead of 240 for 426×240 H.264 due to non-mod-16 width (426) triggering SPS crop interaction with chroma alignment; no user impact, no code changes needed.
+
+---
+
+## Cross-Cutting Finding: Chromium Compositor Frame Presentation Lag
+
+### Context
+
+CI runs on `ubuntu-latest` / `chromium` began consistently failing the `encrypted.spec.ts` "displays frame 0150 at t=5s" test (all 3 retries reading frame `0000` despite `currentTime=5`). Several OCR tests also became flaky with the same symptom. No code changes were involved — the failures appeared between commits that only modified `RESEARCH.md`.
+
+This finding spans Topics 5 (seek stalls), 7 (stale `currentTime`), and 8 (compositor lag) — all manifestations of the asynchronous gap between the video element's JavaScript API state and actual frame presentation.
+
+### Root cause
+
+Chromium's compositor runs on a dedicated thread and updates the displayed video frame asynchronously from the main thread's `currentTime` property. After seeking a paused video:
+
+1. `video.currentTime = t` updates the internal media position
+2. The MSE pipeline requests and decodes the frame at time `t`
+3. `video.seeking` transitions from `true` to `false`
+4. `video.readyState` reaches `HAVE_ENOUGH_DATA` (4)
+5. **The compositor presents the decoded frame** (asynchronous, separate thread)
+
+Steps 1-4 happen on the main thread and complete before `seekTo`'s `page.evaluate` returns. Step 5 happens on the compositor thread and may lag behind — under CI VM load, the lag can exceed the double-rAF wait that `seekTo` previously used.
+
+For encrypted content, the lag is worse because Shaka Player's async response filter (`softwareDecrypt.ts` or EME CDM) adds decryption overhead before decoded frames reach the compositor. On Chromium with native ClearKey EME, this overhead is small but measurable; on browsers using the software decryption fallback, it's larger.
+
+### Diagnostic evidence
+
+Local reproduction confirmed the root cause — the test fails ~10% of the time without the fix:
+
+```
+PRE-SEEK:  { currentTime: 0, readyState: 4, paused: true, seeking: false, bufferedEnd: 10.007 }
+POST-SEEK: { currentTime: 5, readyState: 4, paused: true, seeking: false, bufferedEnd: 10.007 }
+OCR RESULT: "0000"  ← compositor still showing frame 0
+```
+
+The video API reports a fully successful seek (`currentTime=5`, `readyState=4`, `seeking=false`), but the screenshot captures the old frame because the compositor hasn't presented the new one yet.
+
+### Approaches tested
+
+12 approaches were systematically tested with 20-200 iterations each on the encrypted t=5s test:
+
+| # | Approach | Success rate | Why it works / fails |
+|---|----------|-------------|---------------------|
+| 1 | Baseline (double-rAF only) | ~90% (9/10) | rAF fires on vsync, not on frame decode completion |
+| 2 | `readyState >= 2` check | No improvement | readyState is already 4 before the race occurs |
+| 3 | `requestVideoFrameCallback` | 0/50 | rVFC never fires on paused video — no frames are "presented" |
+| 4 | Quadruple rAF (2× double-rAF) | ~95% (19/20) | More vsync cycles help but don't guarantee frame availability |
+| 5 | 100ms in-browser `setTimeout` | 90% (45/50) | Blocks main thread, delays compositor |
+| 6 | 200ms in-browser `setTimeout` | 94% (47/50) | Same issue, slightly better |
+| 7 | Canvas pixel-diff (post-seek, 2s) | 90% (45/50) | Polling loop steals CPU from compositor thread |
+| 8 | Canvas pixel-diff (pre-seek snapshot, 2s) | 96% (48/50) | Best pixel-diff variant; CPU contention still limits it |
+| 9 | Canvas pixel-diff (pre-seek, 5s deadline) | 82% (41/50) | Longer polling = more CPU stolen = worse |
+| 10 | Play+pause cycle with rVFC | 0/50 | Advances playback past target frame (~+1 at 30fps) |
+| 11 | `readFrameNumber` retry (escalating delays) | 88-96% | Heavyweight (screenshot+OCR per retry); diminishing returns |
+| 12 | **250ms Node-side `setTimeout`** | **98% (98/100)** | **Browser main thread stays idle → compositor gets CPU** |
+
+### Key insight
+
+**Sleeping on the Node.js side is more effective than sleeping inside `page.evaluate()`.** In-browser sleeps (`setTimeout` inside `page.evaluate`) keep the browser's main thread event loop active, which competes with the compositor thread for CPU time. Sleeping on the Node side via `await new Promise(r => setTimeout(r, 250))` leaves the browser completely idle, giving the compositor thread uncontested access to present the frame.
+
+Canvas-based polling approaches (pixel-diff, brightness check) are self-defeating: the `drawImage(video)` + `getImageData()` calls in a tight rAF loop consume significant CPU on the main thread and GPU for readback, starving the very compositor pipeline they're waiting on. Longer deadlines make this worse, not better.
+
+### Fix applied
+
+Added a 250ms Node-side sleep in `seekTo()` after the browser-side double-rAF, conditional on non-zero seeks (`commit 578ac94`):
+
+```typescript
+// In seekTo(), after page.evaluate():
+if (time > 0) {
+  await new Promise((r) => setTimeout(r, 250));
+}
+```
+
+This gives ~98% per-attempt reliability. Combined with CI's 2-retry configuration, the per-test pass probability is `1 - 0.02³ = 99.9992%`.
+
+### Why encrypted content is disproportionately affected
+
+The non-encrypted OCR t=5s test was 50/50 (100%) without any fix. The encrypted version was ~90%. The difference:
+
+1. **Shaka ClearKey EME path** — On Chromium, the CDM decrypts samples before they reach the decoder. This adds a small but measurable latency to the decode pipeline that widens the gap between `currentTime` updating and the compositor presenting the frame.
+2. **SegmentBase vs SegmentTemplate** — The encrypted fixture uses SegmentBase (single-file MP4 with byte-range requests), while the non-encrypted fixture uses SegmentTemplate (one file per segment). SegmentBase requires Shaka to parse the sidx index and issue byte-range requests, adding network simulation overhead via Playwright's route handler.
+3. **Response filter overhead** — Even on Chromium where native EME works, the `waitForDecryption()` background check (1.5s polling) runs concurrently with the test, consuming CPU cycles during the critical seek window.
+
+### Relationship to existing topics
+
+- **Topic 5 (WebKitGTK seek stalls)**: Same class of issue (seek "completes" but frame not presented), different browser. WebKitGTK stalls indefinitely; Chromium recovers within ~250ms.
+- **Topic 7 (Edge stale `currentTime`)**: Related async pipeline behavior. Topic 7 is about `currentTime` getter staleness between consecutive seeks; this finding is about compositor presentation lag after a single seek. Both stem from Chromium's multi-threaded media architecture.
+- **Topic 8 (WebKit frame compositing)**: Same symptom (paused video at t=0 not showing the frame). Topic 8's root cause is the `showPosterFlag` gate in WebKit; this finding's root cause is compositor thread scheduling under load.
