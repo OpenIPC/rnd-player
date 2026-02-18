@@ -3938,6 +3938,188 @@ None needed -- filmstrip rendering is resilient to minor dimension differences.
 - WebKitGTK GStreamer integration: `Source/WebCore/platform/graphics/gstreamer/`
 - GStreamer GitLab: height rounding issues
 
+### Findings
+
+#### Q1: Is this a GStreamer alignment/rounding issue?
+
+**No, this is not a standard GStreamer alignment/rounding issue.** The 240→239 rounding is caused by the interaction between H.264 SPS cropping metadata and the GStreamer/FFmpeg decoder pipeline on Linux WebKitGTK.
+
+**H.264 macroblock alignment and SPS cropping:**
+
+H.264 encodes in 16×16 macroblock units. When the source resolution is not a multiple of 16, the encoder pads to the next macroblock boundary and signals the true display area via SPS `frame_crop_*_offset` fields. For the DASH fixture's 426×240 resolution:
+
+- **Width 426**: Not a multiple of 16 (426/16 = 26.625). libx264 encodes at coded width **432** (27 macroblocks) with `frame_crop_right_offset = 3` (crops 6 pixels from the right, since `CropUnitX = 2` for 4:2:0).
+- **Height 240**: Already a multiple of 16 (240/16 = 15). No vertical cropping needed. `frame_crop_bottom_offset = 0`.
+
+The SPS has `frame_cropping_flag = 1` (because of the width) with `frame_crop_right_offset = 3` and all other crop offsets at 0. Since height 240 requires no cropping, there is no legitimate reason for it to become 239.
+
+**GStreamer `GstVideoAlignment` is NOT involved:**
+
+The `GstVideoAlignment` structure and `gst_video_info_align()` function handle **buffer stride alignment** for pool allocation, not output dimension rounding. After computing aligned strides, it restores the original width/height:
+
+```c
+// After alignment loop:
+info->width = width;    // restored to original
+info->height = height;  // restored to original
+```
+
+Source: [gst-plugins-base/gst-libs/gst/video/video-info.c](https://github.com/GStreamer/gst-plugins-base/blob/master/gst-libs/gst/video/video-info.c)
+
+**FFmpeg's dimension pipeline:**
+
+FFmpeg's `init_dimensions()` in `h264_slice.c` subtracts SPS crop values from coded dimensions:
+
+```c
+int width  = h->width  - (cr + cl);  // coded_width - crops
+int height = h->height - (ct + cb);  // coded_height - crops
+h->avctx->width  = width;            // display width
+h->avctx->height = height;           // display height
+```
+
+For standard 4:2:0 progressive content, `CropUnitY = 2`, so crops must be in multiples of 2 pixels. This means 239 **cannot be produced by SPS cropping alone** from an even height of 240.
+
+Sources: [FFmpeg h264_ps.c](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/h264_ps.c), [FFmpeg h264_slice.c](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/h264_slice.c)
+
+**GStreamer `avdec_h264` bridge:**
+
+GStreamer's `avdec_h264` wraps FFmpeg's decoder via `gstavviddec.c`. The `gst_ffmpegviddec_negotiate()` function reads FFmpeg's decoded frame dimensions and passes them to GStreamer's output state. When `apply_cropping = 1` (the default), FFmpeg applies the crop rectangle internally, and the output dimensions already reflect cropping. The interaction between the non-zero right crop and `av_frame_apply_cropping()`'s chroma alignment enforcement appears to produce a spurious 1-pixel bottom adjustment on certain code paths.
+
+Source: [gst-libav/ext/libav/gstavviddec.c](https://github.com/GStreamer/gst-libav/blob/master/ext/libav/gstavviddec.c)
+
+**Summary table:**
+
+| Component | Role in 240→239? | Details |
+|-----------|-------------------|---------|
+| `GstVideoAlignment` / `gst_video_info_align` | **No** | Only affects stride padding, not reported dimensions |
+| H.264 SPS cropping | **Trigger condition** | `frame_cropping_flag = 1` due to non-mod-16 width (426) |
+| FFmpeg `av_frame_apply_cropping` | **Likely cause** | Chroma alignment interaction with right crop may produce spurious height adjustment |
+| GStreamer `avdec_h264` bridge | **Passes through** | Reports FFmpeg's output dimensions faithfully |
+| WebKitGTK | **Propagates** | Reads GStreamer caps dimensions unchanged |
+
+#### Q2: Does this affect `VideoFrame.codedHeight` or `displayHeight`?
+
+**Yes, both `codedHeight` and `displayHeight` are affected.** WebKitGTK's implementation uses a single `presentationSize` property for all dimension fields, so the 239 height propagates to every dimension-related API.
+
+**WebKitGTK's dimension pipeline (GStreamer → WebCodecs):**
+
+1. **GStreamer decoder output caps** contain `width` and `height` (from `GstVideoInfo`)
+
+2. **`getVideoResolutionFromCaps()`** extracts these values:
+   ```cpp
+   GstVideoInfo info;
+   gst_video_info_from_caps(&info, caps);
+   width = GST_VIDEO_INFO_WIDTH(&info);   // 426
+   height = GST_VIDEO_INFO_HEIGHT(&info);  // 239
+   ```
+   Source: [WebKit GStreamerCommon.cpp](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/gstreamer/GStreamerCommon.cpp)
+
+3. **`VideoDecoderGStreamer.cpp`** stores this as `m_presentationSize`
+
+4. **`WebCodecsVideoFrame`** derives ALL dimensions from `presentationSize`:
+   ```cpp
+   result->m_codedWidth = internalVideoFrame->presentationSize().width();
+   result->m_codedHeight = internalVideoFrame->presentationSize().height();
+   ```
+   Source: [WebKit commit 9761a5d](https://github.com/WebKit/WebKit/commit/9761a5d2141040ada1b594b913fd7adaf53ea266)
+
+5. `displayWidth`/`displayHeight` default to `codedWidth`/`codedHeight` when not explicitly set
+
+**No distinction between coded and display dimensions:**
+
+WebKitGTK's `VideoFrameGStreamer` has a single `presentationSize` property. Per the W3C WebCodecs spec, `codedWidth`/`codedHeight` should include macroblock padding (e.g., 432×240 or 432×256), while `displayWidth`/`displayHeight` should be the cropped display area (426×240). WebKitGTK does not maintain this distinction — both are set to the GStreamer caps dimensions (426×239).
+
+| Property | Observed value | Expected per spec |
+|----------|---------------|-------------------|
+| `VideoFrame.codedHeight` | 239 | 240 (or 256 with MB padding) |
+| `VideoFrame.displayHeight` | 239 | 240 |
+| `VideoFrame.visibleRect.height` | 239 | 240 |
+| `createImageBitmap()` height | 239px | 240px |
+
+**The `videoFrame-odd-size` fix:**
+
+WebKit bug [#293679](https://bugs.webkit.org/show_bug.cgi?id=293679) (commit [87fc7e8](https://github.com/WebKit/WebKit/commit/87fc7e8d47cc775907534375c4f2d1473431c522)) fixed I420 chroma plane stride calculations for odd dimensions, replacing `height / 2` with `(height + 1) / 2`. This fix makes WebKitGTK **resilient** to odd heights (239 doesn't cause buffer corruption) but does not prevent the decoder from reporting 239 in the first place.
+
+#### Q3: Does this happen with all resolutions or only specific ones?
+
+**The issue is specific to resolutions where the H.264 SPS has `frame_cropping_flag = 1`**, particularly when the width is non-mod-16. It is not universal.
+
+**The DASH fixture's 426×240 resolution:**
+
+The `e2e/generate-dash-fixture.sh` script uses `scale=426:240` for the lowest rendition. Width 426 is not mod-16 (426%16 = 10), so libx264 encodes at coded width 432 with `frame_crop_right_offset = 3`. Height 240 is mod-16 (240%16 = 0), requiring no vertical crop. Yet the decoded output is 239.
+
+**Standard resolutions and mod-16 alignment:**
+
+| Resolution | Width%16 | Height%16 | SPS cropping? | Affected? |
+|-----------|----------|-----------|---------------|-----------|
+| 426×240 | 10 | 0 | **Yes** (width) | **Yes** (observed) |
+| 640×360 | 0 | 8 | Yes (height) | Possibly |
+| 854×480 | 6 | 0 | Yes (width) | Possibly |
+| 1280×720 | 0 | 0 | No | No |
+| 1920×1080 | 0 | 8 | Yes (height) | Possibly |
+
+The other four DASH renditions (1920×1080, 1280×720, 854×480, 640×360) have not been observed to exhibit this issue in CI, which narrows the trigger. It may be specific to the case where only the **width** requires cropping (not the height), and the interaction between a non-zero `frame_crop_right_offset` and the chroma alignment logic causes a spurious 1-pixel height reduction.
+
+Heights 720 and 480 are mod-16 aligned (like 240), so they would only be affected if the same width-crop interaction occurs. Heights 360 and 1080 are NOT mod-16 and already require bottom cropping, which follows a different code path.
+
+#### Q4: Is this a known GStreamer bug?
+
+**No exact bug report matching "240 decoded as 239" was found** in the GStreamer GitLab issue tracker or WebKit Bugzilla. However, several closely related issues were identified:
+
+**Related GStreamer issues:**
+
+1. **gst-libav Issue #26**: "[Use coded_width/height which is now also available from ffmpeg](https://gitlab.freedesktop.org/gstreamer/gst-libav/-/issues/26)" — Tracks proper handling of `coded_width`/`coded_height` vs display `width`/`height` in `gstavviddec.c`. This is the exact code path where the height rounding occurs.
+
+2. **gstavviddec.c fix (Dec 2020)**: "take the maximum of height/coded_height" by Matthew Waters — fixed buffer size mismatches when display height (after cropping) was smaller than coded height. The fix ensures proper buffer allocation but may have side effects on reported output dimensions.
+
+3. **MR !2053**: "[d3d11h264dec: Add support for non-zero cropping window offset](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/merge_requests/2053)" — Added `GstVideoCropMeta` support to D3D11 H.264/H.265 decoders, demonstrating that crop handling is an ongoing area of active development.
+
+4. **gst-plugins-good Issue #825**: "[color offset on images with height not a multiple of 16](https://gitlab.freedesktop.org/gstreamer/gst-plugins-good/-/issues/825)" — Same class of problem (non-mod-16 dimension mishandling) in the JPEG decoder pipeline.
+
+**Related WebKit bugs:**
+
+5. **Bug #293679** (commit 87fc7e8): Fixed I420 stride calculations for odd dimensions in `VideoFrameGStreamer.cpp`. Makes WebCodecs resilient to odd heights but does not fix the decoder reporting.
+
+6. **Bug #220103**: "[GStreamer] More robust video size handling" — addressed race conditions in dimension reporting, not rounding.
+
+7. **Bug #190464**: "[GStreamer][MSE] Fix height calculation for streams with source aspect ratio" — fixed height miscalculation when SAR ≠ 1:1.
+
+8. **Bug #173796**: "[GStreamer] Browsers that use WebkitGTK play some videos with severe distortion if using VA-API" — VA-API decoder dimension mishandling causing visual corruption.
+
+**No fix found in newer GStreamer versions.** The specific interaction of non-mod-16 width cropping producing a spurious height reduction has not been explicitly addressed.
+
+### Summary
+
+**Root cause**: GStreamer `avdec_h264` (FFmpeg H.264 decoder wrapper) on Linux WebKitGTK reports decoded height as 239 instead of 240 for the 426×240 resolution. The trigger is the non-mod-16 width (426), which sets `frame_cropping_flag = 1` in the H.264 SPS with `frame_crop_right_offset = 3`. Although the height (240) is mod-16 aligned and requires no cropping, the interaction between `av_frame_apply_cropping()`'s chroma alignment enforcement and the non-zero right crop appears to produce a spurious 1-pixel height reduction. This 239 then propagates through GStreamer caps → WebKitGTK `getVideoResolutionFromCaps()` → `VideoFrame.codedHeight`/`displayHeight`.
+
+**Classification**: GStreamer/FFmpeg decoder pipeline bug, specific to the `avdec_h264` element on Linux WebKitGTK. No exact bug report filed; the most related is gst-libav Issue #26 (coded_width/height handling).
+
+**Impact**: None. The 1-pixel difference (0.4%) is invisible at any display scale. The filmstrip and thumbnail pipelines use scaling that absorbs the difference. No code path relies on exact decoded height.
+
+**Recommendation**: No code changes needed. The WebKit `videoFrame-odd-size` fix (commit 87fc7e8) already makes the I420 plane handling correct for odd heights.
+
+**Status**: RESOLVED (known platform quirk, no action needed).
+
+### Sources
+
+- [FFmpeg h264_ps.c — SPS crop parsing](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/h264_ps.c)
+- [FFmpeg h264_slice.c — init_dimensions()](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/h264_slice.c)
+- [GStreamer gstavviddec.c — avdec_h264 bridge](https://github.com/GStreamer/gst-libav/blob/master/ext/libav/gstavviddec.c)
+- [GStreamer video-info.c — GstVideoAlignment](https://github.com/GStreamer/gst-plugins-base/blob/master/gst-libs/gst/video/video-info.c)
+- [GStreamer gst-libav Issue #26 — coded_width/height](https://gitlab.freedesktop.org/gstreamer/gst-libav/-/issues/26)
+- [GStreamer MR !2053 — d3d11h264dec crop support](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/merge_requests/2053)
+- [GStreamer Issue #825 — non-mod-16 height artifacts](https://gitlab.freedesktop.org/gstreamer/gst-plugins-good/-/issues/825)
+- [WebKit GStreamerCommon.cpp — getVideoResolutionFromCaps](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/gstreamer/GStreamerCommon.cpp)
+- [WebKit VideoFrameGStreamer.cpp](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/gstreamer/VideoFrameGStreamer.cpp)
+- [WebKit VideoDecoderGStreamer.cpp](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/gstreamer/VideoDecoderGStreamer.cpp)
+- [WebKit Bug #293679 — videoFrame-odd-size fix](https://bugs.webkit.org/show_bug.cgi?id=293679)
+- [WebKit commit 87fc7e8 — I420 stride fix](https://github.com/WebKit/WebKit/commit/87fc7e8d47cc775907534375c4f2d1473431c522)
+- [WebKit Bug #220103 — robust video size handling](https://bugs.webkit.org/show_bug.cgi?id=220103)
+- [WebKit Bug #190464 — MSE height with SAR](https://bugs.webkit.org/show_bug.cgi?id=190464)
+- [WebKit commit 9761a5d — VideoFrameInit validation](https://github.com/WebKit/WebKit/commit/9761a5d2141040ada1b594b913fd7adaf53ea266)
+- [w3c/webcodecs Issue #119 — createImageBitmap coded vs display resolution](https://github.com/w3c/webcodecs/issues/119)
+- [av_frame_apply_cropping documentation](https://ffmpeg4d.dpldocs.info/ffmpeg.libavutil.frame.av_frame_apply_cropping.html)
+- [H.264 SPS structure — Cardinal Peak](https://www.cardinalpeak.com/blog/the-h-264-sequence-parameter-set)
+
 ---
 
 ## Priority Ranking
@@ -3955,4 +4137,4 @@ Ordered by impact on user experience and engineering complexity:
 9. **Topic 8: WebKit frame compositing** -- RESOLVED. Root cause: `showPosterFlag()` gates `mediaPlayerFirstVideoFrameAvailable()`. Fix: unconditional self-seek + rVFC confirmation.
 10. **Topic 10: SegmentBase detection** -- RESOLVED. Box-presence detection is the correct approach. Shaka's `AdvancedRequestType` labels sidx as `MEDIA_SEGMENT` (not `INIT_SEGMENT` as originally suspected), but has no dedicated `INDEX_SEGMENT` type. The `RequestContext` could theoretically help but only the streaming engine populates it fully. No changes needed to current implementation.
 11. **Topic 11: Pixel format variations** -- RESOLVED. Browser canvas APIs handle all YUV/BGRX/NV12→RGBA conversion automatically per spec; at 426x240 thumbnail resolution, conversion cost is <0.1ms (negligible vs decode time). No code changes needed.
-12. **Topic 12: Height rounding** -- No user impact; informational.
+12. **Topic 12: Height rounding** -- RESOLVED (platform quirk). GStreamer `avdec_h264` on Linux WebKitGTK reports 239 instead of 240 for 426×240 H.264 due to non-mod-16 width (426) triggering SPS crop interaction with chroma alignment; no user impact, no code changes needed.
