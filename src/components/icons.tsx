@@ -199,6 +199,15 @@ export function CompareIcon() {
   );
 }
 
+export function TranslateIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.6">
+      <path d="M3 5h8M7 3v2M5 5c0 2.5 1.5 5 4.5 7" />
+      <path d="M11 19l3-8 3 8M12 17h5" />
+    </svg>
+  );
+}
+
 export function PipIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

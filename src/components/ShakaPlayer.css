@@ -619,6 +619,188 @@ video::-webkit-media-text-track-container {
   font-weight: normal;
 }
 
+/* ── Translate button (hover icon) ── */
+.vp-subtitle-inner {
+  position: relative;
+  display: inline-block;
+}
+
+.vp-translate-btn {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 6px;
+  opacity: 0;
+  background: rgba(0, 0, 0, 0.7);
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  padding: 4px;
+  line-height: 0;
+  transition: opacity 0.2s;
+  pointer-events: auto;
+  touch-action: auto;
+}
+
+.vp-subtitle-track:hover .vp-translate-btn {
+  opacity: 1;
+}
+
+.vp-translate-btn:hover {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.9);
+}
+
+.vp-translate-btn.vp-translating {
+  opacity: 1;
+  animation: vp-spin 1s linear infinite;
+}
+
+@keyframes vp-spin {
+  from { transform: translateY(-50%) rotate(0deg); }
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+
+/* ── Translation result ── */
+.vp-subtitle-translation {
+  display: block;
+  background: rgba(8, 8, 8, 0.75);
+  color: rgba(255, 255, 255, 0.85);
+  padding: 3px 8px;
+  font-size: clamp(14px, 2.2vw, 24px);
+  font-style: italic;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.4;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  margin-top: 2px;
+}
+
+/* ── Translation setup popup ── */
+.vp-translate-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  z-index: 20;
+}
+
+.vp-translate-setup {
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 20px 24px;
+  max-width: 400px;
+  width: 90%;
+  color: #e0e0e0;
+}
+
+.vp-translate-title {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.vp-translate-desc {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.vp-translate-desc a {
+  color: #6bb3ff;
+  text-decoration: none;
+}
+
+.vp-translate-desc a:hover {
+  text-decoration: underline;
+}
+
+.vp-translate-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 4px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.vp-translate-input {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 14px;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.vp-translate-input:focus {
+  border-color: rgba(107, 179, 255, 0.5);
+}
+
+.vp-translate-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 16px;
+  cursor: pointer;
+}
+
+.vp-translate-checkbox input {
+  accent-color: #6bb3ff;
+}
+
+.vp-translate-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.vp-translate-cancel,
+.vp-translate-submit {
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.vp-translate-cancel {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.vp-translate-cancel:hover {
+  color: #fff;
+}
+
+.vp-translate-submit {
+  background: #2563eb;
+  color: #fff;
+}
+
+.vp-translate-submit:hover {
+  background: #3b82f6;
+}
+
+.vp-translate-submit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ── Fullscreen ── */
 .vp-container:fullscreen {
   max-width: none;
