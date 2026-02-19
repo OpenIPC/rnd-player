@@ -103,11 +103,12 @@ function selectByHeight(player: shaka.Player, height: number) {
   }
 }
 
-function truncateUrl(url: string): string {
+function domainLabel(url: string): string {
   try {
-    const pathname = new URL(url).pathname;
-    const filename = pathname.split("/").pop() || pathname;
-    return filename.length > 30 ? filename.slice(0, 27) + "..." : filename;
+    const host = new URL(url).hostname;
+    // Extract second-level domain: "sub.example.com" → "example.com"
+    const parts = host.split(".");
+    return parts.length >= 2 ? parts.slice(-2).join(".") : host;
   } catch {
     return url.length > 30 ? url.slice(0, 27) + "..." : url;
   }
@@ -504,14 +505,14 @@ export default function QualityCompare({
           </select>
           {isDualManifest && (
             <span className="vp-compare-src-hint" title={slaveSrc}>
-              {truncateUrl(slaveSrc)}
+              {domainLabel(slaveSrc)}
             </span>
           )}
         </div>
         <div className="vp-compare-toolbar-side">
           {isDualManifest && (
             <span className="vp-compare-src-hint" title={src}>
-              {truncateUrl(src)}
+              {domainLabel(src)}
             </span>
           )}
           <select
