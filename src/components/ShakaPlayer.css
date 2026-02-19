@@ -527,7 +527,7 @@ video::-webkit-media-text-track-container {
   flex-direction: column-reverse;
   align-items: center;
   pointer-events: none;
-  z-index: 3;
+  z-index: 1;
 }
 
 .vp-subtitle-track {
