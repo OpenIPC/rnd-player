@@ -181,7 +181,6 @@ export default function QualityCompare({
   const [sideA, setSideA] = useState<number | null>(null);
   const [sideB, setSideB] = useState<number | null>(null);
   const [slaveReady, setSlaveReady] = useState(false);
-  const [masterRect, setMasterRect] = useState<{ w: number; h: number } | null>(null);
   const [needsSlaveKey, setNeedsSlaveKey] = useState(false);
   const [slaveKey, setSlaveKey] = useState<string | undefined>(undefined);
   const [paused, setPaused] = useState(masterVideo.paused);
@@ -270,25 +269,6 @@ export default function QualityCompare({
     panYRef.current = 0;
     applyTransform();
   }, [applyTransform]);
-
-  // ── Match slave dimensions to master's exact rendered size ──
-  // Uses ResizeObserver contentBoxSize for sub-pixel accuracy (offsetWidth/
-  // offsetHeight round to integers which can cause a 1px mismatch).
-  useEffect(() => {
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const box = entry.contentBoxSize?.[0];
-      const w = box ? box.inlineSize : masterVideo.offsetWidth;
-      const h = box ? box.blockSize : masterVideo.offsetHeight;
-      setMasterRect((prev) => (prev?.w === w && prev?.h === h ? prev : { w, h }));
-    });
-    // Initial measurement
-    const { offsetWidth: w, offsetHeight: h } = masterVideo;
-    setMasterRect({ w, h });
-    ro.observe(masterVideo);
-    return () => ro.disconnect();
-  }, [masterVideo]);
 
   // Remember master's original ABR state so we can restore on close
   const masterAbrWasEnabled = useRef(true);
@@ -670,6 +650,43 @@ export default function QualityCompare({
     };
   }, [masterVideo]);
 
+  // ── Adjust pan on container resize (e.g. fullscreen toggle) ──
+  // The viewport center is at element-relative fraction:
+  //   rel = (cw/(2z) - tx) / cw
+  // Scaling tx proportionally preserves this fraction after resize:
+  //   tx_new = tx_old * (newW / oldW)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let prevW = container.offsetWidth;
+    let prevH = container.offsetHeight;
+
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const box = entry.contentBoxSize?.[0];
+      const newW = box ? box.inlineSize : container.offsetWidth;
+      const newH = box ? box.blockSize : container.offsetHeight;
+
+      if (newW === prevW && newH === prevH) return;
+
+      const z = zoomRef.current;
+      if (z > 1) {
+        panXRef.current *= newW / prevW;
+        panYRef.current *= newH / prevH;
+        clampPan();
+        applyTransform();
+      }
+
+      prevW = newW;
+      prevH = newH;
+    });
+
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [clampPan, applyTransform]);
+
   // ── Reset zoom on play ──
   useEffect(() => {
     const onPlay = () => resetZoom();
@@ -784,7 +801,6 @@ export default function QualityCompare({
         className="vp-compare-video"
         style={{
           clipPath: `inset(0 ${100 - sliderPct}% 0 0)`,
-          ...(masterRect && { width: masterRect.w, height: masterRect.h }),
         }}
       />
 
