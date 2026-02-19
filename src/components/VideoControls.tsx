@@ -609,7 +609,9 @@ export default function VideoControls({
     setContextMenu(null);
   };
 
-  const qualityLabel = activeHeight ? `${activeHeight}p` : "";
+  const qualityLabel = isAutoQuality
+    ? `Auto${activeHeight ? ` (${activeHeight}p)` : ""}`
+    : activeHeight ? `${activeHeight}p` : "";
   const speedLabel = playbackRate === 1 ? "1x" : `${playbackRate}x`;
   const activeAudio = audioTracks[activeAudioIndex];
   const audioLabel = activeAudio
@@ -747,7 +749,7 @@ export default function VideoControls({
           </div>
 
           <div className="vp-controls-right">
-            {qualities.length > 0 && (
+            {qualities.length > 0 && !showCompare && (
               <div className="vp-popup-anchor">
                 <button
                   className="vp-btn"
@@ -761,14 +763,12 @@ export default function VideoControls({
                 {popup === "quality" && (
                   <div className="vp-popup">
                     <div className="vp-popup-header">Quality</div>
-                    {!showCompare && (
-                      <div
-                        className={`vp-popup-item${isAutoQuality ? " vp-active" : ""}`}
-                        onClick={() => selectQuality("auto")}
-                      >
-                        Auto{activeHeight ? ` (${activeHeight}p)` : ""}
-                      </div>
-                    )}
+                    <div
+                      className={`vp-popup-item${isAutoQuality ? " vp-active" : ""}`}
+                      onClick={() => selectQuality("auto")}
+                    >
+                      Auto{activeHeight ? ` (${activeHeight}p)` : ""}
+                    </div>
                     {qualities.map((q) => (
                       <div
                         key={q.height}

@@ -90,11 +90,11 @@ describe("VideoControls", () => {
       ];
       setup({}, { getVariantTracks: vi.fn(() => tracks) });
 
-      const qualityBtn = screen.getByText("1080p").closest("button")!;
+      const qualityBtn = screen.getByText("Auto (1080p)").closest("button")!;
       fireEvent.click(qualityBtn);
 
       expect(screen.getByText("Quality")).toBeInTheDocument();
-      expect(screen.getByText("720p")).toBeInTheDocument();
+      expect(screen.getAllByText("720p").length).toBeGreaterThan(0);
     });
 
     it("selecting a quality calls player.selectVariantTrack", () => {
@@ -113,7 +113,7 @@ describe("VideoControls", () => {
       );
 
       // Open quality popup
-      const qualityBtn = screen.getByText("1080p").closest("button")!;
+      const qualityBtn = screen.getByText("Auto (1080p)").closest("button")!;
       fireEvent.click(qualityBtn);
 
       // Select 720p
@@ -231,8 +231,8 @@ describe("VideoControls", () => {
         />
       );
 
-      // Initially shows 720p (the active track)
-      expect(screen.getByText("720p")).toBeInTheDocument();
+      // Initially shows Auto (720p) (the active track, ABR enabled)
+      expect(screen.getByText("Auto (720p)")).toBeInTheDocument();
 
       // Simulate ABR adaptation: 1080p becomes active
       const updatedTracks = [
@@ -256,8 +256,8 @@ describe("VideoControls", () => {
         player._emit("adaptation");
       });
 
-      // Label should update to 1080p
-      expect(screen.getByText("1080p")).toBeInTheDocument();
+      // Label should update to Auto (1080p)
+      expect(screen.getByText("Auto (1080p)")).toBeInTheDocument();
     });
   });
 });
