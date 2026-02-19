@@ -280,6 +280,10 @@ export default function VideoControls({
     if (activeVariant?.frameRate != null && activeVariant.frameRate > 0) {
       setDetectedFps(activeVariant.frameRate);
     }
+    // Sync Auto state with actual ABR config — QualityCompare may
+    // disable ABR on this player externally.
+    const abrEnabled = player.getConfiguration().abr?.enabled !== false;
+    setIsAutoQuality(abrEnabled);
 
     // Audio tracks
     const audios = player.getAudioTracks();

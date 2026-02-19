@@ -26,6 +26,7 @@ export interface MockShakaPlayer {
   getAssetUri: ReturnType<typeof vi.fn>;
   getManifestType: ReturnType<typeof vi.fn>;
   configure: ReturnType<typeof vi.fn>;
+  getConfiguration: ReturnType<typeof vi.fn>;
   selectVariantTrack: ReturnType<typeof vi.fn>;
   getAudioTracks: ReturnType<typeof vi.fn>;
   selectAudioTrack: ReturnType<typeof vi.fn>;
@@ -91,6 +92,7 @@ export function createMockShakaPlayer(
     getAssetUri: vi.fn(() => "https://example.com/manifest.mpd"),
     getManifestType: vi.fn(() => "DASH"),
     configure: vi.fn(),
+    getConfiguration: vi.fn(() => ({ abr: { enabled: true } })),
     selectVariantTrack: vi.fn(),
     getAudioTracks: vi.fn(() => []),
     selectAudioTrack: vi.fn(),
