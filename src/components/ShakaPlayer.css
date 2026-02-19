@@ -790,6 +790,20 @@ video::-webkit-media-text-track-container {
   gap: 8px;
 }
 
+.vp-translate-forget {
+  margin-right: auto;
+  padding: 7px 0;
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  color: #ef4444;
+  cursor: pointer;
+}
+
+.vp-translate-forget:hover {
+  color: #f87171;
+}
+
 .vp-translate-cancel,
 .vp-translate-submit {
   padding: 7px 16px;

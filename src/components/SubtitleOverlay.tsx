@@ -462,6 +462,12 @@ export default function SubtitleOverlay({
     if (setupTrackId !== null) doTranslate(setupTrackId, settings);
   }, [formApiKey, formLanguage, formSaveKey, setupTrackId, doTranslate]);
 
+  const onForgetKey = useCallback(() => {
+    try { localStorage.removeItem(TRANSLATE_SETTINGS_KEY); } catch { /* ignore */ }
+    setTranslateSettings(null);
+    setShowTranslateSetup(false);
+  }, []);
+
   // ── Render ──
   const visibleTracks = trackOrder.filter((id) => activeCues.has(id));
   if (visibleTracks.length === 0 && !showTranslateSetup) return null;
@@ -629,11 +635,16 @@ export default function SubtitleOverlay({
             </label>
 
             <div className="vp-translate-actions">
+              {loadTranslateSettings() && (
+                <button type="button" className="vp-translate-forget" onClick={onForgetKey}>
+                  Forget saved key
+                </button>
+              )}
               <button type="button" className="vp-translate-cancel" onClick={() => setShowTranslateSetup(false)}>
                 Cancel
               </button>
               <button type="submit" className="vp-translate-submit" disabled={!formApiKey.trim()}>
-                Translate
+                {setupTrackId !== null ? "Translate" : "Save"}
               </button>
             </div>
           </form>
