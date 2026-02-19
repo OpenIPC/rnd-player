@@ -702,14 +702,13 @@ video::-webkit-media-text-track-container {
 
 /* ── Translation setup popup ── */
 .vp-translate-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: auto;
-  z-index: 20;
+  z-index: 10000;
 }
 
 .vp-translate-setup {

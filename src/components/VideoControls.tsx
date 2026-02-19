@@ -23,6 +23,7 @@ import {
   FrameModeIcon,
   SaveSegmentIcon,
   CompareIcon,
+  TranslateIcon,
 } from "./icons";
 import { useSegmentExport, type ExportRendition } from "../hooks/useSegmentExport";
 import { useMultiSubtitles, type TextTrackInfo } from "../hooks/useMultiSubtitles";
@@ -134,6 +135,7 @@ export default function VideoControls({
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const [showExportPicker, setShowExportPicker] = useState(false);
   const [subtitleResetSignal, setSubtitleResetSignal] = useState(0);
+  const [translateSetupSignal, setTranslateSetupSignal] = useState(0);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -424,7 +426,7 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
@@ -1086,6 +1088,16 @@ export default function VideoControls({
                 Reset subtitle positions
               </div>
             )}
+            <div
+              className="vp-context-menu-item"
+              onClick={() => {
+                setTranslateSetupSignal((s) => s + 1);
+                setContextMenu(null);
+              }}
+            >
+              <TranslateIcon />
+              Translation settings
+            </div>
             <div className="vp-context-menu-separator" />
             <div
               className="vp-context-menu-item"
@@ -1214,11 +1226,10 @@ export default function VideoControls({
         )}
 
       {/* Subtitle overlay — portaled so it stays visible when controls auto-hide */}
-      {activeTextIds.size > 0 &&
-        createPortal(
-          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} onCopyText={handleSubtitleCopy} getContextCues={getContextCues} videoEl={videoEl} />,
-          containerEl
-        )}
+      {createPortal(
+        <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} translateSetupSignal={translateSetupSignal} onCopyText={handleSubtitleCopy} getContextCues={getContextCues} videoEl={videoEl} />,
+        containerEl
+      )}
 
       {/* Stats for nerds panel — portaled into containerEl so it stays visible when controls auto-hide */}
       {showStats &&

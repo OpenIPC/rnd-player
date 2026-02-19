@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { createPortal } from "react-dom";
 import type { SubCue } from "../hooks/useMultiSubtitles";
 import { TranslateIcon } from "./icons";
 
@@ -14,6 +15,7 @@ interface SubtitleOverlayProps {
   controlsVisible: boolean;
   textTracks: TextTrackOption[];
   resetSignal: number;
+  translateSetupSignal: number;
   onCopyText?: (text: string, toast?: string) => void;
   getContextCues?: (trackId: number, time: number, count: number) => { before: SubCue[]; current: SubCue[]; after: SubCue[] };
   videoEl?: HTMLVideoElement;
@@ -226,6 +228,7 @@ export default function SubtitleOverlay({
   controlsVisible,
   textTracks,
   resetSignal,
+  translateSetupSignal,
   onCopyText,
   getContextCues,
   videoEl,
@@ -270,6 +273,18 @@ export default function SubtitleOverlay({
       try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     }
   }, [resetSignal]);
+
+  // Open translate setup when signal changes (context menu "Translation settings")
+  useEffect(() => {
+    if (translateSetupSignal > 0) {
+      const saved = loadTranslateSettings();
+      setFormApiKey(saved?.apiKey || "");
+      setFormLanguage(saved?.targetLanguage || getDefaultTargetLanguage());
+      setFormSaveKey(!!saved);
+      setSetupTrackId(null);
+      setShowTranslateSetup(true);
+    }
+  }, [translateSetupSignal]);
 
   const findTrack = useCallback(
     (trackId: number): TextTrackOption | undefined => textTracks.find((t) => t.id === trackId),
@@ -568,10 +583,10 @@ export default function SubtitleOverlay({
         </div>
       )}
 
-      {/* Translation setup popup */}
-      {showTranslateSetup && (
-        <div className="vp-translate-backdrop" onClick={() => setShowTranslateSetup(false)}>
-          <form className="vp-translate-setup" onClick={(e) => e.stopPropagation()} onSubmit={onSetupSubmit}>
+      {/* Translation setup popup — portaled to body so clicks don't reach containerEl */}
+      {showTranslateSetup && createPortal(
+        <div className="vp-translate-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setShowTranslateSetup(false); }}>
+          <form className="vp-translate-setup" onSubmit={onSetupSubmit}>
             <h3 className="vp-translate-title">Translate Subtitles</h3>
             <p className="vp-translate-desc">
               Uses the OpenAI API to translate subtitle text in real-time.
@@ -622,7 +637,8 @@ export default function SubtitleOverlay({
               </button>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
