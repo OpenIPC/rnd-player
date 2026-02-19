@@ -1119,7 +1119,7 @@ export default function VideoControls({
       {/* Subtitle overlay — portaled so it stays visible when controls auto-hide */}
       {activeTextIds.size > 0 &&
         createPortal(
-          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} />,
+          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} />,
           containerEl
         )}
 

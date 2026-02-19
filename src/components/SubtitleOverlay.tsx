@@ -3,18 +3,20 @@ import type { SubCue } from "../hooks/useMultiSubtitles";
 interface SubtitleOverlayProps {
   activeCues: Map<number, SubCue[]>;
   trackOrder: number[];
+  controlsVisible: boolean;
 }
 
 export default function SubtitleOverlay({
   activeCues,
   trackOrder,
+  controlsVisible,
 }: SubtitleOverlayProps) {
   // Only render tracks that have visible cues, in selection order
   const visibleTracks = trackOrder.filter((id) => activeCues.has(id));
   if (visibleTracks.length === 0) return null;
 
   return (
-    <div className="vp-subtitle-overlay">
+    <div className={`vp-subtitle-overlay${controlsVisible ? "" : " vp-subs-low"}`}>
       {visibleTracks.map((trackId) => {
         const cues = activeCues.get(trackId)!;
         return (
