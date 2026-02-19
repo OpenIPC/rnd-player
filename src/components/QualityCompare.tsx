@@ -684,7 +684,14 @@ export default function QualityCompare({
     panningRef.current = false;
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     if (interactRef.current) interactRef.current.style.cursor = "grab";
-  }, []);
+
+    // Minimal movement → click → play (which resets zoom via onPlay handler)
+    const dx = e.clientX - panStartRef.current.x;
+    const dy = e.clientY - panStartRef.current.y;
+    if (dx * dx + dy * dy < 25) {
+      masterVideo.play().catch(() => {});
+    }
+  }, [masterVideo]);
 
   const onPanDoubleClick = useCallback(() => {
     resetZoom();
