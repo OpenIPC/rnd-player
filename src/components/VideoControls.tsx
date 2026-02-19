@@ -1088,16 +1088,18 @@ export default function VideoControls({
                 Reset subtitle positions
               </div>
             )}
-            <div
-              className="vp-context-menu-item"
-              onClick={() => {
-                setTranslateSetupSignal((s) => s + 1);
-                setContextMenu(null);
-              }}
-            >
-              <TranslateIcon />
-              Translation settings
-            </div>
+            {activeTextIds.size > 0 && (() => { try { const raw = localStorage.getItem("vp_translate_settings"); return raw && JSON.parse(raw).apiKey; } catch { return false; } })() && (
+              <div
+                className="vp-context-menu-item"
+                onClick={() => {
+                  setTranslateSetupSignal((s) => s + 1);
+                  setContextMenu(null);
+                }}
+              >
+                <TranslateIcon />
+                Translation settings
+              </div>
+            )}
             <div className="vp-context-menu-separator" />
             <div
               className="vp-context-menu-item"
