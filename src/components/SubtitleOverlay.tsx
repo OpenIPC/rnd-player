@@ -13,6 +13,7 @@ interface SubtitleOverlayProps {
   controlsVisible: boolean;
   textTracks: TextTrackOption[];
   resetSignal: number;
+  onCopyText?: (text: string) => void;
 }
 
 const STORAGE_KEY = "vp_subtitle_positions";
@@ -31,6 +32,18 @@ const TRACK_COLORS = [
   "#80deea", // light teal
   "#c5e1a5", // light green
 ];
+
+// Minimum pointer movement (px) before a pointerdown is treated as a drag
+// rather than a click-to-copy gesture.
+const DRAG_THRESHOLD = 5;
+
+interface DragState {
+  trackKey: string;
+  trackId: number;
+  startY: number;
+  startBottom: number;
+  moved: boolean;
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -71,11 +84,18 @@ export default function SubtitleOverlay({
   controlsVisible,
   textTracks,
   resetSignal,
+  onCopyText,
 }: SubtitleOverlayProps) {
   const [positions, setPositions] = useState<Map<string, number>>(() => loadPositions());
   const [draggingKey, setDraggingKey] = useState<string | null>(null);
-  const dragRef = useRef<{ trackKey: string; startY: number; startBottom: number } | null>(null);
+  const dragRef = useRef<DragState | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Refs for values needed in stable callbacks
+  const activeCuesRef = useRef(activeCues);
+  activeCuesRef.current = activeCues;
+  const onCopyTextRef = useRef(onCopyText);
+  onCopyTextRef.current = onCopyText;
 
   // Sync from localStorage on mount (in case another tab changed it)
   useEffect(() => {
@@ -123,20 +143,38 @@ export default function SubtitleOverlay({
       const bottomPx = overlayRect.bottom - trackRect.bottom;
       const currentBottom = (bottomPx / overlayRect.height) * 100;
 
-      // If in default stack, promote to absolute by saving this position
-      if (!positions.has(key)) {
-        setPositions((prev) => new Map(prev).set(key, currentBottom));
-      }
-
-      dragRef.current = { trackKey: key, startY: e.clientY, startBottom: currentBottom };
-      setDraggingKey(key);
+      // Don't promote to absolute yet — wait for movement to exceed threshold
+      dragRef.current = {
+        trackKey: key,
+        trackId,
+        startY: e.clientY,
+        startBottom: currentBottom,
+        moved: false,
+      };
     },
-    [findTrack, positions],
+    [findTrack],
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
       if (!dragRef.current || !overlayRef.current) return;
+
+      if (!dragRef.current.moved) {
+        const dy = Math.abs(e.clientY - dragRef.current.startY);
+        if (dy < DRAG_THRESHOLD) return;
+
+        // First time exceeding threshold — begin actual drag
+        dragRef.current.moved = true;
+
+        // Promote to absolute if track is in default stack
+        const key = dragRef.current.trackKey;
+        setPositions((prev) => {
+          if (prev.has(key)) return prev;
+          return new Map(prev).set(key, dragRef.current!.startBottom);
+        });
+        setDraggingKey(key);
+      }
+
       const containerHeight = overlayRef.current.clientHeight;
       if (containerHeight === 0) return;
       const deltaY = dragRef.current.startY - e.clientY;
@@ -154,13 +192,23 @@ export default function SubtitleOverlay({
 
   const onPointerUp = useCallback(() => {
     if (!dragRef.current) return;
+    const { moved, trackId } = dragRef.current;
     dragRef.current = null;
     setDraggingKey(null);
-    // Persist after drag ends
-    setPositions((current) => {
-      savePositions(current);
-      return current;
-    });
+
+    if (moved) {
+      // Drag ended — persist position
+      setPositions((current) => {
+        savePositions(current);
+        return current;
+      });
+    } else {
+      // Click (no movement) — copy subtitle text
+      const cues = activeCuesRef.current.get(trackId);
+      if (cues && onCopyTextRef.current) {
+        onCopyTextRef.current(cues.map((c) => c.text).join("\n"));
+      }
+    }
   }, []);
 
   const onDoubleClick = useCallback(

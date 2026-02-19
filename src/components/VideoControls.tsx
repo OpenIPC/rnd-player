@@ -622,6 +622,50 @@ export default function VideoControls({
   const textTrackInfos: TextTrackInfo[] = textTracks;
   const activeCues = useMultiSubtitles(player, videoEl, activeTextIds, textTrackInfos);
 
+  const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
+
+  const showCopiedToast = useCallback((msg: string) => {
+    setCopiedMsg(msg);
+    clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopiedMsg(null), 2000);
+  }, []);
+
+  const handleSubtitleCopy = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(() => showCopiedToast("Subtitle copied"));
+  }, [showCopiedToast]);
+
+  // ── Ctrl+C / Cmd+C copies visible subtitle text ──
+  const activeCuesRef = useRef(activeCues);
+  activeCuesRef.current = activeCues;
+  const trackOrderRef = useRef(trackOrder);
+  trackOrderRef.current = trackOrder;
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== "c") return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return; // user selected text — let browser handle
+      const cues = activeCuesRef.current;
+      const order = trackOrderRef.current;
+      if (cues.size === 0) return;
+      const texts: string[] = [];
+      for (const trackId of order) {
+        const trackCues = cues.get(trackId);
+        if (trackCues) {
+          texts.push(trackCues.map((c) => c.text).join("\n"));
+        }
+      }
+      if (texts.length === 0) return;
+      e.preventDefault();
+      navigator.clipboard.writeText(texts.join("\n\n")).then(() => showCopiedToast("Subtitle copied"));
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [showCopiedToast]);
+
   const togglePip = async () => {
     if (document.pictureInPictureElement) {
       await document.exitPictureInPicture();
@@ -629,9 +673,6 @@ export default function VideoControls({
       await videoEl.requestPictureInPicture();
     }
   };
-
-  const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
-  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
 
   const buildShareUrl = (withTime: boolean) => {
     const base = `${window.location.origin}${window.location.pathname}`;
@@ -658,9 +699,7 @@ export default function VideoControls({
   const copyVideoUrl = (withTime: boolean) => {
     const url = buildShareUrl(withTime);
     navigator.clipboard.writeText(url).then(() => {
-      setCopiedMsg(withTime ? "URL with time copied" : "URL copied");
-      clearTimeout(copiedTimerRef.current);
-      copiedTimerRef.current = setTimeout(() => setCopiedMsg(null), 2000);
+      showCopiedToast(withTime ? "URL with time copied" : "URL copied");
     });
     setContextMenu(null);
   };
@@ -1177,7 +1216,7 @@ export default function VideoControls({
       {/* Subtitle overlay — portaled so it stays visible when controls auto-hide */}
       {activeTextIds.size > 0 &&
         createPortal(
-          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} />,
+          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} onCopyText={handleSubtitleCopy} />,
           containerEl
         )}
 
