@@ -57,7 +57,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
-import { fetchWithCorsRetry } from "../utils/corsProxy";
+import { fetchWithCorsRetry, installCorsSchemePlugin } from "../utils/corsProxy";
 import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
@@ -216,8 +216,16 @@ export default function QualityCompare({
       if (isDualManifest) {
         // Fetch slave manifest to detect its KID independently
         try {
-          const { text: slaveManifestText } = await fetchWithCorsRetry(slaveSrc);
+          const { text: slaveManifestText, corsWorkaround: slaveCorsWorkaround } = await fetchWithCorsRetry(slaveSrc);
           if (destroyed) return;
+
+          // If the slave manifest required a CORS workaround (e.g. the CDN
+          // rejects requests with a Referer header from this origin), install
+          // the global CORS scheme plugin so Shaka's network engine also
+          // uses credentials-less, referrer-less fetches for segment requests.
+          if (slaveCorsWorkaround) {
+            installCorsSchemePlugin();
+          }
 
           if (slaveManifestText) {
             const doc = new DOMParser().parseFromString(slaveManifestText, "text/xml");
