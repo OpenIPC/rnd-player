@@ -36,9 +36,14 @@ const CONTEXT_CUE_COUNT = 3;
 // ── Translation ──
 const TRANSLATE_SETTINGS_KEY = "vp_translate_settings";
 
+const DEFAULT_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+const DEFAULT_MODEL = "gpt-4o-mini";
+
 interface TranslateSettings {
   apiKey: string;
   targetLanguage: string;
+  endpoint?: string;
+  model?: string;
 }
 
 interface WordGroup {
@@ -144,12 +149,14 @@ interface TranslateResult {
 }
 
 async function callTranslateApi(
-  apiKey: string,
-  targetLanguage: string,
+  settings: TranslateSettings,
   currentText: string,
   contextBefore: string[],
   contextAfter: string[],
 ): Promise<TranslateResult> {
+  const { apiKey, targetLanguage, endpoint, model } = settings;
+  const url = endpoint || DEFAULT_ENDPOINT;
+  const modelId = model || DEFAULT_MODEL;
   const userLines: string[] = [];
   if (contextBefore.length > 0) {
     userLines.push("Context (do not translate):");
@@ -164,14 +171,14 @@ async function callTranslateApi(
     for (const line of contextAfter) userLines.push(line);
   }
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+  const resp = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: modelId,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -251,6 +258,9 @@ export default function SubtitleOverlay({
   const [formApiKey, setFormApiKey] = useState("");
   const [formLanguage, setFormLanguage] = useState("");
   const [formSaveKey, setFormSaveKey] = useState(false);
+  const [formEndpoint, setFormEndpoint] = useState("");
+  const [formModel, setFormModel] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // ── Refs for stable callbacks ──
   const activeCuesRef = useRef(activeCues);
@@ -281,6 +291,9 @@ export default function SubtitleOverlay({
       setFormApiKey(saved?.apiKey || "");
       setFormLanguage(saved?.targetLanguage || getDefaultTargetLanguage());
       setFormSaveKey(!!saved);
+      setFormEndpoint(saved?.endpoint || "");
+      setFormModel(saved?.model || "");
+      setShowAdvanced(!!(saved?.endpoint || saved?.model));
       setSetupTrackId(null);
       setShowTranslateSetup(true);
     }
@@ -409,8 +422,7 @@ export default function SubtitleOverlay({
     setTranslatingTracks((prev) => new Set(prev).add(trackId));
     try {
       const result = await callTranslateApi(
-        settings.apiKey,
-        settings.targetLanguage,
+        settings,
         currentText,
         ctx.before.map((c) => c.text),
         ctx.after.map((c) => c.text),
@@ -440,6 +452,9 @@ export default function SubtitleOverlay({
       setFormApiKey(saved?.apiKey || "");
       setFormLanguage(saved?.targetLanguage || getDefaultTargetLanguage());
       setFormSaveKey(!!saved);
+      setFormEndpoint(saved?.endpoint || "");
+      setFormModel(saved?.model || "");
+      setShowAdvanced(!!(saved?.endpoint || saved?.model));
       setShowTranslateSetup(true);
       return;
     }
@@ -449,9 +464,16 @@ export default function SubtitleOverlay({
   const onSetupSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     const key = formApiKey.trim();
-    if (!key) return;
+    const ep = formEndpoint.trim();
+    // API key required for OpenAI, optional for local endpoints
+    if (!key && !ep) return;
     const lang = formLanguage.trim() || getDefaultTargetLanguage();
-    const settings: TranslateSettings = { apiKey: key, targetLanguage: lang };
+    const settings: TranslateSettings = {
+      apiKey: key,
+      targetLanguage: lang,
+      endpoint: ep || undefined,
+      model: formModel.trim() || undefined,
+    };
     if (formSaveKey) {
       saveTranslateSettings(settings);
     } else {
@@ -460,7 +482,7 @@ export default function SubtitleOverlay({
     setTranslateSettings(settings);
     setShowTranslateSetup(false);
     if (setupTrackId !== null) doTranslate(setupTrackId, settings);
-  }, [formApiKey, formLanguage, formSaveKey, setupTrackId, doTranslate]);
+  }, [formApiKey, formLanguage, formSaveKey, formEndpoint, formModel, setupTrackId, doTranslate]);
 
   const onForgetKey = useCallback(() => {
     try { localStorage.removeItem(TRANSLATE_SETTINGS_KEY); } catch { /* ignore */ }
@@ -595,7 +617,7 @@ export default function SubtitleOverlay({
           <form className="vp-translate-setup" onSubmit={onSetupSubmit}>
             <h3 className="vp-translate-title">Translate Subtitles</h3>
             <p className="vp-translate-desc">
-              Uses the OpenAI API to translate subtitle text in real-time.
+              Uses an OpenAI-compatible API to translate subtitle text in real-time.
               Surrounding lines are sent as context for more accurate translations.
             </p>
             <p className="vp-translate-desc">
@@ -603,10 +625,10 @@ export default function SubtitleOverlay({
               <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">
                 platform.openai.com/api-keys
               </a>
-              . Calls are billed to your OpenAI account.
+              {" "}or a local LLM endpoint.
             </p>
 
-            <label className="vp-translate-label">API Key</label>
+            <label className="vp-translate-label">API Key{formEndpoint.trim() ? " (optional for local)" : ""}</label>
             <input
               className="vp-translate-input"
               type="password"
@@ -625,25 +647,51 @@ export default function SubtitleOverlay({
               placeholder={getDefaultTargetLanguage()}
             />
 
+            <button type="button" className="vp-translate-advanced-toggle" onClick={() => setShowAdvanced((s) => !s)}>
+              {showAdvanced ? "▾" : "▸"} Advanced
+            </button>
+
+            {showAdvanced && (
+              <div className="vp-translate-advanced">
+                <label className="vp-translate-label">Endpoint URL</label>
+                <input
+                  className="vp-translate-input"
+                  type="text"
+                  value={formEndpoint}
+                  onChange={(e) => setFormEndpoint(e.target.value)}
+                  placeholder={DEFAULT_ENDPOINT}
+                />
+
+                <label className="vp-translate-label">Model</label>
+                <input
+                  className="vp-translate-input"
+                  type="text"
+                  value={formModel}
+                  onChange={(e) => setFormModel(e.target.value)}
+                  placeholder={DEFAULT_MODEL}
+                />
+              </div>
+            )}
+
             <label className="vp-translate-checkbox">
               <input
                 type="checkbox"
                 checked={formSaveKey}
                 onChange={(e) => setFormSaveKey(e.target.checked)}
               />
-              Remember API key in this browser
+              Remember settings in this browser
             </label>
 
             <div className="vp-translate-actions">
               {loadTranslateSettings() && (
                 <button type="button" className="vp-translate-forget" onClick={onForgetKey}>
-                  Forget saved key
+                  Forget saved settings
                 </button>
               )}
               <button type="button" className="vp-translate-cancel" onClick={() => setShowTranslateSetup(false)}>
                 Cancel
               </button>
-              <button type="submit" className="vp-translate-submit" disabled={!formApiKey.trim()}>
+              <button type="submit" className="vp-translate-submit" disabled={!formApiKey.trim() && !formEndpoint.trim()}>
                 {setupTrackId !== null ? "Translate" : "Save"}
               </button>
             </div>

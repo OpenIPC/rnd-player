@@ -1088,7 +1088,7 @@ export default function VideoControls({
                 Reset subtitle positions
               </div>
             )}
-            {activeTextIds.size > 0 && (() => { try { const raw = localStorage.getItem("vp_translate_settings"); return raw && JSON.parse(raw).apiKey; } catch { return false; } })() && (
+            {activeTextIds.size > 0 && (() => { try { const raw = localStorage.getItem("vp_translate_settings"); if (!raw) return false; const s = JSON.parse(raw); return s.apiKey || s.endpoint; } catch { return false; } })() && (
               <div
                 className="vp-context-menu-item"
                 onClick={() => {
