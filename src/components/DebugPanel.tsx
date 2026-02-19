@@ -97,7 +97,7 @@ export default function DebugPanel() {
 
 const panelStyle: React.CSSProperties = {
   position: "absolute",
-  bottom: 48,
+  bottom: 76,
   right: 4,
   zIndex: 9999,
   background: "rgba(0, 0, 0, 0.8)",
