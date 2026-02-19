@@ -158,6 +158,20 @@ export default function QualityCompare({
   const slaveVideoRef = useRef<HTMLVideoElement>(null);
   const slavePlayerRef = useRef<shaka.Player | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const interactRef = useRef<HTMLDivElement>(null);
+
+  // ── Zoom/pan refs (no re-renders per wheel tick / pointer move) ──
+  const zoomRef = useRef(1);
+  const panXRef = useRef(0);
+  const panYRef = useRef(0);
+  const panningRef = useRef(false);
+  const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const masterTransformRef = useRef<string>("");
+
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 8;
+  const ZOOM_SPEED = 0.002;
+  const ZOOM_STEP = 1.15;
 
   const [sliderPct, setSliderPct] = useState(50);
   const [dragging, setDragging] = useState(false);
@@ -172,8 +186,65 @@ export default function QualityCompare({
   const [paused, setPaused] = useState(masterVideo.paused);
   const [frameInfoA, setFrameInfoA] = useState<{ type: FrameType; size: number } | null>(null);
   const [frameInfoB, setFrameInfoB] = useState<{ type: FrameType; size: number } | null>(null);
+  const [zoomDisplay, setZoomDisplay] = useState(1);
 
   const isDualManifest = slaveSrc !== src;
+
+  // ── Zoom/pan helpers ──
+  const applyTransform = useCallback(() => {
+    const z = zoomRef.current;
+    const tx = panXRef.current;
+    const ty = panYRef.current;
+    const transform = z === 1
+      ? ""
+      : `scale(${z}) translate(${tx}px, ${ty}px)`;
+    const origin = z === 1 ? "" : "0 0";
+
+    const slaveVideo = slaveVideoRef.current;
+    if (slaveVideo) {
+      slaveVideo.style.transform = transform;
+      slaveVideo.style.transformOrigin = origin;
+    }
+    masterVideo.style.transform = transform;
+    masterVideo.style.transformOrigin = origin;
+
+    setZoomDisplay(z);
+
+    // Update cursor on interaction layer
+    const el = interactRef.current;
+    if (el) {
+      el.style.cursor = panningRef.current ? "grabbing" : "grab";
+    }
+  }, [masterVideo]);
+
+  const clampPan = useCallback(() => {
+    const z = zoomRef.current;
+    // In CSS: transform = scale(z) translate(tx, ty)
+    // CSS evaluates left-to-right: translate first, then scale.
+    // Visible region in video coords: from -tx to -tx + containerW/z
+    // Constraint: video left edge (0) <= visible left, visible right <= videoW
+    // → 0 >= tx and tx >= (1 - z) * containerW / z ... but since translate is in
+    //   pre-scale coords and the container IS the video:
+    //   screen offset of video top-left = tx * z, must be <= 0 (can't move right of origin)
+    //   screen offset of video bottom-right = tx*z + containerW*z, must be >= containerW
+    //   → tx * z <= 0  → tx <= 0
+    //   → tx * z >= containerW * (1 - z)  → tx >= containerW * (1 - z) / z
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const w = rect.width;
+    const h = rect.height;
+    const minTx = w * (1 - z) / z;
+    const minTy = h * (1 - z) / z;
+    panXRef.current = Math.max(minTx, Math.min(0, panXRef.current));
+    panYRef.current = Math.max(minTy, Math.min(0, panYRef.current));
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    zoomRef.current = 1;
+    panXRef.current = 0;
+    panYRef.current = 0;
+    applyTransform();
+  }, [applyTransform]);
 
   // ── Match slave dimensions to master's exact rendered size ──
   // Uses ResizeObserver contentBoxSize for sub-pixel accuracy (offsetWidth/
@@ -512,6 +583,113 @@ export default function QualityCompare({
     return () => clearFrameTypeCache();
   }, []);
 
+  // ── Wheel zoom (document-level, passive: false to block browser zoom) ──
+  useEffect(() => {
+    const onWheel = (e: WheelEvent) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      // Check cursor is within overlay bounds
+      if (
+        e.clientX < rect.left || e.clientX > rect.right ||
+        e.clientY < rect.top || e.clientY > rect.bottom
+      ) return;
+      // Only zoom when paused and slave is ready
+      if (!masterVideo.paused || !slaveReady) return;
+      // Ignore if target is toolbar or select
+      const target = e.target as HTMLElement;
+      if (target.closest(".vp-compare-toolbar") || target.closest("select")) return;
+
+      e.preventDefault();
+
+      const oldZ = zoomRef.current;
+      let newZ: number;
+      if (e.ctrlKey) {
+        // Pinch gesture — continuous zoom
+        newZ = oldZ * Math.exp(-e.deltaY * ZOOM_SPEED);
+      } else {
+        // Discrete wheel — step zoom
+        newZ = e.deltaY < 0 ? oldZ * ZOOM_STEP : oldZ / ZOOM_STEP;
+      }
+      newZ = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZ));
+
+      // Keep cursor point stationary
+      // Screen-space cursor offset from video top-left = (cursorX - rect.left)
+      // In pre-scale coords the cursor maps to: (cursorScreenX - tx_old * oldZ) / oldZ
+      // But with transform: scale(Z) translate(tx, ty), the screen position of
+      // video point (vx, vy) is (vx + tx) * Z. So the video-space point under
+      // the cursor is: vx = cursorScreen / oldZ - tx_old.
+      // After zoom: cursorScreen = (vx + tx_new) * newZ → tx_new = cursorScreen / newZ - vx
+      const cursorX = e.clientX - rect.left;
+      const cursorY = e.clientY - rect.top;
+      const vx = cursorX / oldZ - panXRef.current;
+      const vy = cursorY / oldZ - panYRef.current;
+      panXRef.current = cursorX / newZ - vx;
+      panYRef.current = cursorY / newZ - vy;
+      zoomRef.current = newZ;
+
+      clampPan();
+      applyTransform();
+    };
+
+    document.addEventListener("wheel", onWheel, { passive: false });
+    return () => document.removeEventListener("wheel", onWheel);
+  }, [masterVideo, slaveReady, clampPan, applyTransform]);
+
+  // ── Save/restore master transform on mount/unmount ──
+  useEffect(() => {
+    masterTransformRef.current = masterVideo.style.transform;
+    return () => {
+      masterVideo.style.transform = masterTransformRef.current;
+      masterVideo.style.transformOrigin = "";
+    };
+  }, [masterVideo]);
+
+  // ── Reset zoom on play ──
+  useEffect(() => {
+    const onPlay = () => resetZoom();
+    masterVideo.addEventListener("play", onPlay);
+    return () => masterVideo.removeEventListener("play", onPlay);
+  }, [masterVideo, resetZoom]);
+
+  // ── Pan handlers ──
+  const onPanPointerDown = useCallback((e: React.PointerEvent) => {
+    // Don't start pan if target is handle or toolbar
+    const target = e.target as HTMLElement;
+    if (target.closest(".vp-compare-handle") || target.closest(".vp-compare-toolbar")) return;
+    panningRef.current = true;
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      panX: panXRef.current,
+      panY: panYRef.current,
+    };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    if (interactRef.current) interactRef.current.style.cursor = "grabbing";
+  }, []);
+
+  const onPanPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!panningRef.current) return;
+    const z = zoomRef.current;
+    const dx = (e.clientX - panStartRef.current.x) / z;
+    const dy = (e.clientY - panStartRef.current.y) / z;
+    panXRef.current = panStartRef.current.panX + dx;
+    panYRef.current = panStartRef.current.panY + dy;
+    clampPan();
+    applyTransform();
+  }, [clampPan, applyTransform]);
+
+  const onPanPointerUp = useCallback((e: React.PointerEvent) => {
+    if (!panningRef.current) return;
+    panningRef.current = false;
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    if (interactRef.current) interactRef.current.style.cursor = "grab";
+  }, []);
+
+  const onPanDoubleClick = useCallback(() => {
+    resetZoom();
+  }, [resetZoom]);
+
   // ── Slider drag ──
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -693,6 +871,24 @@ export default function QualityCompare({
             )}
           </span>
         </div>
+      )}
+
+      {/* Interaction layer for pan + double-click (only when zoomed & paused) */}
+      {zoomDisplay > 1 && paused && (
+        <div
+          ref={interactRef}
+          className="vp-compare-interact"
+          style={{ cursor: "grab" }}
+          onPointerDown={onPanPointerDown}
+          onPointerMove={onPanPointerMove}
+          onPointerUp={onPanPointerUp}
+          onDoubleClick={onPanDoubleClick}
+        />
+      )}
+
+      {/* Zoom indicator */}
+      {zoomDisplay > 1 && (
+        <div className="vp-compare-zoom-label">{zoomDisplay.toFixed(1)}&times;</div>
       )}
 
       {/* Slider line + handle */}
