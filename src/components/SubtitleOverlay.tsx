@@ -13,7 +13,9 @@ interface SubtitleOverlayProps {
   controlsVisible: boolean;
   textTracks: TextTrackOption[];
   resetSignal: number;
-  onCopyText?: (text: string) => void;
+  onCopyText?: (text: string, toast?: string) => void;
+  getContextCues?: (trackId: number, time: number, count: number) => { before: SubCue[]; current: SubCue[]; after: SubCue[] };
+  videoEl?: HTMLVideoElement;
 }
 
 const STORAGE_KEY = "vp_subtitle_positions";
@@ -37,12 +39,26 @@ const TRACK_COLORS = [
 // rather than a click-to-copy gesture.
 const DRAG_THRESHOLD = 5;
 
+// Long press duration (ms) to trigger context popup
+const LONG_PRESS_MS = 500;
+
+// Number of surrounding cues to show in context popup
+const CONTEXT_CUE_COUNT = 3;
+
 interface DragState {
   trackKey: string;
   trackId: number;
   startY: number;
   startBottom: number;
   moved: boolean;
+  longPressed: boolean;
+}
+
+interface ContextPopup {
+  trackId: number;
+  before: SubCue[];
+  current: SubCue[];
+  after: SubCue[];
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -85,17 +101,25 @@ export default function SubtitleOverlay({
   textTracks,
   resetSignal,
   onCopyText,
+  getContextCues,
+  videoEl,
 }: SubtitleOverlayProps) {
   const [positions, setPositions] = useState<Map<string, number>>(() => loadPositions());
   const [draggingKey, setDraggingKey] = useState<string | null>(null);
+  const [contextPopup, setContextPopup] = useState<ContextPopup | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
 
   // Refs for values needed in stable callbacks
   const activeCuesRef = useRef(activeCues);
   activeCuesRef.current = activeCues;
   const onCopyTextRef = useRef(onCopyText);
   onCopyTextRef.current = onCopyText;
+  const getContextCuesRef = useRef(getContextCues);
+  getContextCuesRef.current = getContextCues;
+  const videoElRef = useRef(videoEl);
+  videoElRef.current = videoEl;
 
   // Sync from localStorage on mount (in case another tab changed it)
   useEffect(() => {
@@ -150,7 +174,25 @@ export default function SubtitleOverlay({
         startY: e.clientY,
         startBottom: currentBottom,
         moved: false,
+        longPressed: false,
       };
+
+      // Start long press timer
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = setTimeout(() => {
+        if (!dragRef.current || dragRef.current.moved) return;
+        dragRef.current.longPressed = true;
+
+        // Get context cues at current playback time
+        const fn = getContextCuesRef.current;
+        const vid = videoElRef.current;
+        if (fn && vid) {
+          const ctx = fn(trackId, vid.currentTime, CONTEXT_CUE_COUNT);
+          if (ctx.current.length > 0) {
+            setContextPopup({ trackId, ...ctx });
+          }
+        }
+      }, LONG_PRESS_MS);
     },
     [findTrack],
   );
@@ -159,11 +201,15 @@ export default function SubtitleOverlay({
     (e: React.PointerEvent) => {
       if (!dragRef.current || !overlayRef.current) return;
 
+      // If long press popup is showing, ignore movement
+      if (dragRef.current.longPressed) return;
+
       if (!dragRef.current.moved) {
         const dy = Math.abs(e.clientY - dragRef.current.startY);
         if (dy < DRAG_THRESHOLD) return;
 
-        // First time exceeding threshold — begin actual drag
+        // Movement exceeded threshold — cancel long press timer, begin drag
+        clearTimeout(longPressTimerRef.current);
         dragRef.current.moved = true;
 
         // Promote to absolute if track is in default stack
@@ -191,12 +237,26 @@ export default function SubtitleOverlay({
   );
 
   const onPointerUp = useCallback(() => {
+    clearTimeout(longPressTimerRef.current);
     if (!dragRef.current) return;
-    const { moved, trackId } = dragRef.current;
+    const { moved, longPressed, trackId } = dragRef.current;
     dragRef.current = null;
     setDraggingKey(null);
 
-    if (moved) {
+    if (longPressed) {
+      // Long press release — copy context text
+      setContextPopup((popup) => {
+        if (!popup) return null;
+        const lines: string[] = [];
+        for (const c of popup.before) lines.push(c.text);
+        for (const c of popup.current) lines.push(`→ ${c.text} ←`);
+        for (const c of popup.after) lines.push(c.text);
+        if (lines.length > 0 && onCopyTextRef.current) {
+          onCopyTextRef.current(lines.join("\n"), "Context copied");
+        }
+        return null;
+      });
+    } else if (moved) {
       // Drag ended — persist position
       setPositions((current) => {
         savePositions(current);
@@ -294,6 +354,23 @@ export default function SubtitleOverlay({
           </div>
         );
       })}
+
+      {/* Long press context popup */}
+      {contextPopup && (
+        <div className="vp-subtitle-context-popup" style={{ "--vp-sub-color": getTrackColor(contextPopup.trackId) } as React.CSSProperties}>
+          {contextPopup.before.map((cue, i) => (
+            <div key={`b${i}`} className="vp-context-cue vp-context-dim">{cue.text}</div>
+          ))}
+          {contextPopup.current.map((cue, i) => (
+            <div key={`c${i}`} className="vp-context-cue vp-context-active">
+              <span className="vp-context-arrow">→</span> {cue.text} <span className="vp-context-arrow">←</span>
+            </div>
+          ))}
+          {contextPopup.after.map((cue, i) => (
+            <div key={`a${i}`} className="vp-context-cue vp-context-dim">{cue.text}</div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

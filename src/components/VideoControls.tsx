@@ -620,7 +620,7 @@ export default function VideoControls({
 
   // Multi-subtitle hook: fetches, parses, and filters active cues
   const textTrackInfos: TextTrackInfo[] = textTracks;
-  const activeCues = useMultiSubtitles(player, videoEl, activeTextIds, textTrackInfos);
+  const { activeCues, getContextCues } = useMultiSubtitles(player, videoEl, activeTextIds, textTrackInfos);
 
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
@@ -631,8 +631,8 @@ export default function VideoControls({
     copiedTimerRef.current = setTimeout(() => setCopiedMsg(null), 2000);
   }, []);
 
-  const handleSubtitleCopy = useCallback((text: string) => {
-    navigator.clipboard.writeText(text).then(() => showCopiedToast("Subtitle copied"));
+  const handleSubtitleCopy = useCallback((text: string, toast?: string) => {
+    navigator.clipboard.writeText(text).then(() => showCopiedToast(toast ?? "Subtitle copied"));
   }, [showCopiedToast]);
 
   // ── Ctrl+C / Cmd+C copies visible subtitle text ──
@@ -1216,7 +1216,7 @@ export default function VideoControls({
       {/* Subtitle overlay — portaled so it stays visible when controls auto-hide */}
       {activeTextIds.size > 0 &&
         createPortal(
-          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} onCopyText={handleSubtitleCopy} />,
+          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} onCopyText={handleSubtitleCopy} getContextCues={getContextCues} videoEl={videoEl} />,
           containerEl
         )}
 

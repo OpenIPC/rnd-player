@@ -36,7 +36,7 @@ export function useMultiSubtitles(
   videoEl: HTMLVideoElement | null,
   activeTextIds: Set<number>,
   textTracks: TextTrackInfo[],
-): Map<number, SubCue[]> {
+): { activeCues: Map<number, SubCue[]>; getContextCues: (trackId: number, time: number, count: number) => { before: SubCue[]; current: SubCue[]; after: SubCue[] } } {
   // Cache: trackId → all parsed cues
   const cueCache = useRef<Map<number, SubCue[]>>(new Map());
   // Loading state: trackId → Promise (to avoid double-fetching)
@@ -195,5 +195,23 @@ export function useMultiSubtitles(
     };
   }, [videoEl, activeTextIds]);
 
-  return activeCues;
+  const getContextCues = useCallback(
+    (trackId: number, time: number, count: number) => {
+      const empty = { before: [] as SubCue[], current: [] as SubCue[], after: [] as SubCue[] };
+      const cues = cueCache.current.get(trackId);
+      if (!cues || cues.length === 0) return empty;
+
+      // Find the first cue that is active at `time`
+      const idx = cues.findIndex((c) => c.startTime <= time && time < c.endTime);
+      if (idx < 0) return empty;
+
+      const current = [cues[idx]];
+      const before = cues.slice(Math.max(0, idx - count), idx);
+      const after = cues.slice(idx + 1, idx + 1 + count);
+      return { before, current, after };
+    },
+    [],
+  );
+
+  return { activeCues, getContextCues };
 }
