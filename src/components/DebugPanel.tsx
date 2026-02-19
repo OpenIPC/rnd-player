@@ -20,7 +20,8 @@ export default function DebugPanel() {
   const [mem, setMem] = useState<MemoryInfo | null>(getMemory);
   const prevUsedRef = useRef(mem?.usedJSHeapSize ?? 0);
   const [delta, setDelta] = useState(0);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const [closed, setClosed] = useState(false);
 
   useEffect(() => {
     if (!getMemory()) return;
@@ -36,6 +37,8 @@ export default function DebugPanel() {
     return () => clearInterval(id);
   }, []);
 
+  if (closed) return null;
+
   if (!mem) {
     return (
       <div className="vp-debug-panel" style={panelStyle}>
@@ -50,6 +53,12 @@ export default function DebugPanel() {
         <span style={labelStyle}>DBG</span>
         <span style={{ ...valueStyle, marginLeft: 4 }}>{fmt(mem.usedJSHeapSize)} MB</span>
         <span style={trendStyle(delta)}>{delta > 0 ? " +" : " "}{fmt(delta)}</span>
+        <span
+          style={{ cursor: "pointer", opacity: 0.5, fontSize: 9, marginLeft: 6 }}
+          onClick={(e) => { e.stopPropagation(); setClosed(true); }}
+        >
+          ×
+        </span>
       </div>
     );
   }
@@ -60,11 +69,19 @@ export default function DebugPanel() {
     <div className="vp-debug-panel" style={panelStyle} onClick={(e) => e.stopPropagation()}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={labelStyle}>JS Heap</span>
-        <span
-          style={{ cursor: "pointer", opacity: 0.5, fontSize: 9, marginLeft: 8 }}
-          onClick={() => setCollapsed(true)}
-        >
-          [–]
+        <span style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+          <span
+            style={{ cursor: "pointer", opacity: 0.5, fontSize: 9 }}
+            onClick={() => setCollapsed(true)}
+          >
+            [–]
+          </span>
+          <span
+            style={{ cursor: "pointer", opacity: 0.5, fontSize: 9 }}
+            onClick={() => setClosed(true)}
+          >
+            [×]
+          </span>
         </span>
       </div>
       <div style={rowStyle}>
