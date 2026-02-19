@@ -574,6 +574,37 @@ export default function VideoControls({
     [textTracks],
   );
 
+  // Remember which tracks were active before 'c' toggled them off
+  const lastActiveSubsRef = useRef<{ ids: Set<number>; order: number[] }>({ ids: new Set(), order: [] });
+
+  const toggleAllSubtitles = useCallback(() => {
+    if (textTracks.length === 0) return;
+    if (activeTextIds.size > 0) {
+      // Save current state and turn all off
+      lastActiveSubsRef.current = { ids: new Set(activeTextIds), order: [...trackOrder] };
+      setActiveTextIds(new Set());
+      setTrackOrder([]);
+    } else {
+      // Restore previous state, or enable all if no previous state
+      const prev = lastActiveSubsRef.current;
+      if (prev.ids.size > 0) {
+        setActiveTextIds(new Set(prev.ids));
+        setTrackOrder([...prev.order]);
+      } else {
+        const allIds = new Set(textTracks.map((t) => t.id));
+        setActiveTextIds(allIds);
+        setTrackOrder(textTracks.map((t) => t.id));
+      }
+    }
+  }, [textTracks, activeTextIds, trackOrder]);
+
+  const toggleAllSubtitlesRef = useRef(toggleAllSubtitles);
+  toggleAllSubtitlesRef.current = toggleAllSubtitles;
+
+  const stableToggleAllSubtitles = useCallback(() => {
+    toggleAllSubtitlesRef.current();
+  }, []);
+
   const { shuttleSpeed, shuttleDirection } = useKeyboardShortcuts({
     videoEl,
     containerEl,
@@ -584,6 +615,7 @@ export default function VideoControls({
     onInPointSet: onInPointChange,
     onOutPointSet: onOutPointChange,
     onToggleSubtitleByIndex: toggleSubtitleByIndex,
+    onToggleAllSubtitles: stableToggleAllSubtitles,
   });
 
   // Multi-subtitle hook: fetches, parses, and filters active cues
