@@ -135,6 +135,7 @@ video::-webkit-media-text-track-container {
   z-index: 2;
   opacity: 1;
   transition: opacity 0.3s ease;
+  pointer-events: none;
   cursor: default;
 }
 
@@ -166,6 +167,7 @@ video::-webkit-media-text-track-container {
   position: relative;
   padding: 0 12px 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+  pointer-events: auto;
 }
 
 /* ── Progress bar row ── */
@@ -520,25 +522,50 @@ video::-webkit-media-text-track-container {
 /* ── Subtitle overlay (YouTube-style) ── */
 .vp-subtitle-overlay {
   position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.vp-subtitle-stack {
+  position: absolute;
   bottom: 70px;
   left: 0;
   right: 0;
   display: flex;
   flex-direction: column-reverse;
   align-items: center;
-  pointer-events: none;
-  z-index: 1;
-  transition: bottom 0.3s ease;
   padding: 0 10%;
+  transition: bottom 0.3s ease;
 }
 
-.vp-subtitle-overlay.vp-subs-low {
+.vp-subtitle-stack.vp-subs-low {
   bottom: 16px;
 }
 
 .vp-subtitle-track {
-  padding: 2px 0;
   text-align: center;
+  padding: 2px 0;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.vp-subtitle-track.vp-dragging {
+  cursor: grabbing;
+}
+
+.vp-subtitle-positioned {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding: 0 10%;
+  transition: bottom 0.15s ease-out;
+}
+
+.vp-subtitle-positioned.vp-dragging {
+  transition: none;
 }
 
 .vp-subtitle-cue {
