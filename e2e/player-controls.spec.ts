@@ -115,7 +115,7 @@ test.describe("Player controls", () => {
     await expect(page.locator(".vp-context-menu")).toBeVisible();
 
     // Click elsewhere to dismiss
-    await page.locator(".vp-controls-wrapper").click({ position: { x: 10, y: 10 } });
+    await page.locator(".vp-video-area").click({ position: { x: 10, y: 10 } });
     await expect(page.locator(".vp-context-menu")).toBeHidden();
   });
 
