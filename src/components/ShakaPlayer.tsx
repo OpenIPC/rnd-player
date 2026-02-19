@@ -326,7 +326,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
         {showCompareModal && (
           <div
             className="vp-compare-modal-overlay"
-            onClick={() => setShowCompareModal(false)}
+            onClick={(e) => { e.stopPropagation(); setShowCompareModal(false); }}
           >
             <form
               className="vp-compare-modal"

@@ -424,7 +424,7 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();

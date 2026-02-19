@@ -979,6 +979,7 @@ video::-webkit-media-text-track-container {
   justify-content: center;
   z-index: 5;
   background: rgba(0, 0, 0, 0.8);
+  pointer-events: auto;
 }
 
 .vp-compare-modal {
@@ -995,8 +996,15 @@ video::-webkit-media-text-track-container {
 
 .vp-compare-modal-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-top: 12px;
+}
+
+.vp-compare-modal-actions .vp-key-submit {
+  margin-top: 0;
+  padding: 8px 20px;
+  border: 1px solid transparent;
 }
 
 .vp-compare-modal-same {
