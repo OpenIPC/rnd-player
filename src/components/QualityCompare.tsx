@@ -173,9 +173,11 @@ export default function QualityCompare({
     const slavePlayer = new shaka.Player();
     slavePlayerRef.current = slavePlayer;
 
-    // Save master ABR state
+    // Save master ABR state and disable it immediately so the master
+    // doesn't adapt (downgrade) during the slave's async initialization.
     const abrConfig = masterPlayer.getConfiguration().abr;
     masterAbrWasEnabled.current = abrConfig?.enabled !== false;
+    masterPlayer.configure("abr.enabled", false);
 
     slavePlayer.attach(slaveVideo).then(async () => {
       if (destroyed) return;
