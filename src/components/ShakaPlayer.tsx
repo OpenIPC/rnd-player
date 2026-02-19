@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
+import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin } from "../utils/corsProxy";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
@@ -100,14 +101,20 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
             : null;
 
       // Fetch manifest and extract cenc:default_KID for ClearKey DRM
-      const response = await fetch(src);
-      const xml = await response.text();
-      const doc = new DOMParser().parseFromString(xml, "text/xml");
-      const cp = doc.querySelector("[*|default_KID]");
-      const defaultKID =
-        cp?.getAttribute("cenc:default_KID")?.replaceAll("-", "") ?? null;
-
+      const { text: manifestText, corsWorkaround } = await fetchWithCorsRetry(src);
       if (destroyed) return;
+
+      if (corsWorkaround) {
+        installCorsSchemePlugin();
+      }
+
+      let defaultKID: string | null = null;
+      if (manifestText) {
+        const doc = new DOMParser().parseFromString(manifestText, "text/xml");
+        const cp = doc.querySelector("[*|default_KID]");
+        defaultKID =
+          cp?.getAttribute("cenc:default_KID")?.replaceAll("-", "") ?? null;
+      }
 
       kidRef.current = defaultKID;
 
@@ -203,6 +210,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
       destroyed = true;
       setPlayerReady(false);
       kidRef.current = null;
+      uninstallCorsSchemePlugin();
       player.destroy();
       playerRef.current = null;
     };
