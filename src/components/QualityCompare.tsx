@@ -249,7 +249,13 @@ export default function QualityCompare({
       }
 
       try {
-        await slavePlayer.load(slaveSrc);
+        // Load slave at master's current position so Shaka fetches
+        // segments from the right time directly (avoids green frame
+        // from seeking after a t=0 load).
+        const masterTime = masterVideo.currentTime;
+        const startTime = masterTime > 0 ? masterTime : undefined;
+
+        await slavePlayer.load(slaveSrc, startTime);
         if (destroyed) return;
 
         // Verify EME decryption works; fall back to software if not
@@ -261,7 +267,7 @@ export default function QualityCompare({
             if (destroyed) return;
             slavePlayer.configure({ drm: { clearKeys: {} } });
             configureSoftwareDecryption(slavePlayer, slaveClearKey);
-            await slavePlayer.load(slaveSrc);
+            await slavePlayer.load(slaveSrc, startTime);
             if (destroyed) return;
           }
         }
@@ -314,12 +320,27 @@ export default function QualityCompare({
 
         onResolutionChange?.(pickA ?? null, pickB ?? null);
 
-        // Sync initial position (clamped to slave duration)
+        // Sync initial position (clamped to slave duration).
+        // Wait for the seek to complete so the decoder produces a valid
+        // frame before we show the slave (prevents green flash).
         const clampedTime = Math.min(
           masterVideo.currentTime,
           slaveVideo.duration || Infinity,
         );
         slaveVideo.currentTime = clampedTime;
+        await new Promise<void>((resolve) => {
+          if (!slaveVideo.seeking) {
+            resolve();
+            return;
+          }
+          const onSeeked = () => {
+            slaveVideo.removeEventListener("seeked", onSeeked);
+            resolve();
+          };
+          slaveVideo.addEventListener("seeked", onSeeked);
+        });
+        if (destroyed) return;
+
         if (!masterVideo.paused) {
           slaveVideo.play().catch(() => {});
         }
