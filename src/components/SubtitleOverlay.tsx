@@ -39,10 +39,34 @@ interface TranslateSettings {
   targetLanguage: string;
 }
 
+interface WordGroup {
+  text: string;
+  g: number;
+}
+
 interface TranslationEntry {
   sourceText: string;
   translation: string;
+  source?: WordGroup[];
+  target?: WordGroup[];
 }
+
+// Distinct bright colors for word alignment — readable on dark backgrounds,
+// chosen so adjacent groups stay visually separable.
+const WORD_COLORS = [
+  "#ff7675", // coral
+  "#74b9ff", // sky blue
+  "#55efc4", // mint
+  "#fdcb6e", // mustard
+  "#a29bfe", // soft purple
+  "#fd79a8", // pink
+  "#00cec9", // teal
+  "#fab1a0", // salmon
+  "#81ecec", // light cyan
+  "#ffeaa7", // cream
+  "#6c5ce7", // indigo
+  "#e17055", // terracotta
+];
 
 interface DragState {
   trackKey: string;
@@ -111,17 +135,32 @@ function getDefaultTargetLanguage(): string {
   }
 }
 
+interface TranslateResult {
+  translation: string;
+  source?: WordGroup[];
+  target?: WordGroup[];
+}
+
 async function callTranslateApi(
   apiKey: string,
   targetLanguage: string,
   currentText: string,
   contextBefore: string[],
   contextAfter: string[],
-): Promise<string> {
-  const lines: string[] = [];
-  for (const line of contextBefore) lines.push(line);
-  lines.push(`→ ${currentText} ←`);
-  for (const line of contextAfter) lines.push(line);
+): Promise<TranslateResult> {
+  const userLines: string[] = [];
+  if (contextBefore.length > 0) {
+    userLines.push("Context (do not translate):");
+    for (const line of contextBefore) userLines.push(line);
+    userLines.push("");
+  }
+  userLines.push(`Translate to ${targetLanguage}:`);
+  userLines.push(`→ ${currentText} ←`);
+  if (contextAfter.length > 0) {
+    userLines.push("");
+    userLines.push("Context (do not translate):");
+    for (const line of contextAfter) userLines.push(line);
+  }
 
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -131,12 +170,28 @@ async function callTranslateApi(
     },
     body: JSON.stringify({
       model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: `You are a subtitle translator. Translate only the line marked with → ← arrows to ${targetLanguage}. Use the surrounding lines for context to produce a more accurate and natural translation, but do not translate them. Return only the translated text, nothing else.`,
+          content: `You are a language learning assistant. Translate the marked subtitle line and provide word-by-word alignment to help learners see structural differences between languages.
+
+Return a JSON object:
+{
+  "source": [{"text": "word(s)", "g": 0}, {"text": "word(s)", "g": 1}, ...],
+  "target": [{"text": "translated word(s)", "g": 0}, {"text": "translated word(s)", "g": 1}, ...]
+}
+
+Rules:
+- "source": word groups from the original line, in their original order
+- "target": word groups from the translation, in ${targetLanguage} natural word order
+- "g": shared group index linking corresponding source↔target pairs (same g = same meaning)
+- Group multi-word expressions that translate as one unit (idioms, compound verbs, particles)
+- For CJK text, split by natural word/morpheme boundaries
+- Every word from both source and target must appear in exactly one group
+- Preserve punctuation attached to the word it belongs to`,
         },
-        { role: "user", content: lines.join("\n") },
+        { role: "user", content: userLines.join("\n") },
       ],
       temperature: 0.3,
     }),
@@ -148,7 +203,21 @@ async function callTranslateApi(
   }
 
   const data = await resp.json();
-  return data.choices?.[0]?.message?.content?.trim() || "";
+  const content = data.choices?.[0]?.message?.content?.trim() || "";
+
+  try {
+    const parsed = JSON.parse(content);
+    if (Array.isArray(parsed.source) && Array.isArray(parsed.target)) {
+      const translation = parsed.target.map((w: { text: string }) => w.text).join(" ");
+      return {
+        translation,
+        source: parsed.source.map((w: { text: string; g: number }) => ({ text: String(w.text), g: Number(w.g) })),
+        target: parsed.target.map((w: { text: string; g: number }) => ({ text: String(w.text), g: Number(w.g) })),
+      };
+    }
+  } catch { /* fall through to plain text */ }
+
+  return { translation: content };
 }
 
 export default function SubtitleOverlay({
@@ -331,7 +400,12 @@ export default function SubtitleOverlay({
         ctx.before.map((c) => c.text),
         ctx.after.map((c) => c.text),
       );
-      setTranslations((prev) => new Map(prev).set(trackId, { sourceText: currentText, translation: result }));
+      setTranslations((prev) => new Map(prev).set(trackId, {
+        sourceText: currentText,
+        translation: result.translation,
+        source: result.source,
+        target: result.target,
+      }));
     } catch (err) {
       if (onCopyTextRef.current) {
         onCopyTextRef.current("", `Translation failed: ${(err as Error).message}`);
@@ -392,13 +466,24 @@ export default function SubtitleOverlay({
     const entry = translations.get(trackId);
     const showTranslation = entry && entry.sourceText === currentText;
     const isTranslating = translatingTracks.has(trackId);
+    const hasWordAlign = showTranslation && entry.source && entry.target;
 
     return (
       <>
         <span className="vp-subtitle-inner">
-          {cues.map((cue, i) => (
-            <span key={i} className="vp-subtitle-cue">{cue.text}</span>
-          ))}
+          {hasWordAlign ? (
+            <span className="vp-subtitle-cue">
+              {entry.source!.map((w, i) => (
+                <span key={i} className="vp-word" style={{ color: WORD_COLORS[w.g % WORD_COLORS.length] }}>
+                  {w.text}
+                </span>
+              ))}
+            </span>
+          ) : (
+            cues.map((cue, i) => (
+              <span key={i} className="vp-subtitle-cue">{cue.text}</span>
+            ))
+          )}
           <button
             className={`vp-translate-btn${isTranslating ? " vp-translating" : ""}`}
             onPointerDown={(e) => e.stopPropagation()}
@@ -409,7 +494,17 @@ export default function SubtitleOverlay({
           </button>
         </span>
         {showTranslation && (
-          <span className="vp-subtitle-translation">{entry.translation}</span>
+          hasWordAlign ? (
+            <span className="vp-word-line vp-word-target">
+              {entry.target!.map((w, i) => (
+                <span key={i} className="vp-word" style={{ color: WORD_COLORS[w.g % WORD_COLORS.length] }}>
+                  {w.text}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="vp-subtitle-translation">{entry.translation}</span>
+          )
         )}
       </>
     );
