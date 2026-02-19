@@ -1051,6 +1051,11 @@ video::-webkit-media-text-track-container {
   right: 8px;
 }
 
+.vp-compare-frame-size {
+  margin-left: 3px;
+  font-weight: 400;
+}
+
 .vp-export-progress {
   position: absolute;
   top: 16px;

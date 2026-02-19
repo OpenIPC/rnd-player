@@ -126,6 +126,12 @@ function selectByHeight(player: shaka.Player, height: number) {
   }
 }
 
+function formatFrameSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 function domainLabel(url: string): string {
   try {
     const host = new URL(url).hostname;
@@ -164,8 +170,8 @@ export default function QualityCompare({
   const [needsSlaveKey, setNeedsSlaveKey] = useState(false);
   const [slaveKey, setSlaveKey] = useState<string | undefined>(undefined);
   const [paused, setPaused] = useState(masterVideo.paused);
-  const [frameTypeA, setFrameTypeA] = useState<FrameType | null>(null);
-  const [frameTypeB, setFrameTypeB] = useState<FrameType | null>(null);
+  const [frameInfoA, setFrameInfoA] = useState<{ type: FrameType; size: number } | null>(null);
+  const [frameInfoB, setFrameInfoB] = useState<{ type: FrameType; size: number } | null>(null);
 
   const isDualManifest = slaveSrc !== src;
 
@@ -467,8 +473,8 @@ export default function QualityCompare({
   // ── Frame type detection (I/P/B borders when paused) ──
   useEffect(() => {
     if (!paused || !slaveReady) {
-      setFrameTypeA(null);
-      setFrameTypeB(null);
+      setFrameInfoA(null);
+      setFrameInfoB(null);
       return;
     }
 
@@ -479,14 +485,14 @@ export default function QualityCompare({
       if (!slavePlayer || cancelled) return;
 
       const time = masterVideo.currentTime;
-      const [typeA, typeB] = await Promise.all([
+      const [infoA, infoB] = await Promise.all([
         getFrameTypeAtTime(slavePlayer, time),
         getFrameTypeAtTime(masterPlayer, time),
       ]);
 
       if (!cancelled) {
-        setFrameTypeA(typeA);
-        setFrameTypeB(typeB);
+        setFrameInfoA(infoA);
+        setFrameInfoB(infoB);
       }
     };
 
@@ -648,37 +654,43 @@ export default function QualityCompare({
       </div>
 
       {/* Frame type borders (visible when paused) */}
-      {frameTypeA && (
+      {frameInfoA && (
         <div
           className="vp-compare-frame-border vp-compare-frame-border-left"
           style={{
             left: 0,
             width: `${sliderPct}%`,
-            borderColor: FRAME_TYPE_COLORS[frameTypeA],
+            borderColor: FRAME_TYPE_COLORS[frameInfoA.type],
           }}
         >
           <span
             className="vp-compare-frame-badge"
-            style={{ backgroundColor: FRAME_TYPE_COLORS[frameTypeA] }}
+            style={{ backgroundColor: FRAME_TYPE_COLORS[frameInfoA.type] }}
           >
-            {frameTypeA}
+            {frameInfoA.type}
+            {frameInfoA.size > 0 && (
+              <span className="vp-compare-frame-size">{formatFrameSize(frameInfoA.size)}</span>
+            )}
           </span>
         </div>
       )}
-      {frameTypeB && (
+      {frameInfoB && (
         <div
           className="vp-compare-frame-border vp-compare-frame-border-right"
           style={{
             left: `${sliderPct}%`,
             right: 0,
-            borderColor: FRAME_TYPE_COLORS[frameTypeB],
+            borderColor: FRAME_TYPE_COLORS[frameInfoB.type],
           }}
         >
           <span
             className="vp-compare-frame-badge vp-compare-frame-badge-right"
-            style={{ backgroundColor: FRAME_TYPE_COLORS[frameTypeB] }}
+            style={{ backgroundColor: FRAME_TYPE_COLORS[frameInfoB.type] }}
           >
-            {frameTypeB}
+            {frameInfoB.type}
+            {frameInfoB.size > 0 && (
+              <span className="vp-compare-frame-size">{formatFrameSize(frameInfoB.size)}</span>
+            )}
           </span>
         </div>
       )}

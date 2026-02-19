@@ -4,14 +4,19 @@ import shaka from "shaka-player";
 import { extractInitSegmentUrl } from "./extractInitSegmentUrl";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
+interface FrameInfo {
+  type: FrameType;
+  size: number;
+}
+
 /**
  * Classify an array of samples (in decode order) into I/P/B frame types,
- * returning the types in display (CTS) order.
+ * returning type + byte size in display (CTS) order.
  * Same algorithm as classifyFrameTypes in thumbnailWorker.ts.
  */
 function classifyFrameTypes(
-  samples: { cts: number; is_sync: boolean }[],
-): FrameType[] {
+  samples: { cts: number; is_sync: boolean; data?: { byteLength: number } | null }[],
+): FrameInfo[] {
   const decodeTypes: FrameType[] = [];
   let maxCts = -Infinity;
   for (const s of samples) {
@@ -25,9 +30,9 @@ function classifyFrameTypes(
     if (s.cts > maxCts) maxCts = s.cts;
   }
   return samples
-    .map((s, i) => ({ cts: s.cts, type: decodeTypes[i] }))
+    .map((s, i) => ({ cts: s.cts, type: decodeTypes[i], size: s.data?.byteLength ?? 0 }))
     .sort((a, b) => a.cts - b.cts)
-    .map((x) => x.type);
+    .map((x) => ({ type: x.type, size: x.size }));
 }
 
 /**
@@ -74,7 +79,7 @@ function extractAllSamples(
 }
 
 interface SegmentCacheEntry {
-  frameTypes: FrameType[];
+  frames: FrameInfo[];
 }
 
 // Cache: segment URL → classified frame types in display order
@@ -139,7 +144,7 @@ async function fetchSegment(url: string): Promise<ArrayBuffer | null> {
 export async function getFrameTypeAtTime(
   player: shaka.Player,
   time: number,
-): Promise<FrameType | null> {
+): Promise<FrameInfo | null> {
   try {
     const stream = getActiveVideoStream(player);
     if (!stream) return null;
@@ -195,8 +200,8 @@ export async function getFrameTypeAtTime(
       const samples = await extractAllSamples(initBuf, mediaBuf);
       if (samples.length === 0) return null;
 
-      const frameTypes = classifyFrameTypes(samples);
-      entry = { frameTypes };
+      const frames = classifyFrameTypes(samples);
+      entry = { frames };
       segmentCache.set(targetUrl, entry);
     }
 
@@ -204,17 +209,17 @@ export async function getFrameTypeAtTime(
     // This avoids CTS-matching pitfalls (composition time offsets, cross-
     // stream timeline differences) — display-order frame indices are
     // consistent within a segment regardless of CTS base.
-    const { frameTypes } = entry;
-    const count = frameTypes.length;
+    const { frames } = entry;
+    const count = frames.length;
     if (count === 0) return null;
 
     const segDur = segEnd - segStart;
-    if (segDur <= 0) return frameTypes[0] ?? null;
+    if (segDur <= 0) return frames[0] ?? null;
 
     const frac = Math.max(0, Math.min(1, (time - segStart) / segDur));
     const frameIdx = Math.min(Math.round(frac * (count - 1)), count - 1);
 
-    return frameTypes[frameIdx] ?? null;
+    return frames[frameIdx] ?? null;
   } catch {
     return null;
   }
