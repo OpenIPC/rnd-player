@@ -167,6 +167,7 @@ export default function QualityCompare({
   const panningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const masterTransformRef = useRef<string>("");
+  const sliderPctRef = useRef(50);
 
   const MIN_ZOOM = 1;
   const MAX_ZOOM = 8;
@@ -191,6 +192,29 @@ export default function QualityCompare({
   const isDualManifest = slaveSrc !== src;
 
   // ── Zoom/pan helpers ──
+
+  // Adjust slave clip-path so the visual split stays at the slider's
+  // screen position regardless of zoom/pan.  With transform:
+  //   scale(z) translate(tx, ty)  [origin 0 0]
+  // local point lx maps to screen (lx + tx) * z.
+  // We want the clip boundary at screen position sliderPct% of container:
+  //   clipLocal = sliderPct / 100 * containerW / z - tx
+  //   clipLocalPct = sliderPct / z - tx * 100 / containerW
+  const updateClipPath = useCallback(() => {
+    const slaveVideo = slaveVideoRef.current;
+    if (!slaveVideo) return;
+    const z = zoomRef.current;
+    if (z === 1) {
+      slaveVideo.style.clipPath = `inset(0 ${100 - sliderPctRef.current}% 0 0)`;
+      return;
+    }
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const clipPct = sliderPctRef.current / z - panXRef.current * 100 / rect.width;
+    const rightInset = Math.max(0, Math.min(100, 100 - clipPct));
+    slaveVideo.style.clipPath = `inset(0 ${rightInset}% 0 0)`;
+  }, []);
+
   const applyTransform = useCallback(() => {
     const z = zoomRef.current;
     const tx = panXRef.current;
@@ -208,6 +232,7 @@ export default function QualityCompare({
     masterVideo.style.transform = transform;
     masterVideo.style.transformOrigin = origin;
 
+    updateClipPath();
     setZoomDisplay(z);
 
     // Update cursor on interaction layer
@@ -215,7 +240,7 @@ export default function QualityCompare({
     if (el) {
       el.style.cursor = panningRef.current ? "grabbing" : "grab";
     }
-  }, [masterVideo]);
+  }, [masterVideo, updateClipPath]);
 
   const clampPan = useCallback(() => {
     const z = zoomRef.current;
@@ -718,6 +743,12 @@ export default function QualityCompare({
     setDragging(false);
   }, []);
 
+  // ── Keep sliderPctRef in sync and update clip-path when zoomed ──
+  useEffect(() => {
+    sliderPctRef.current = sliderPct;
+    updateClipPath();
+  }, [sliderPct, updateClipPath]);
+
   // ── Rendition selection ──
   const handleSideAChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -844,7 +875,7 @@ export default function QualityCompare({
           className="vp-compare-frame-border vp-compare-frame-border-left"
           style={{
             left: 0,
-            width: `${sliderPct}%`,
+            right: `${100 - sliderPct}%`,
             borderColor: FRAME_TYPE_COLORS[frameInfoA.type],
           }}
         >
