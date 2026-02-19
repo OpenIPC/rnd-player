@@ -75,6 +75,21 @@ interface QualityCompareProps {
 interface RenditionOption {
   height: number;
   bandwidth: number;
+  videoCodec: string;
+}
+
+/** Short codec label: "avc1.4d401f" → "AVC", "hvc1.1.6.L93.B0" → "HEVC", etc. */
+function shortCodec(codec: string | null | undefined): string {
+  if (!codec) return "";
+  const base = codec.split(".")[0].toLowerCase();
+  switch (base) {
+    case "avc1": case "avc3": return "AVC";
+    case "hvc1": case "hev1": return "HEVC";
+    case "av01": return "AV1";
+    case "vp8": return "VP8";
+    case "vp9": case "vp09": return "VP9";
+    default: return base;
+  }
 }
 
 function dedupeByHeight(tracks: shaka.extern.Track[]): RenditionOption[] {
@@ -83,7 +98,7 @@ function dedupeByHeight(tracks: shaka.extern.Track[]): RenditionOption[] {
     if (t.height == null) continue;
     const existing = byHeight.get(t.height);
     if (!existing || t.bandwidth > existing.bandwidth) {
-      byHeight.set(t.height, { height: t.height, bandwidth: t.bandwidth });
+      byHeight.set(t.height, { height: t.height, bandwidth: t.bandwidth, videoCodec: t.videoCodec ?? "" });
     }
   }
   return Array.from(byHeight.values()).sort((a, b) => b.height - a.height);
@@ -499,7 +514,7 @@ export default function QualityCompare({
           >
             {qualitiesA.map((q) => (
               <option key={q.height} value={q.height}>
-                {q.height}p
+                {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}
               </option>
             ))}
           </select>
@@ -522,7 +537,7 @@ export default function QualityCompare({
           >
             {qualitiesB.map((q) => (
               <option key={q.height} value={q.height}>
-                {q.height}p
+                {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}
               </option>
             ))}
           </select>
