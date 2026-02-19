@@ -66,6 +66,9 @@ interface QualityCompareProps {
   slaveSrc: string;
   clearKey?: string;
   kid?: string;
+  initialHeightA?: number;
+  initialHeightB?: number;
+  onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
 }
 
@@ -117,6 +120,9 @@ export default function QualityCompare({
   slaveSrc,
   clearKey,
   kid,
+  initialHeightA,
+  initialHeightB,
+  onResolutionChange,
   onClose,
 }: QualityCompareProps) {
   const slaveVideoRef = useRef<HTMLVideoElement>(null);
@@ -253,19 +259,42 @@ export default function QualityCompare({
         const masterRenditions = dedupeByHeight(masterTracks);
         setQualitiesB(masterRenditions);
 
-        if (slaveRenditions.length > 0) {
-          // A-side (slave/left): lowest quality by default
-          const lowest = slaveRenditions[slaveRenditions.length - 1];
-          setSideA(lowest.height);
-          selectByHeight(slavePlayer, lowest.height);
+        // Pick initial resolutions
+        let pickA: number | undefined;
+        let pickB: number | undefined;
+
+        if (initialHeightA && slaveRenditions.some((r) => r.height === initialHeightA)) {
+          pickA = initialHeightA;
+        }
+        if (initialHeightB && masterRenditions.some((r) => r.height === initialHeightB)) {
+          pickB = initialHeightB;
         }
 
-        if (masterRenditions.length > 0) {
-          // B-side (master/right): highest quality by default
-          const highest = masterRenditions[0];
-          setSideB(highest.height);
-          selectByHeight(masterPlayer, highest.height);
+        if (!pickA || !pickB) {
+          if (isDualManifest) {
+            // Dual-manifest: both sides default to the highest common resolution
+            const slaveHeights = new Set(slaveRenditions.map((r) => r.height));
+            const commonHeight = masterRenditions.find((r) => slaveHeights.has(r.height))?.height;
+            if (!pickA) pickA = commonHeight ?? slaveRenditions[0]?.height;
+            if (!pickB) pickB = commonHeight ?? masterRenditions[0]?.height;
+          } else {
+            // Same manifest: A=lowest, B=highest (existing behavior)
+            if (!pickA) pickA = slaveRenditions[slaveRenditions.length - 1]?.height;
+            if (!pickB) pickB = masterRenditions[0]?.height;
+          }
         }
+
+        if (pickA) {
+          setSideA(pickA);
+          selectByHeight(slavePlayer, pickA);
+        }
+
+        if (pickB) {
+          setSideB(pickB);
+          selectByHeight(masterPlayer, pickB);
+        }
+
+        onResolutionChange?.(pickA ?? null, pickB ?? null);
 
         // Sync initial position (clamped to slave duration)
         const clampedTime = Math.min(
@@ -297,7 +326,8 @@ export default function QualityCompare({
         masterPlayer.configure("abr.enabled", true);
       }
     };
-  }, [slaveSrc, clearKey, kid, slaveKey, masterPlayer, masterVideo, isDualManifest, src]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- onResolutionChange/initialHeight are stable from parent
+  }, [slaveSrc, clearKey, kid, slaveKey, masterPlayer, masterVideo, isDualManifest, src, initialHeightA, initialHeightB]);
 
   // ── Sync slave to master ──
   useEffect(() => {
@@ -391,8 +421,9 @@ export default function QualityCompare({
       setSideA(height);
       const slave = slavePlayerRef.current;
       if (slave) selectByHeight(slave, height);
+      onResolutionChange?.(height, sideB);
     },
-    [],
+    [onResolutionChange, sideB],
   );
 
   const handleSideBChange = useCallback(
@@ -400,8 +431,9 @@ export default function QualityCompare({
       const height = Number(e.target.value);
       setSideB(height);
       selectByHeight(masterPlayer, height);
+      onResolutionChange?.(sideA, height);
     },
-    [masterPlayer],
+    [masterPlayer, onResolutionChange, sideA],
   );
 
   return (

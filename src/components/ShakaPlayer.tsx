@@ -14,11 +14,13 @@ interface ShakaPlayerProps {
   clearKey?: string;
   startTime?: number;
   compareSrc?: string;
+  compareQa?: number;
+  compareQb?: number;
 }
 
 let polyfillsInstalled = false;
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
@@ -31,6 +33,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc }:
   const [compareMode, setCompareMode] = useState(false);
   const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
   const [showCompareModal, setShowCompareModal] = useState(false);
+  const [compareHeightA, setCompareHeightA] = useState<number | null>(null);
+  const [compareHeightB, setCompareHeightB] = useState<number | null>(null);
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
   const [startOffset, setStartOffset] = useState(0);
@@ -377,6 +381,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc }:
               showCompare={compareMode}
               onToggleCompare={handleToggleCompare}
               compareSrc={compareMode && slaveSrc !== src ? slaveSrc : undefined}
+              compareHeightA={compareMode ? compareHeightA : undefined}
+              compareHeightB={compareMode ? compareHeightB : undefined}
               inPoint={inPoint}
               outPoint={outPoint}
               onInPointChange={setInPoint}
@@ -397,9 +403,17 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc }:
                 slaveSrc={slaveSrc}
                 clearKey={activeKey}
                 kid={kidRef.current ?? undefined}
+                initialHeightA={compareQa}
+                initialHeightB={compareQb}
+                onResolutionChange={(a, b) => {
+                  setCompareHeightA(a);
+                  setCompareHeightB(b);
+                }}
                 onClose={() => {
                   setCompareMode(false);
                   setSlaveSrc(undefined);
+                  setCompareHeightA(null);
+                  setCompareHeightB(null);
                 }}
               />
             </Suspense>

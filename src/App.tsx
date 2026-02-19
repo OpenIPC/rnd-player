@@ -7,18 +7,24 @@ function parseUrlParams(): {
   startTime: number | null;
   clearKey: string | null;
   compare: string | null;
+  compareQa: number | null;
+  compareQb: number | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
   const t = params.get("t");
   const key = params.get("key");
   const compare = params.get("compare");
+  const qa = params.get("qa");
+  const qb = params.get("qb");
 
   return {
     src: v || null,
     startTime: t ? parseFloat(t.replace(/s$/, "")) || null : null,
     clearKey: key || null,
     compare: compare || null,
+    compareQa: qa ? parseInt(qa, 10) || null : null,
+    compareQb: qb ? parseInt(qb, 10) || null : null,
   };
 }
 
@@ -139,6 +145,8 @@ function App() {
         clearKey={clearKey ?? undefined}
         startTime={startTime ?? undefined}
         compareSrc={compareSrc ?? undefined}
+        compareQa={initial.compareQa ?? undefined}
+        compareQb={initial.compareQb ?? undefined}
       />
     </div>
   );

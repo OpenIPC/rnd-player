@@ -42,6 +42,8 @@ interface VideoControlsProps {
   showCompare?: boolean;
   onToggleCompare?: () => void;
   compareSrc?: string;
+  compareHeightA?: number | null;
+  compareHeightB?: number | null;
   inPoint: number | null;
   outPoint: number | null;
   onInPointChange: (time: number | null) => void;
@@ -91,6 +93,8 @@ export default function VideoControls({
   showCompare,
   onToggleCompare,
   compareSrc,
+  compareHeightA,
+  compareHeightB,
   inPoint,
   outPoint,
   onInPointChange,
@@ -568,6 +572,12 @@ export default function VideoControls({
     }
     if (compareSrc) {
       params.set("compare", compareSrc);
+    }
+    if (compareHeightA) {
+      params.set("qa", String(compareHeightA));
+    }
+    if (compareHeightB) {
+      params.set("qb", String(compareHeightB));
     }
     return `${base}?${params.toString()}`;
   };
