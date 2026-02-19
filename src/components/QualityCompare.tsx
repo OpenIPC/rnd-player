@@ -58,6 +58,14 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 import { fetchWithCorsRetry } from "../utils/corsProxy";
+import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAtTime";
+import type { FrameType } from "../types/thumbnailWorker.types";
+
+const FRAME_TYPE_COLORS: Record<FrameType, string> = {
+  I: "rgb(255, 50, 50)",
+  P: "rgb(60, 130, 255)",
+  B: "rgb(50, 200, 50)",
+};
 
 interface QualityCompareProps {
   videoEl: HTMLVideoElement;
@@ -155,6 +163,9 @@ export default function QualityCompare({
   const [masterRect, setMasterRect] = useState<{ w: number; h: number } | null>(null);
   const [needsSlaveKey, setNeedsSlaveKey] = useState(false);
   const [slaveKey, setSlaveKey] = useState<string | undefined>(undefined);
+  const [paused, setPaused] = useState(masterVideo.paused);
+  const [frameTypeA, setFrameTypeA] = useState<FrameType | null>(null);
+  const [frameTypeB, setFrameTypeB] = useState<FrameType | null>(null);
 
   const isDualManifest = slaveSrc !== src;
 
@@ -432,6 +443,61 @@ export default function QualityCompare({
     };
   }, [masterVideo, slaveReady]);
 
+  // ── Track master pause state ──
+  useEffect(() => {
+    const onPlay = () => setPaused(false);
+    const onPause = () => setPaused(true);
+    setPaused(masterVideo.paused);
+    masterVideo.addEventListener("play", onPlay);
+    masterVideo.addEventListener("pause", onPause);
+    return () => {
+      masterVideo.removeEventListener("play", onPlay);
+      masterVideo.removeEventListener("pause", onPause);
+    };
+  }, [masterVideo]);
+
+  // ── Frame type detection (I/P/B borders when paused) ──
+  useEffect(() => {
+    if (!paused || !slaveReady) {
+      setFrameTypeA(null);
+      setFrameTypeB(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const detectTypes = async () => {
+      const slavePlayer = slavePlayerRef.current;
+      if (!slavePlayer || cancelled) return;
+
+      const time = masterVideo.currentTime;
+      const [typeA, typeB] = await Promise.all([
+        getFrameTypeAtTime(slavePlayer, time),
+        getFrameTypeAtTime(masterPlayer, time),
+      ]);
+
+      if (!cancelled) {
+        setFrameTypeA(typeA);
+        setFrameTypeB(typeB);
+      }
+    };
+
+    detectTypes();
+
+    const onSeeked = () => detectTypes();
+    masterVideo.addEventListener("seeked", onSeeked);
+
+    return () => {
+      cancelled = true;
+      masterVideo.removeEventListener("seeked", onSeeked);
+    };
+  }, [paused, slaveReady, masterPlayer, masterVideo]);
+
+  // Clear frame type cache on unmount
+  useEffect(() => {
+    return () => clearFrameTypeCache();
+  }, []);
+
   // ── Slider drag ──
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -572,6 +638,42 @@ export default function QualityCompare({
           </button>
         </div>
       </div>
+
+      {/* Frame type borders (visible when paused) */}
+      {frameTypeA && (
+        <div
+          className="vp-compare-frame-border vp-compare-frame-border-left"
+          style={{
+            left: 0,
+            width: `${sliderPct}%`,
+            borderColor: FRAME_TYPE_COLORS[frameTypeA],
+          }}
+        >
+          <span
+            className="vp-compare-frame-badge"
+            style={{ backgroundColor: FRAME_TYPE_COLORS[frameTypeA] }}
+          >
+            {frameTypeA}
+          </span>
+        </div>
+      )}
+      {frameTypeB && (
+        <div
+          className="vp-compare-frame-border vp-compare-frame-border-right"
+          style={{
+            left: `${sliderPct}%`,
+            right: 0,
+            borderColor: FRAME_TYPE_COLORS[frameTypeB],
+          }}
+        >
+          <span
+            className="vp-compare-frame-badge vp-compare-frame-badge-right"
+            style={{ backgroundColor: FRAME_TYPE_COLORS[frameTypeB] }}
+          >
+            {frameTypeB}
+          </span>
+        </div>
+      )}
 
       {/* Slider line + handle */}
       <div
