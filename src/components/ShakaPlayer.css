@@ -570,7 +570,7 @@ video::-webkit-media-text-track-container {
 
 .vp-subtitle-cue {
   background: rgba(8, 8, 8, 0.75);
-  color: #fff;
+  color: var(--vp-sub-color, #fff);
   padding: 3px 8px;
   font-size: clamp(16px, 2.5vw, 28px);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

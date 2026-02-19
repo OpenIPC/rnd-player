@@ -17,6 +17,21 @@ interface SubtitleOverlayProps {
 
 const STORAGE_KEY = "vp_subtitle_positions";
 
+// Per-track subtitle colors: bright, high-contrast on dark background.
+// White for primary, yellow for secondary (industry convention), then
+// distinct hues that stay readable on rgba(8,8,8,0.75) cue backgrounds.
+const TRACK_COLORS = [
+  "#ffffff", // white — standard primary
+  "#ffff00", // yellow — classic secondary (DVD, many Asian players)
+  "#00ffff", // cyan
+  "#00ff00", // lime
+  "#ff80ab", // pink
+  "#ffa726", // orange
+  "#ce93d8", // lavender
+  "#80deea", // light teal
+  "#c5e1a5", // light green
+];
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -170,6 +185,12 @@ export default function SubtitleOverlay({
   const defaultTracks = visibleTracks.filter((id) => !hasSavedPosition(id));
   const positionedTracks = visibleTracks.filter((id) => hasSavedPosition(id));
 
+  const getTrackColor = (trackId: number): string => {
+    const index = textTracks.findIndex((t) => t.id === trackId);
+    if (index < 0) return TRACK_COLORS[0];
+    return TRACK_COLORS[index % TRACK_COLORS.length];
+  };
+
   const renderCues = (trackId: number) => {
     const cues = activeCues.get(trackId)!;
     return cues.map((cue, i) => (
@@ -192,6 +213,7 @@ export default function SubtitleOverlay({
               <div
                 key={trackId}
                 className={`vp-subtitle-track${isDragging ? " vp-dragging" : ""}`}
+                style={{ "--vp-sub-color": getTrackColor(trackId) } as React.CSSProperties}
                 onPointerDown={(e) => onPointerDown(e, trackId)}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
@@ -214,7 +236,7 @@ export default function SubtitleOverlay({
           <div
             key={trackId}
             className={`vp-subtitle-track vp-subtitle-positioned${isDragging ? " vp-dragging" : ""}`}
-            style={{ bottom: `${bottom}%` }}
+            style={{ bottom: `${bottom}%`, "--vp-sub-color": getTrackColor(trackId) } as React.CSSProperties}
             onPointerDown={(e) => onPointerDown(e, trackId)}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
