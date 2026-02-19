@@ -25,6 +25,8 @@ import {
   CompareIcon,
 } from "./icons";
 import { useSegmentExport, type ExportRendition } from "../hooks/useSegmentExport";
+import { useMultiSubtitles, type TextTrackInfo } from "../hooks/useMultiSubtitles";
+import SubtitleOverlay from "./SubtitleOverlay";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
 import { formatTimecode } from "../utils/formatTime";
@@ -67,6 +69,7 @@ interface TextOption {
   id: number;
   language: string;
   label: string;
+  mimeType: string;
 }
 
 function langDisplayName(code: string, fallback: string): string {
@@ -117,8 +120,8 @@ export default function VideoControls({
   const [audioTracks, setAudioTracks] = useState<AudioOption[]>([]);
   const [activeAudioIndex, setActiveAudioIndex] = useState(-1);
   const [textTracks, setTextTracks] = useState<TextOption[]>([]);
-  const [activeTextId, setActiveTextId] = useState<number | null>(null);
-  const [textVisible, setTextVisible] = useState(false);
+  const [activeTextIds, setActiveTextIds] = useState<Set<number>>(new Set());
+  const [trackOrder, setTrackOrder] = useState<number[]>([]);
 
   // UI state
   const [popup, setPopup] = useState<"quality" | "speed" | "audio" | "subtitles" | null>(null);
@@ -306,13 +309,9 @@ export default function VideoControls({
         id: t.id,
         language: t.language,
         label: t.label || "",
+        mimeType: t.mimeType || "",
       }))
     );
-    const activeText = texts.find((t) => t.active);
-    setTextVisible(activeText != null);
-    if (activeText) {
-      setActiveTextId(activeText.id);
-    }
   }, [player]);
 
   useEffect(() => {
@@ -528,21 +527,28 @@ export default function VideoControls({
     setPopup(null);
   };
 
-  const selectSubtitle = (text: TextOption | "off") => {
+  const toggleSubtitle = (text: TextOption | "off") => {
     if (text === "off") {
-      player.selectTextTrack(null);
-      setTextVisible(false);
-      setActiveTextId(null);
+      setActiveTextIds(new Set());
+      setTrackOrder([]);
     } else {
-      const tracks = player.getTextTracks();
-      const track = tracks.find((t) => t.id === text.id);
-      if (track) {
-        player.selectTextTrack(track);
-        setTextVisible(true);
-        setActiveTextId(text.id);
+      const id = text.id;
+      const wasActive = activeTextIds.has(id);
+      setActiveTextIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      // Must be outside the setActiveTextIds updater — React StrictMode
+      // double-invokes updaters, and nested setState calls would fire twice.
+      if (wasActive) {
+        setTrackOrder((order) => order.filter((x) => x !== id));
+      } else {
+        setTrackOrder((order) => [...order, id]);
       }
     }
-    setPopup(null);
+    // Do NOT close popup — let user toggle multiple tracks
   };
 
   const toggleFullscreen = () => {
@@ -565,6 +571,10 @@ export default function VideoControls({
     onInPointSet: onInPointChange,
     onOutPointSet: onOutPointChange,
   });
+
+  // Multi-subtitle hook: fetches, parses, and filters active cues
+  const textTrackInfos: TextTrackInfo[] = textTracks;
+  const activeCues = useMultiSubtitles(player, videoEl, activeTextIds, textTrackInfos);
 
   const togglePip = async () => {
     if (document.pictureInPictureElement) {
@@ -617,11 +627,14 @@ export default function VideoControls({
   const audioLabel = activeAudio
     ? (activeAudio.label || langDisplayName(activeAudio.language, `Track ${activeAudio.index + 1}`))
     : "";
-  const activeTextTrack = textTracks.find((t) => t.id === activeTextId);
-  const subtitleLabel =
-    textVisible && activeTextTrack
-      ? (activeTextTrack.label || langDisplayName(activeTextTrack.language, ""))
-      : textTracks.length > 0 ? "Off" : "";
+  const subtitleLabel = (() => {
+    if (activeTextIds.size === 0) return textTracks.length > 0 ? "Off" : "";
+    if (activeTextIds.size === 1) {
+      const t = textTracks.find((t) => activeTextIds.has(t.id));
+      return t ? (t.label || langDisplayName(t.language, "")) : "";
+    }
+    return String(activeTextIds.size);
+  })();
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
 
@@ -858,18 +871,18 @@ export default function VideoControls({
                   <div className="vp-popup">
                     <div className="vp-popup-header">Subtitles</div>
                     <div
-                      className={`vp-popup-item${!textVisible ? " vp-active" : ""}`}
-                      onClick={() => selectSubtitle("off")}
+                      className={`vp-popup-item${activeTextIds.size === 0 ? " vp-active" : ""}`}
+                      onClick={() => toggleSubtitle("off")}
                     >
                       Off
                     </div>
                     {textTracks.map((t, i) => (
                       <div
                         key={t.id}
-                        className={`vp-popup-item${
-                          textVisible && activeTextId === t.id ? " vp-active" : ""
+                        className={`vp-popup-item vp-checkbox${
+                          activeTextIds.has(t.id) ? " vp-checked" : ""
                         }`}
-                        onClick={() => selectSubtitle(t)}
+                        onClick={() => toggleSubtitle(t)}
                       >
                         {t.label || langDisplayName(t.language, `Track ${i + 1}`)}
                       </div>
@@ -1100,6 +1113,13 @@ export default function VideoControls({
           <div className="vp-export-progress" onClick={cancelExport}>
             Exporting: {progress.loaded}/{progress.total} segments...
           </div>,
+          containerEl
+        )}
+
+      {/* Subtitle overlay — portaled so it stays visible when controls auto-hide */}
+      {activeTextIds.size > 0 &&
+        createPortal(
+          <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} />,
           containerEl
         )}
 

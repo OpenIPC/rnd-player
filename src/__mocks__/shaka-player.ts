@@ -17,6 +17,7 @@ function MockPlayer() {
     setVideoContainer: vi.fn(),
     getAudioTracks: vi.fn(() => []),
     getTextTracks: vi.fn(() => []),
+    getManifest: vi.fn(() => ({ variants: [], textStreams: [] })),
     selectAudioTrack: vi.fn(),
     selectTextTrack: vi.fn(),
   };
@@ -36,7 +37,9 @@ const shaka = {
     TextEngine: {
       registerParser: vi.fn(),
     },
+    VttTextParser: vi.fn(),
     SrtTextParser: vi.fn(),
+    TtmlTextParser: vi.fn(),
   },
   util: {
     Error: class ShakaError extends Error {
