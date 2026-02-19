@@ -17,6 +17,7 @@ interface UseKeyboardShortcutsOptions {
   onToggleFullscreen: () => void;
   onInPointSet: (time: number) => void;
   onOutPointSet: (time: number) => void;
+  onToggleSubtitleByIndex?: (index: number) => void;
 }
 
 interface ShuttleState {
@@ -33,6 +34,7 @@ export function useKeyboardShortcuts({
   onToggleFullscreen,
   onInPointSet,
   onOutPointSet,
+  onToggleSubtitleByIndex,
 }: UseKeyboardShortcutsOptions): ShuttleState {
   const [shuttleSpeed, setShuttleSpeed] = useState(0);
   const [shuttleDirection, setShuttleDirection] = useState<-1 | 0 | 1>(0);
@@ -248,6 +250,22 @@ export function useKeyboardShortcuts({
           onToggleFullscreen();
           break;
         }
+
+        case "1":
+        case "2":
+        case "3":
+        case "4":
+        case "5":
+        case "6":
+        case "7":
+        case "8":
+        case "9": {
+          if (onToggleSubtitleByIndex) {
+            e.preventDefault();
+            onToggleSubtitleByIndex(Number(e.key) - 1);
+          }
+          break;
+        }
       }
     };
 
@@ -268,6 +286,7 @@ export function useKeyboardShortcuts({
     onToggleFullscreen,
     onInPointSet,
     onOutPointSet,
+    onToggleSubtitleByIndex,
     resetShuttle,
     startReverseLoop,
   ]);

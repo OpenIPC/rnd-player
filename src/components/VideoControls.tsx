@@ -562,6 +562,18 @@ export default function VideoControls({
 
   const fps = detectedFps ?? 30;
 
+  const toggleSubtitleRef = useRef(toggleSubtitle);
+  toggleSubtitleRef.current = toggleSubtitle;
+
+  const toggleSubtitleByIndex = useCallback(
+    (index: number) => {
+      if (index < textTracks.length) {
+        toggleSubtitleRef.current(textTracks[index]);
+      }
+    },
+    [textTracks],
+  );
+
   const { shuttleSpeed, shuttleDirection } = useKeyboardShortcuts({
     videoEl,
     containerEl,
@@ -571,6 +583,7 @@ export default function VideoControls({
     onToggleFullscreen: toggleFullscreen,
     onInPointSet: onInPointChange,
     onOutPointSet: onOutPointChange,
+    onToggleSubtitleByIndex: toggleSubtitleByIndex,
   });
 
   // Multi-subtitle hook: fetches, parses, and filters active cues
