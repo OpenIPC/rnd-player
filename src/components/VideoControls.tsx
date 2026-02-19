@@ -761,12 +761,14 @@ export default function VideoControls({
                 {popup === "quality" && (
                   <div className="vp-popup">
                     <div className="vp-popup-header">Quality</div>
-                    <div
-                      className={`vp-popup-item${isAutoQuality ? " vp-active" : ""}`}
-                      onClick={() => selectQuality("auto")}
-                    >
-                      Auto{activeHeight ? ` (${activeHeight}p)` : ""}
-                    </div>
+                    {!showCompare && (
+                      <div
+                        className={`vp-popup-item${isAutoQuality ? " vp-active" : ""}`}
+                        onClick={() => selectQuality("auto")}
+                      >
+                        Auto{activeHeight ? ` (${activeHeight}p)` : ""}
+                      </div>
+                    )}
                     {qualities.map((q) => (
                       <div
                         key={q.height}
