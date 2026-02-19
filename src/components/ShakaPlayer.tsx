@@ -13,11 +13,12 @@ interface ShakaPlayerProps {
   autoPlay?: boolean;
   clearKey?: string;
   startTime?: number;
+  compareSrc?: string;
 }
 
 let polyfillsInstalled = false;
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
@@ -28,6 +29,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
+  const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
+  const [showCompareModal, setShowCompareModal] = useState(false);
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
   const [startOffset, setStartOffset] = useState(0);
@@ -260,6 +263,33 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
     }
   };
 
+  // Auto-enter compare mode when compareSrc is provided via URL param
+  const compareSrcTriggered = useRef(false);
+  useEffect(() => {
+    if (compareSrc && playerReady && !compareSrcTriggered.current) {
+      compareSrcTriggered.current = true;
+      setSlaveSrc(compareSrc);
+      setCompareMode(true);
+    }
+  }, [compareSrc, playerReady]);
+
+  const handleToggleCompare = () => {
+    if (compareMode) {
+      setCompareMode(false);
+      setSlaveSrc(undefined);
+    } else if (slaveSrc) {
+      setCompareMode(true);
+    } else {
+      setShowCompareModal(true);
+    }
+  };
+
+  const handleCompareModalSubmit = (url: string) => {
+    setSlaveSrc(url);
+    setCompareMode(true);
+    setShowCompareModal(false);
+  };
+
   return (
     <div ref={containerRef} className={`vp-container${needsKey ? " vp-awaiting-key" : ""}`}>
       <div className="vp-video-area">
@@ -289,6 +319,44 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
             </form>
           </div>
         )}
+        {showCompareModal && (
+          <div
+            className="vp-compare-modal-overlay"
+            onClick={() => setShowCompareModal(false)}
+          >
+            <form
+              className="vp-compare-modal"
+              onClick={(e) => e.stopPropagation()}
+              onSubmit={(e) => {
+                e.preventDefault();
+                const value = new FormData(e.currentTarget).get("compare-url") as string;
+                if (value?.trim()) handleCompareModalSubmit(value.trim());
+              }}
+            >
+              <div className="vp-key-title">Quality compare</div>
+              <div className="vp-key-desc">Enter a second manifest URL to compare</div>
+              <input
+                name="compare-url"
+                className="vp-key-input"
+                type="url"
+                placeholder="Manifest URL (.mpd, .m3u8)"
+                autoFocus
+              />
+              <div className="vp-compare-modal-actions">
+                <button type="submit" className="vp-key-submit">
+                  Load
+                </button>
+                <button
+                  type="button"
+                  className="vp-compare-modal-same"
+                  onClick={() => handleCompareModalSubmit(src)}
+                >
+                  Same source
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
         {error && (
           <div className="vp-error-overlay">
             <div className="vp-error-message">{error}</div>
@@ -307,7 +375,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
               showFilmstrip={showFilmstrip}
               onToggleFilmstrip={() => setShowFilmstrip((s) => !s)}
               showCompare={compareMode}
-              onToggleCompare={() => setCompareMode((s) => !s)}
+              onToggleCompare={handleToggleCompare}
+              compareSrc={compareMode && slaveSrc !== src ? slaveSrc : undefined}
               inPoint={inPoint}
               outPoint={outPoint}
               onInPointChange={setInPoint}
@@ -316,6 +385,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
             />
           )}
         {compareMode &&
+          slaveSrc &&
           playerReady &&
           videoRef.current &&
           playerRef.current && (
@@ -324,9 +394,13 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime }: ShakaPlayer
                 videoEl={videoRef.current}
                 player={playerRef.current}
                 src={src}
+                slaveSrc={slaveSrc}
                 clearKey={activeKey}
                 kid={kidRef.current ?? undefined}
-                onClose={() => setCompareMode(false)}
+                onClose={() => {
+                  setCompareMode(false);
+                  setSlaveSrc(undefined);
+                }}
               />
             </Suspense>
           )}

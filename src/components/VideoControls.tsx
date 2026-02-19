@@ -41,6 +41,7 @@ interface VideoControlsProps {
   onToggleFilmstrip?: () => void;
   showCompare?: boolean;
   onToggleCompare?: () => void;
+  compareSrc?: string;
   inPoint: number | null;
   outPoint: number | null;
   onInPointChange: (time: number | null) => void;
@@ -89,6 +90,7 @@ export default function VideoControls({
   onToggleFilmstrip,
   showCompare,
   onToggleCompare,
+  compareSrc,
   inPoint,
   outPoint,
   onInPointChange,
@@ -563,6 +565,9 @@ export default function VideoControls({
     }
     if (clearKey) {
       params.set("key", clearKey);
+    }
+    if (compareSrc) {
+      params.set("compare", compareSrc);
     }
     return `${base}?${params.toString()}`;
   };

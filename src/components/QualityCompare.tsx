@@ -6,6 +6,14 @@
  * video (left/A-side) clipped via CSS `clip-path`. A draggable vertical
  * divider controls the split position.
  *
+ * ## Dual-manifest support
+ *
+ * When `slaveSrc !== src`, the slave player loads a different manifest,
+ * enabling comparison of different encoders, CDNs, or encoding settings.
+ * Each side gets its own quality dropdown populated from its own manifest's
+ * variant tracks. DRM detection is performed independently for the slave
+ * manifest — if it has a different KID, a key prompt is shown.
+ *
  * ## Sync strategy
  *
  * All frame-accurate sync goes through one path: the master's `seeked` event.
@@ -27,9 +35,17 @@
  * ## DRM / encrypted content
  *
  * ClearKey credentials (kid + key) are forwarded to the slave player.
+ * For dual-manifest mode, the slave manifest is fetched independently to
+ * detect its KID. If it matches the master's KID, the same key is reused.
+ * If different, a key prompt is shown.
  * Note: `canvas.drawImage()` cannot capture frames from EME-protected video
  * elements — the browser returns black pixels. Any frame-buffering strategy
  * must avoid canvas capture for encrypted streams.
+ *
+ * ## Duration mismatch
+ *
+ * When comparing two different manifests with different durations, the slave
+ * is clamped to its own duration. Seeks beyond the slave's duration pause it.
  *
  * ## Pixel alignment
  *
@@ -41,11 +57,13 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
+import { fetchWithCorsRetry } from "../utils/corsProxy";
 
 interface QualityCompareProps {
   videoEl: HTMLVideoElement;
   player: shaka.Player;
   src: string;
+  slaveSrc: string;
   clearKey?: string;
   kid?: string;
   onClose: () => void;
@@ -82,10 +100,21 @@ function selectByHeight(player: shaka.Player, height: number) {
   }
 }
 
+function truncateUrl(url: string): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const filename = pathname.split("/").pop() || pathname;
+    return filename.length > 30 ? filename.slice(0, 27) + "..." : filename;
+  } catch {
+    return url.length > 30 ? url.slice(0, 27) + "..." : url;
+  }
+}
+
 export default function QualityCompare({
   videoEl: masterVideo,
   player: masterPlayer,
   src,
+  slaveSrc,
   clearKey,
   kid,
   onClose,
@@ -96,11 +125,16 @@ export default function QualityCompare({
 
   const [sliderPct, setSliderPct] = useState(50);
   const [dragging, setDragging] = useState(false);
-  const [qualities, setQualities] = useState<RenditionOption[]>([]);
+  const [qualitiesA, setQualitiesA] = useState<RenditionOption[]>([]);
+  const [qualitiesB, setQualitiesB] = useState<RenditionOption[]>([]);
   const [sideA, setSideA] = useState<number | null>(null);
   const [sideB, setSideB] = useState<number | null>(null);
   const [slaveReady, setSlaveReady] = useState(false);
   const [masterRect, setMasterRect] = useState<{ w: number; h: number } | null>(null);
+  const [needsSlaveKey, setNeedsSlaveKey] = useState(false);
+  const [slaveKey, setSlaveKey] = useState<string | undefined>(undefined);
+
+  const isDualManifest = slaveSrc !== src;
 
   // ── Match slave dimensions to master's exact rendered size ──
   // Uses ResizeObserver contentBoxSize for sub-pixel accuracy (offsetWidth/
@@ -140,56 +174,105 @@ export default function QualityCompare({
     slavePlayer.attach(slaveVideo).then(async () => {
       if (destroyed) return;
 
+      // Determine DRM credentials for the slave
+      let slaveKid = kid;
+      let slaveClearKey = clearKey;
+
+      if (isDualManifest) {
+        // Fetch slave manifest to detect its KID independently
+        try {
+          const { text: slaveManifestText } = await fetchWithCorsRetry(slaveSrc);
+          if (destroyed) return;
+
+          if (slaveManifestText) {
+            const doc = new DOMParser().parseFromString(slaveManifestText, "text/xml");
+            const cp = doc.querySelector("[*|default_KID]");
+            slaveKid = cp?.getAttribute("cenc:default_KID")?.replaceAll("-", "") ?? undefined;
+          } else {
+            slaveKid = undefined;
+          }
+        } catch {
+          if (destroyed) return;
+          slaveKid = undefined;
+        }
+
+        if (slaveKid) {
+          if (slaveKid === kid && clearKey) {
+            // Same KID as master — reuse master's key
+            slaveClearKey = clearKey;
+          } else if (slaveKey) {
+            // User already provided a key for this slave
+            slaveClearKey = slaveKey;
+          } else {
+            // Different KID, no key yet — prompt user
+            setNeedsSlaveKey(true);
+            return;
+          }
+        } else {
+          slaveClearKey = undefined;
+        }
+      }
+
       // Configure DRM if needed
-      if (kid && clearKey) {
+      if (slaveKid && slaveClearKey) {
         if (await hasClearKeySupport()) {
           slavePlayer.configure({
-            drm: { clearKeys: { [kid]: clearKey } },
+            drm: { clearKeys: { [slaveKid]: slaveClearKey } },
           });
         } else {
-          configureSoftwareDecryption(slavePlayer, clearKey);
+          configureSoftwareDecryption(slavePlayer, slaveClearKey);
         }
       }
 
       try {
-        await slavePlayer.load(src);
+        await slavePlayer.load(slaveSrc);
         if (destroyed) return;
 
         // Verify EME decryption works; fall back to software if not
-        if (kid && clearKey && await hasClearKeySupport()) {
+        if (slaveKid && slaveClearKey && await hasClearKeySupport()) {
           const emeWorks = await waitForDecryption(slaveVideo);
           if (destroyed) return;
           if (!emeWorks) {
             await slavePlayer.unload();
             if (destroyed) return;
             slavePlayer.configure({ drm: { clearKeys: {} } });
-            configureSoftwareDecryption(slavePlayer, clearKey);
-            await slavePlayer.load(src);
+            configureSoftwareDecryption(slavePlayer, slaveClearKey);
+            await slavePlayer.load(slaveSrc);
             if (destroyed) return;
           }
         }
 
         slaveVideo.muted = true;
 
-        // Get available qualities from master
-        const masterTracks = masterPlayer.getVariantTracks();
-        const renditions = dedupeByHeight(masterTracks);
-        setQualities(renditions);
+        // Get available qualities — independent lists for dual-manifest
+        const slaveTracks = slavePlayer.getVariantTracks();
+        const slaveRenditions = dedupeByHeight(slaveTracks);
+        setQualitiesA(slaveRenditions);
 
-        if (renditions.length > 0) {
+        const masterTracks = masterPlayer.getVariantTracks();
+        const masterRenditions = dedupeByHeight(masterTracks);
+        setQualitiesB(masterRenditions);
+
+        if (slaveRenditions.length > 0) {
           // A-side (slave/left): lowest quality by default
-          const lowest = renditions[renditions.length - 1];
+          const lowest = slaveRenditions[slaveRenditions.length - 1];
           setSideA(lowest.height);
           selectByHeight(slavePlayer, lowest.height);
+        }
 
+        if (masterRenditions.length > 0) {
           // B-side (master/right): highest quality by default
-          const highest = renditions[0];
+          const highest = masterRenditions[0];
           setSideB(highest.height);
           selectByHeight(masterPlayer, highest.height);
         }
 
-        // Sync initial position
-        slaveVideo.currentTime = masterVideo.currentTime;
+        // Sync initial position (clamped to slave duration)
+        const clampedTime = Math.min(
+          masterVideo.currentTime,
+          slaveVideo.duration || Infinity,
+        );
+        slaveVideo.currentTime = clampedTime;
         if (!masterVideo.paused) {
           slaveVideo.play().catch(() => {});
         }
@@ -214,7 +297,7 @@ export default function QualityCompare({
         masterPlayer.configure("abr.enabled", true);
       }
     };
-  }, [src, clearKey, kid, masterPlayer, masterVideo]);
+  }, [slaveSrc, clearKey, kid, slaveKey, masterPlayer, masterVideo, isDualManifest, src]);
 
   // ── Sync slave to master ──
   useEffect(() => {
@@ -222,6 +305,8 @@ export default function QualityCompare({
     if (!slaveVideo || !slaveReady) return;
 
     const onPlay = () => {
+      // Don't play slave if master is past slave's duration
+      if (slaveVideo.duration && masterVideo.currentTime > slaveVideo.duration) return;
       slaveVideo.play().catch(() => {});
     };
     const onPause = () => {
@@ -232,7 +317,12 @@ export default function QualityCompare({
       masterVideo.currentTime = masterVideo.currentTime;
     };
     const onSeeked = () => {
-      slaveVideo.currentTime = masterVideo.currentTime;
+      // Clamp slave time to its own duration
+      const clampedTime = Math.min(
+        masterVideo.currentTime,
+        slaveVideo.duration || Infinity,
+      );
+      slaveVideo.currentTime = clampedTime;
     };
 
     masterVideo.addEventListener("play", onPlay);
@@ -244,16 +334,21 @@ export default function QualityCompare({
     let rafId: number;
     const syncLoop = () => {
       if (!slaveVideo.paused && !masterVideo.paused) {
-        const drift = slaveVideo.currentTime - masterVideo.currentTime;
-        const absDrift = Math.abs(drift);
-        if (absDrift > 0.2) {
-          slaveVideo.currentTime = masterVideo.currentTime;
-          slaveVideo.playbackRate = masterVideo.playbackRate;
-        } else if (absDrift > 0.016) {
-          slaveVideo.playbackRate =
-            masterVideo.playbackRate * (drift > 0 ? 0.97 : 1.03);
+        // Pause slave if master time exceeds slave duration
+        if (slaveVideo.duration && masterVideo.currentTime > slaveVideo.duration) {
+          slaveVideo.pause();
         } else {
-          slaveVideo.playbackRate = masterVideo.playbackRate;
+          const drift = slaveVideo.currentTime - masterVideo.currentTime;
+          const absDrift = Math.abs(drift);
+          if (absDrift > 0.2) {
+            slaveVideo.currentTime = masterVideo.currentTime;
+            slaveVideo.playbackRate = masterVideo.playbackRate;
+          } else if (absDrift > 0.016) {
+            slaveVideo.playbackRate =
+              masterVideo.playbackRate * (drift > 0 ? 0.97 : 1.03);
+          } else {
+            slaveVideo.playbackRate = masterVideo.playbackRate;
+          }
         }
       }
       rafId = requestAnimationFrame(syncLoop);
@@ -326,6 +421,38 @@ export default function QualityCompare({
         }}
       />
 
+      {/* Slave key prompt for dual-manifest with different KID */}
+      {needsSlaveKey && (
+        <div className="vp-key-overlay" onClick={(e) => e.stopPropagation()}>
+          <form
+            className="vp-key-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const value = new FormData(e.currentTarget).get("slave-key") as string;
+              if (value?.trim()) {
+                setSlaveKey(value.trim());
+                setNeedsSlaveKey(false);
+              }
+            }}
+          >
+            <div className="vp-key-title">Encrypted compare source</div>
+            <div className="vp-key-desc">
+              The compare manifest requires a different decryption key
+            </div>
+            <input
+              name="slave-key"
+              className="vp-key-input"
+              type="password"
+              placeholder="Decryption key (hex)"
+              autoFocus
+            />
+            <button type="submit" className="vp-key-submit">
+              Decrypt
+            </button>
+          </form>
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="vp-compare-toolbar" onClick={(e) => e.stopPropagation()}>
         <div className="vp-compare-toolbar-side">
@@ -335,20 +462,30 @@ export default function QualityCompare({
             value={sideA ?? ""}
             onChange={handleSideAChange}
           >
-            {qualities.map((q) => (
+            {qualitiesA.map((q) => (
               <option key={q.height} value={q.height}>
                 {q.height}p
               </option>
             ))}
           </select>
+          {isDualManifest && (
+            <span className="vp-compare-src-hint" title={slaveSrc}>
+              {truncateUrl(slaveSrc)}
+            </span>
+          )}
         </div>
         <div className="vp-compare-toolbar-side">
+          {isDualManifest && (
+            <span className="vp-compare-src-hint" title={src}>
+              {truncateUrl(src)}
+            </span>
+          )}
           <select
             className="vp-compare-select"
             value={sideB ?? ""}
             onChange={handleSideBChange}
           >
-            {qualities.map((q) => (
+            {qualitiesB.map((q) => (
               <option key={q.height} value={q.height}>
                 {q.height}p
               </option>

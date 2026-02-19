@@ -6,16 +6,19 @@ function parseUrlParams(): {
   src: string | null;
   startTime: number | null;
   clearKey: string | null;
+  compare: string | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
   const t = params.get("t");
   const key = params.get("key");
+  const compare = params.get("compare");
 
   return {
     src: v || null,
     startTime: t ? parseFloat(t.replace(/s$/, "")) || null : null,
     clearKey: key || null,
+    compare: compare || null,
   };
 }
 
@@ -58,6 +61,7 @@ function App() {
   const [src, setSrc] = useState<string | null>(initial.src);
   const [clearKey] = useState<string | null>(initial.clearKey);
   const [startTime] = useState<number | null>(initial.startTime);
+  const [compareSrc] = useState<string | null>(initial.compare);
   const [showDemo, setShowDemo] = useState(false);
 
   if (!src) {
@@ -134,6 +138,7 @@ function App() {
         autoPlay
         clearKey={clearKey ?? undefined}
         startTime={startTime ?? undefined}
+        compareSrc={compareSrc ?? undefined}
       />
     </div>
   );
