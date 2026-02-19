@@ -283,7 +283,7 @@ export default function VideoControls({
     // Sync Auto state with actual ABR config — QualityCompare may
     // disable ABR on this player externally.
     const abrEnabled = player.getConfiguration().abr?.enabled !== false;
-    setIsAutoQuality(abrEnabled);
+    if (!abrEnabled) setIsAutoQuality(false);
 
     // Audio tracks
     const audios = player.getAudioTracks();
@@ -334,6 +334,19 @@ export default function VideoControls({
       player.removeEventListener("textchanged", onTracksChanged);
     };
   }, [player, updateTracks]);
+
+  // ── Sync Auto quality with compare mode ──
+  // QualityCompare disables ABR on the master player synchronously,
+  // but no Shaka event fires for config changes. Force non-auto when
+  // compare is active; restore auto when it closes (if ABR was re-enabled).
+  useEffect(() => {
+    if (showCompare) {
+      setIsAutoQuality(false);
+    } else {
+      const abrEnabled = player.getConfiguration().abr?.enabled !== false;
+      setIsAutoQuality(abrEnabled);
+    }
+  }, [showCompare, player]);
 
   // ── Sleep/wake recovery ──
   // Uses both visibilitychange and a timer-gap detector so we catch real
