@@ -389,6 +389,9 @@ export default function VideoControls({
     return () => clearInterval(id);
   }, [startGuard]);
 
+  // Compare mode while paused: hide controls so the frame comparison is unobstructed.
+  const compareHidesControls = !!showCompare && !playing;
+
   // ── Auto-hide controls ──
   const resetHideTimer = useCallback(() => {
     clearTimeout(hideTimerRef.current);
@@ -400,27 +403,33 @@ export default function VideoControls({
     }, HIDE_DELAY);
   }, [videoEl, popup]);
 
-  // Listen on containerEl so mousemove works even when overlay has pointer-events:none
+  // Listen on containerEl so mousemove works even when overlay has pointer-events:none.
+  // Skip when compare mode is paused — controls stay hidden to keep the view clean.
   useEffect(() => {
+    if (compareHidesControls) return;
     const onMouseMove = () => resetHideTimer();
     containerEl.addEventListener("mousemove", onMouseMove);
     return () => containerEl.removeEventListener("mousemove", onMouseMove);
-  }, [containerEl, resetHideTimer]);
+  }, [containerEl, resetHideTimer, compareHidesControls]);
 
   useEffect(() => {
     resetHideTimer();
     return () => clearTimeout(hideTimerRef.current);
   }, [resetHideTimer]);
 
-  // Always show when paused or popup open
+  // Always show when paused or popup open — but in compare mode while
+  // paused, hide controls so the frame comparison is unobstructed.
   useEffect(() => {
-    if (!playing || popup !== null) {
+    if (compareHidesControls) {
+      clearTimeout(hideTimerRef.current);
+      setVisible(false);
+    } else if (!playing || popup !== null) {
       clearTimeout(hideTimerRef.current);
       setVisible(true);
     } else {
       resetHideTimer();
     }
-  }, [playing, popup, resetHideTimer]);
+  }, [playing, popup, resetHideTimer, compareHidesControls]);
 
   // ── Click on video area to toggle play/pause ──
   useEffect(() => {
