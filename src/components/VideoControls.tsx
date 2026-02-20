@@ -678,32 +678,17 @@ export default function VideoControls({
     }
   };
 
-  const buildShareUrl = (withTime: boolean) => {
+  const copyVideoUrl = () => {
     const base = `${window.location.origin}${window.location.pathname}`;
     const params = new URLSearchParams();
     params.set("v", src);
-    if (withTime) {
-      params.set("t", `${Math.floor(videoEl.currentTime)}s`);
-    }
-    if (clearKey) {
-      params.set("key", clearKey);
-    }
-    if (compareSrc) {
-      params.set("compare", compareSrc);
-    }
-    if (compareHeightA) {
-      params.set("qa", String(compareHeightA));
-    }
-    if (compareHeightB) {
-      params.set("qb", String(compareHeightB));
-    }
-    return `${base}?${params.toString()}`;
-  };
-
-  const copyVideoUrl = (withTime: boolean) => {
-    const url = buildShareUrl(withTime);
-    navigator.clipboard.writeText(url).then(() => {
-      showCopiedToast(withTime ? "URL with time copied" : "URL copied");
+    params.set("t", `${Math.floor(videoEl.currentTime)}s`);
+    if (clearKey) params.set("key", clearKey);
+    if (compareSrc) params.set("compare", compareSrc);
+    if (compareHeightA) params.set("qa", String(compareHeightA));
+    if (compareHeightB) params.set("qb", String(compareHeightB));
+    navigator.clipboard.writeText(`${base}?${params.toString()}`).then(() => {
+      showCopiedToast("URL copied");
     });
     setContextMenu(null);
   };
@@ -1020,14 +1005,7 @@ export default function VideoControls({
           >
             <div
               className="vp-context-menu-item"
-              onClick={() => copyVideoUrl(false)}
-            >
-              <CopyLinkIcon />
-              Copy video URL
-            </div>
-            <div
-              className="vp-context-menu-item"
-              onClick={() => copyVideoUrl(true)}
+              onClick={copyVideoUrl}
             >
               <CopyLinkIcon />
               Copy video URL at current time
