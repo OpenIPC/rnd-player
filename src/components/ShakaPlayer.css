@@ -1624,6 +1624,7 @@ video::-webkit-media-text-track-container {
   font-size: 14px;
   text-align: center;
   max-width: 400px;
+  overflow-wrap: anywhere;
 }
 
 .vp-compare-error-close {
