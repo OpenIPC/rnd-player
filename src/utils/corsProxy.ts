@@ -90,15 +90,20 @@ export function installCorsSchemePlugin(): void {
         signal: controller.signal,
       };
 
-      let origin: string;
-      try {
-        origin = new URL(uri).origin;
-      } catch {
-        origin = "";
+      // Shaka's goog.Uri produces "http:/path" (single slash, no authority)
+      // for relative paths with an inferred scheme. new URL() misparses
+      // these as having a host (e.g. "http:/dash/file" → host "dash").
+      // Only URIs with proper authority ("://") can be cross-origin.
+      const hasAuthority = /^https?:\/\//.test(uri);
+      let origin = pageOrigin;
+      if (hasAuthority) {
+        try {
+          origin = new URL(uri).origin;
+        } catch {
+          // invalid URL → treat as same-origin
+        }
       }
 
-      // Only add cache buster to cross-origin requests — same-origin
-      // requests don't have CORS issues.
       const isCrossOrigin = origin !== pageOrigin;
       const fetchUri = isCrossOrigin ? addCacheBuster(uri) : uri;
       let res: Response;
@@ -178,7 +183,9 @@ export function installCorsSchemePlugin(): void {
  */
 export function uninstallCorsSchemePlugin(): void {
   corsWorkaroundOrigins.clear();
-  const priority = shaka.net.NetworkingEngine.PluginPriority.PREFERRED;
+  // Must use APPLICATION priority (same as install) because Shaka's
+  // registerScheme only replaces if newPriority >= existingPriority.
+  const priority = shaka.net.NetworkingEngine.PluginPriority.APPLICATION;
   shaka.net.NetworkingEngine.registerScheme(
     "https",
     shaka.net.HttpFetchPlugin.parse,

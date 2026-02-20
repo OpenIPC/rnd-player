@@ -186,7 +186,6 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
         }
       } catch (e: unknown) {
         if (destroyed) return;
-
         // DRM error — EME may be entirely absent (e.g. Linux WebKitGTK).
         // Fall back to software decryption instead of showing an error.
         if (defaultKID && clearKey && e instanceof shaka.util.Error && (e.category === 6 || e.category === 3)) {
