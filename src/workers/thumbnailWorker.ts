@@ -14,6 +14,52 @@ function post(msg: WorkerResponse, transfer?: Transferable[]) {
   self.postMessage(msg, { transfer: transfer ?? [] });
 }
 
+// ── CORS proxy state ──
+let proxyUrl = "";
+let proxyHmacKey = "";
+const corsBlockedOrigins = new Set<string>();
+const corsSessionId = Math.random().toString(36).slice(2, 10);
+
+function isSameOrigin(url: string): boolean {
+  try {
+    return new URL(url).origin === self.location.origin;
+  } catch {
+    return true;
+  }
+}
+
+function addCacheBuster(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set("_cbust", corsSessionId);
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+async function computeHmac(message: string, key: string): Promise<string> {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function buildProxyUrl(targetUrl: string): Promise<string> {
+  const t = Math.floor(Date.now() / 1000);
+  const w = Math.floor(t / 300);
+  const sig = await computeHmac(`${w}:${targetUrl}`, proxyHmacKey);
+  return `${proxyUrl}/proxy?url=${encodeURIComponent(targetUrl)}&t=${t}&sig=${sig}`;
+}
+
 // ── Module-level state ──
 let aborted = false;
 let segments: { url: string; startTime: number; endTime: number }[] = [];
@@ -59,9 +105,51 @@ function extractDescription(mp4: ISOFile, trackId: number): Uint8Array | undefin
 }
 
 async function fetchBuffer(url: string): Promise<ArrayBuffer> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Fetch failed: ${resp.status} ${url}`);
-  return resp.arrayBuffer();
+  // Same-origin or no proxy configured → direct fetch
+  if (!proxyUrl || !proxyHmacKey || isSameOrigin(url)) {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Fetch failed: ${resp.status} ${url}`);
+    return resp.arrayBuffer();
+  }
+
+  // Known blocked origin → proxy directly
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Fetch failed: ${resp.status} ${url}`);
+    return resp.arrayBuffer();
+  }
+
+  if (corsBlockedOrigins.has(origin)) {
+    const resp = await fetch(await buildProxyUrl(url));
+    if (!resp.ok) throw new Error(`Fetch failed via proxy: ${resp.status} ${url}`);
+    return resp.arrayBuffer();
+  }
+
+  // Try direct first, fall back through workaround then proxy
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Fetch failed: ${resp.status} ${url}`);
+    return resp.arrayBuffer();
+  } catch (e) {
+    if (!(e instanceof TypeError)) throw e;
+
+    try {
+      const resp = await fetch(addCacheBuster(url), {
+        credentials: "omit",
+        cache: "no-store",
+      });
+      if (!resp.ok) throw new Error(`Fetch failed: ${resp.status} ${url}`);
+      return resp.arrayBuffer();
+    } catch {
+      corsBlockedOrigins.add(origin);
+      const resp = await fetch(await buildProxyUrl(url));
+      if (!resp.ok) throw new Error(`Fetch failed via proxy: ${resp.status} ${url}`);
+      return resp.arrayBuffer();
+    }
+  }
 }
 
 /**
@@ -397,6 +485,10 @@ async function processIntraQueue() {
 async function initialize(req: Extract<WorkerRequest, { type: "generate" }>) {
   const { initSegmentUrl, codec, width, height, thumbnailWidth } = req;
   segments = req.segments;
+
+  // Store CORS proxy config
+  proxyUrl = req.corsProxyUrl ?? "";
+  proxyHmacKey = req.corsProxyHmacKey ?? "";
 
   // Reset state
   currentQueue = [];

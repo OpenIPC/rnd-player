@@ -19,6 +19,10 @@ export type WorkerRequest =
       /** Active (watched) stream info for frame type classification */
       activeInitSegmentUrl?: string;
       activeSegments?: { url: string; startTime: number; endTime: number }[];
+      /** CORS proxy URL for cross-origin segment fetches */
+      corsProxyUrl?: string;
+      /** HMAC key for signing CORS proxy requests */
+      corsProxyHmacKey?: string;
     }
   | { type: "updateQueue"; segmentIndices: number[] }
   | {
