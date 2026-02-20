@@ -150,6 +150,8 @@ jobs:
         run: npm run build
         env:
           VITE_BASE_PATH: /rnd-player/${{ steps.version.outputs.value }}/
+          VITE_CORS_PROXY_URL: ${{ secrets.VITE_CORS_PROXY_URL }}
+          VITE_CORS_PROXY_HMAC_KEY: ${{ secrets.VITE_CORS_PROXY_HMAC_KEY }}
 
       - run: mkdir -p site/${{ steps.version.outputs.value }}
       - run: cp -r dist/* site/${{ steps.version.outputs.value }}/
@@ -158,6 +160,8 @@ jobs:
         run: npm run build
         env:
           VITE_BASE_PATH: /rnd-player/current/
+          VITE_CORS_PROXY_URL: ${{ secrets.VITE_CORS_PROXY_URL }}
+          VITE_CORS_PROXY_HMAC_KEY: ${{ secrets.VITE_CORS_PROXY_HMAC_KEY }}
 
       - run: mkdir -p site/current
       - run: cp -r dist/* site/current/
