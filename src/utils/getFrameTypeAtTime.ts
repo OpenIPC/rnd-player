@@ -5,9 +5,16 @@ import { extractInitSegmentUrl } from "./extractInitSegmentUrl";
 import { addCacheBuster } from "./corsProxy";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
-interface FrameInfo {
+export interface FrameInfo {
   type: FrameType;
   size: number;
+}
+
+export interface FrameTypeResult {
+  type: FrameType;
+  size: number;
+  gopFrames: FrameInfo[];
+  frameIdx: number;
 }
 
 /**
@@ -157,7 +164,7 @@ function isCrossOrigin(url: string): boolean {
 export async function getFrameTypeAtTime(
   player: shaka.Player,
   time: number,
-): Promise<FrameInfo | null> {
+): Promise<FrameTypeResult | null> {
   try {
     const stream = getActiveVideoStream(player);
     if (!stream) return null;
@@ -232,7 +239,9 @@ export async function getFrameTypeAtTime(
     const frac = Math.max(0, Math.min(1, (time - segStart) / segDur));
     const frameIdx = Math.min(Math.round(frac * (count - 1)), count - 1);
 
-    return frames[frameIdx] ?? null;
+    const frame = frames[frameIdx];
+    if (!frame) return null;
+    return { type: frame.type, size: frame.size, gopFrames: frames, frameIdx };
   } catch {
     return null;
   }

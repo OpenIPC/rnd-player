@@ -59,6 +59,7 @@ import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 import { fetchWithCorsRetry } from "../utils/corsProxy";
 import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAtTime";
+import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
 const FRAME_TYPE_COLORS: Record<FrameType, string> = {
@@ -143,6 +144,21 @@ function domainLabel(url: string): string {
   }
 }
 
+function GopBar({ frames, activeIdx, side }: { frames: { type: FrameType; size: number }[]; activeIdx: number; side: "left" | "right" }) {
+  const maxSize = Math.max(...frames.map((f) => f.size), 1);
+  return (
+    <div className={`vp-compare-gop ${side === "right" ? "vp-compare-gop-right" : ""}`}>
+      {frames.map((f, i) => (
+        <div
+          key={i}
+          className={`vp-compare-gop-bar vp-gop-bar-${f.type}${i === activeIdx ? " vp-compare-gop-active" : ""}`}
+          style={{ height: `${Math.max(8, (f.size / maxSize) * 100)}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function QualityCompare({
   videoEl: masterVideo,
   player: masterPlayer,
@@ -184,8 +200,8 @@ export default function QualityCompare({
   const [needsSlaveKey, setNeedsSlaveKey] = useState(false);
   const [slaveKey, setSlaveKey] = useState<string | undefined>(undefined);
   const [paused, setPaused] = useState(masterVideo.paused);
-  const [frameInfoA, setFrameInfoA] = useState<{ type: FrameType; size: number } | null>(null);
-  const [frameInfoB, setFrameInfoB] = useState<{ type: FrameType; size: number } | null>(null);
+  const [frameInfoA, setFrameInfoA] = useState<FrameTypeResult | null>(null);
+  const [frameInfoB, setFrameInfoB] = useState<FrameTypeResult | null>(null);
   const [zoomDisplay, setZoomDisplay] = useState(1);
   const [slaveError, setSlaveError] = useState<string | null>(null);
   const errorCloseRef = useRef<HTMLButtonElement>(null);
@@ -966,6 +982,9 @@ export default function QualityCompare({
               <span className="vp-compare-frame-size">{formatFrameSize(frameInfoA.size)}</span>
             )}
           </span>
+          {frameInfoA.gopFrames.length > 1 && (
+            <GopBar frames={frameInfoA.gopFrames} activeIdx={frameInfoA.frameIdx} side="left" />
+          )}
         </div>
       )}
       {frameInfoB && (
@@ -986,6 +1005,9 @@ export default function QualityCompare({
               <span className="vp-compare-frame-size">{formatFrameSize(frameInfoB.size)}</span>
             )}
           </span>
+          {frameInfoB.gopFrames.length > 1 && (
+            <GopBar frames={frameInfoB.gopFrames} activeIdx={frameInfoB.frameIdx} side="right" />
+          )}
         </div>
       )}
 
