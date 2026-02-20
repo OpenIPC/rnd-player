@@ -19,6 +19,7 @@ interface UseKeyboardShortcutsOptions {
   onOutPointSet: (time: number) => void;
   onToggleSubtitleByIndex?: (index: number) => void;
   onToggleAllSubtitles?: () => void;
+  onToggleHelp?: () => void;
 }
 
 interface ShuttleState {
@@ -37,6 +38,7 @@ export function useKeyboardShortcuts({
   onOutPointSet,
   onToggleSubtitleByIndex,
   onToggleAllSubtitles,
+  onToggleHelp,
 }: UseKeyboardShortcutsOptions): ShuttleState {
   const [shuttleSpeed, setShuttleSpeed] = useState(0);
   const [shuttleDirection, setShuttleDirection] = useState<-1 | 0 | 1>(0);
@@ -277,6 +279,14 @@ export function useKeyboardShortcuts({
           }
           break;
         }
+
+        case "h":
+        case "H":
+        case "?": {
+          e.preventDefault();
+          if (onToggleHelp) onToggleHelp();
+          break;
+        }
       }
     };
 
@@ -299,6 +309,7 @@ export function useKeyboardShortcuts({
     onOutPointSet,
     onToggleSubtitleByIndex,
     onToggleAllSubtitles,
+    onToggleHelp,
     resetShuttle,
     startReverseLoop,
   ]);

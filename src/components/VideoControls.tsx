@@ -136,6 +136,7 @@ export default function VideoControls({
   const [showExportPicker, setShowExportPicker] = useState(false);
   const [subtitleResetSignal, setSubtitleResetSignal] = useState(0);
   const [translateSetupSignal, setTranslateSetupSignal] = useState(0);
+  const [showHelp, setShowHelp] = useState(false);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -618,6 +619,7 @@ export default function VideoControls({
     onOutPointSet: onOutPointChange,
     onToggleSubtitleByIndex: toggleSubtitleByIndex,
     onToggleAllSubtitles: stableToggleAllSubtitles,
+    onToggleHelp: useCallback(() => setShowHelp((s) => !s), []),
   });
 
   // Multi-subtitle hook: fetches, parses, and filters active cues
@@ -1255,6 +1257,60 @@ export default function VideoControls({
             onClose={() => setShowAudioLevels(false)}
           />
         </Suspense>
+      )}
+
+      {/* Help modal — portaled to body */}
+      {showHelp && createPortal(
+        <div className="vp-help-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setShowHelp(false); }} onKeyDown={(e) => { if (e.key === "Escape") setShowHelp(false); }}>
+          <div className="vp-help-modal">
+            <div className="vp-help-header">
+              <h3 className="vp-help-title">Keyboard Shortcuts</h3>
+              <button className="vp-help-close" onClick={() => setShowHelp(false)}>&times;</button>
+            </div>
+            <div className="vp-help-body">
+              <div className="vp-help-section">
+                <h4 className="vp-help-section-title">Playback</h4>
+                <div className="vp-help-row"><kbd>Space</kbd><span>Play / Pause</span></div>
+                <div className="vp-help-row"><kbd>K</kbd><span>Pause</span></div>
+                <div className="vp-help-row"><kbd>L</kbd><span>Play forward / increase speed</span></div>
+                <div className="vp-help-row"><kbd>J</kbd><span>Play reverse / increase speed</span></div>
+              </div>
+              <div className="vp-help-section">
+                <h4 className="vp-help-section-title">Navigation</h4>
+                <div className="vp-help-row"><kbd>&larr;</kbd> <kbd>,</kbd><span>Previous frame</span></div>
+                <div className="vp-help-row"><kbd>&rarr;</kbd> <kbd>.</kbd><span>Next frame</span></div>
+                <div className="vp-help-row"><kbd>Shift+&uarr;</kbd><span>Forward 1 second</span></div>
+                <div className="vp-help-row"><kbd>Shift+&darr;</kbd><span>Back 1 second</span></div>
+                <div className="vp-help-row"><kbd>Home</kbd><span>Go to beginning</span></div>
+                <div className="vp-help-row"><kbd>End</kbd><span>Go to end</span></div>
+              </div>
+              <div className="vp-help-section">
+                <h4 className="vp-help-section-title">Audio</h4>
+                <div className="vp-help-row"><kbd>M</kbd><span>Mute / Unmute</span></div>
+                <div className="vp-help-row"><kbd>&uarr;</kbd><span>Volume up</span></div>
+                <div className="vp-help-row"><kbd>&darr;</kbd><span>Volume down</span></div>
+              </div>
+              <div className="vp-help-section">
+                <h4 className="vp-help-section-title">Subtitles</h4>
+                <div className="vp-help-row"><kbd>C</kbd><span>Toggle all subtitles</span></div>
+                <div className="vp-help-row"><kbd>1</kbd>&ndash;<kbd>9</kbd><span>Toggle subtitle track N</span></div>
+              </div>
+              <div className="vp-help-section">
+                <h4 className="vp-help-section-title">Editing</h4>
+                <div className="vp-help-row"><kbd>I</kbd><span>Set in-point</span></div>
+                <div className="vp-help-row"><kbd>O</kbd><span>Set out-point</span></div>
+              </div>
+              <div className="vp-help-section">
+                <h4 className="vp-help-section-title">View</h4>
+                <div className="vp-help-row"><kbd>F</kbd><span>Toggle fullscreen</span></div>
+                <div className="vp-help-row"><kbd>+</kbd> <kbd>=</kbd><span>Filmstrip zoom in</span></div>
+                <div className="vp-help-row"><kbd>-</kbd><span>Filmstrip zoom out</span></div>
+                <div className="vp-help-row"><kbd>H</kbd> <kbd>?</kbd><span>This help</span></div>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );
