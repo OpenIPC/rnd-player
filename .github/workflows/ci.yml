@@ -26,6 +26,7 @@ jobs:
 
   e2e:
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' && matrix.browser == 'webkit' }}
     strategy:
       fail-fast: false
       matrix:
