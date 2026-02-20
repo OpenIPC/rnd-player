@@ -121,10 +121,12 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
       const { text: manifestText } = await fetchWithCorsRetry(src);
       if (destroyed) return;
 
-      const corsBlocked = getCorsBlockedOrigin(src);
-      if (corsBlocked) {
-        setError(`${corsBlocked} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
-        return;
+      if (!manifestText) {
+        const corsBlocked = getCorsBlockedOrigin(src);
+        if (corsBlocked) {
+          setError(`${corsBlocked} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+          return;
+        }
       }
 
       let defaultKID: string | null = null;

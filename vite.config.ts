@@ -7,6 +7,8 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.0.0'),
     __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    __CORS_PROXY_URL__: JSON.stringify(process.env.VITE_CORS_PROXY_URL ?? ''),
+    __CORS_PROXY_HMAC_KEY__: JSON.stringify(process.env.VITE_CORS_PROXY_HMAC_KEY ?? ''),
   },
   plugins: [react()],
   test: {

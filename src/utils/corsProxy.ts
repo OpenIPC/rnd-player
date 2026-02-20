@@ -1,5 +1,11 @@
 import shaka from "shaka-player";
 
+declare const __CORS_PROXY_URL__: string;
+declare const __CORS_PROXY_HMAC_KEY__: string;
+
+/** Whether a CORS proxy fallback is configured (build-time constants). */
+const proxyConfigured = Boolean(__CORS_PROXY_URL__ && __CORS_PROXY_HMAC_KEY__);
+
 /**
  * Origins known to need CORS workaround (credentials: "omit", cache bypass).
  * Populated on first CORS failure per origin so subsequent requests skip
@@ -46,6 +52,42 @@ export function getCorsBlockedOrigin(url: string): string | null {
   }
 }
 
+// ── CORS proxy helpers (only used when proxyConfigured is true) ──
+
+async function computeHmac(message: string, key: string): Promise<string> {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function buildProxyUrl(targetUrl: string): Promise<string> {
+  const t = Math.floor(Date.now() / 1000);
+  const w = Math.floor(t / 300);
+  const sig = await computeHmac(`${w}:${targetUrl}`, __CORS_PROXY_HMAC_KEY__);
+  return `${__CORS_PROXY_URL__}/proxy?url=${encodeURIComponent(targetUrl)}&t=${t}&sig=${sig}`;
+}
+
+async function fetchViaProxy(
+  targetUrl: string,
+  init: RequestInit,
+): Promise<Response> {
+  const proxyUrl = await buildProxyUrl(targetUrl);
+  return fetch(proxyUrl, {
+    method: (init.method as string) || "GET",
+    headers: init.headers,
+    signal: init.signal,
+  });
+}
+
 /**
  * Fetch with CORS retry. Tries a normal fetch first; on TypeError (CORS/network
  * error), retries with cache-busting param, credentials omitted, and browser
@@ -54,6 +96,18 @@ export function getCorsBlockedOrigin(url: string): string | null {
 export async function fetchWithCorsRetry(
   url: string,
 ): Promise<{ text: string | null; corsWorkaround: boolean }> {
+  // Fast path: known CORS-blocked origin — use proxy directly
+  if (proxyConfigured) {
+    try {
+      if (corsBlockedOrigins.has(new URL(url).origin)) {
+        const res = await fetch(await buildProxyUrl(url));
+        return { text: await res.text(), corsWorkaround: true };
+      }
+    } catch {
+      return { text: null, corsWorkaround: false };
+    }
+  }
+
   try {
     const res = await fetch(url);
     return { text: await res.text(), corsWorkaround: false };
@@ -69,6 +123,12 @@ export async function fetchWithCorsRetry(
       return { text: await res.text(), corsWorkaround: true };
     } catch {
       try { corsBlockedOrigins.add(new URL(url).origin); } catch { /* invalid URL */ }
+      if (proxyConfigured) {
+        try {
+          const res = await fetch(await buildProxyUrl(url));
+          return { text: await res.text(), corsWorkaround: true };
+        } catch { /* proxy also failed */ }
+      }
       return { text: null, corsWorkaround: false };
     }
   }
@@ -89,7 +149,7 @@ export async function fetchWithCorsRetry(
  *
  * Must be installed unconditionally before player.load() because CORS
  * failures may occur on segment CDN origins that differ from the manifest
- * origin (e.g. manifest on strm.yandex.ru, segments on strm-m9-*.yandex.net).
+ * origin (e.g. manifest and segment hosts differ).
  */
 export function installCorsSchemePlugin(): void {
   const pageOrigin = window.location.origin;
@@ -129,7 +189,10 @@ export function installCorsSchemePlugin(): void {
       const fetchUri = isCrossOrigin ? addCacheBuster(uri) : uri;
       let res: Response;
 
-      if (corsWorkaroundOrigins.has(origin)) {
+      if (isCrossOrigin && corsBlockedOrigins.has(origin) && proxyConfigured) {
+        // Known CORS-blocked origin with proxy — skip failed direct attempts
+        res = await fetchViaProxy(uri, baseFetchInit);
+      } else if (corsWorkaroundOrigins.has(origin)) {
         // Known CORS-failing origin — use full workaround directly
         try {
           res = await fetch(fetchUri, {
@@ -140,7 +203,11 @@ export function installCorsSchemePlugin(): void {
           });
         } catch (e) {
           corsBlockedOrigins.add(origin);
-          throw e;
+          if (proxyConfigured) {
+            res = await fetchViaProxy(uri, baseFetchInit);
+          } else {
+            throw e;
+          }
         }
       } else {
         try {
@@ -158,7 +225,11 @@ export function installCorsSchemePlugin(): void {
             });
           } catch (e2) {
             corsBlockedOrigins.add(origin);
-            throw e2;
+            if (proxyConfigured) {
+              res = await fetchViaProxy(uri, baseFetchInit);
+            } else {
+              throw e2;
+            }
           }
         }
       }
