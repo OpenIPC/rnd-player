@@ -234,7 +234,10 @@ export async function getFrameTypeAtTime(
     if (count === 0) return null;
 
     const segDur = segEnd - segStart;
-    if (segDur <= 0) return frames[0] ?? null;
+    if (segDur <= 0) {
+      const frame = frames[0];
+      return frame ? { type: frame.type, size: frame.size, gopFrames: frames, frameIdx: 0 } : null;
+    }
 
     const frac = Math.max(0, Math.min(1, (time - segStart) / segDur));
     const frameIdx = Math.min(Math.round(frac * (count - 1)), count - 1);
