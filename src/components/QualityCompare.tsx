@@ -138,12 +138,26 @@ function formatFrameSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-function domainLabel(url: string): string {
+function domainLabel(url: string, otherUrl?: string): string {
   try {
     const host = new URL(url).hostname;
-    // Extract second-level domain: "sub.example.com" → "example.com"
     const parts = host.split(".");
-    return parts.length >= 2 ? parts.slice(-2).join(".") : host;
+    const sld = parts.length >= 2 ? parts.slice(-2).join(".") : host;
+
+    // When the other URL shares the same second-level domain, show the
+    // distinguishing subdomain prefix instead (e.g. "msk2-cdp4" vs "pre-edge-cdp1").
+    if (otherUrl) {
+      try {
+        const otherHost = new URL(otherUrl).hostname;
+        const otherParts = otherHost.split(".");
+        const otherSld = otherParts.length >= 2 ? otherParts.slice(-2).join(".") : otherHost;
+        if (sld === otherSld && parts.length > 2) {
+          return parts.slice(0, -2).join(".");
+        }
+      } catch { /* otherUrl invalid — fall through to default */ }
+    }
+
+    return sld;
   } catch {
     return url.length > 30 ? url.slice(0, 27) + "..." : url;
   }
@@ -960,14 +974,14 @@ export default function QualityCompare({
           </select>
           {isDualManifest && (
             <span className="vp-compare-src-hint" title={slaveSrc} onClick={() => copyUrl(slaveSrc)}>
-              {domainLabel(slaveSrc)}
+              {domainLabel(slaveSrc, src)}
             </span>
           )}
         </div>
         <div className="vp-compare-toolbar-side">
           {isDualManifest && (
             <span className="vp-compare-src-hint" title={src} onClick={() => copyUrl(src)}>
-              {domainLabel(src)}
+              {domainLabel(src, slaveSrc)}
             </span>
           )}
           <select
