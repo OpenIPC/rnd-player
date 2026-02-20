@@ -144,10 +144,10 @@ function domainLabel(url: string): string {
   }
 }
 
-function GopBar({ frames, activeIdx, side }: { frames: { type: FrameType; size: number }[]; activeIdx: number; side: "left" | "right" }) {
+function GopBar({ frames, activeIdx }: { frames: { type: FrameType; size: number }[]; activeIdx: number }) {
   const maxSize = Math.max(...frames.map((f) => f.size), 1);
   return (
-    <div className={`vp-compare-gop ${side === "right" ? "vp-compare-gop-right" : ""}`}>
+    <div className="vp-compare-gop">
       {frames.map((f, i) => (
         <div
           key={i}
@@ -973,18 +973,20 @@ export default function QualityCompare({
             borderColor: FRAME_TYPE_COLORS[frameInfoA.type],
           }}
         >
-          <span
-            className="vp-compare-frame-badge"
-            style={{ backgroundColor: FRAME_TYPE_COLORS[frameInfoA.type] }}
-          >
-            {frameInfoA.type}
-            {frameInfoA.size > 0 && (
-              <span className="vp-compare-frame-size">{formatFrameSize(frameInfoA.size)}</span>
+          <div className="vp-compare-frame-stack">
+            {frameInfoA.gopFrames.length > 1 && (
+              <GopBar frames={frameInfoA.gopFrames} activeIdx={frameInfoA.frameIdx} />
             )}
-          </span>
-          {frameInfoA.gopFrames.length > 1 && (
-            <GopBar frames={frameInfoA.gopFrames} activeIdx={frameInfoA.frameIdx} side="left" />
-          )}
+            <span
+              className="vp-compare-frame-badge"
+              style={{ backgroundColor: FRAME_TYPE_COLORS[frameInfoA.type] }}
+            >
+              {frameInfoA.type}
+              {frameInfoA.size > 0 && (
+                <span className="vp-compare-frame-size">{formatFrameSize(frameInfoA.size)}</span>
+              )}
+            </span>
+          </div>
         </div>
       )}
       {frameInfoB && (
@@ -996,18 +998,20 @@ export default function QualityCompare({
             borderColor: FRAME_TYPE_COLORS[frameInfoB.type],
           }}
         >
-          <span
-            className="vp-compare-frame-badge vp-compare-frame-badge-right"
-            style={{ backgroundColor: FRAME_TYPE_COLORS[frameInfoB.type] }}
-          >
-            {frameInfoB.type}
-            {frameInfoB.size > 0 && (
-              <span className="vp-compare-frame-size">{formatFrameSize(frameInfoB.size)}</span>
+          <div className="vp-compare-frame-stack vp-compare-frame-stack-right">
+            {frameInfoB.gopFrames.length > 1 && (
+              <GopBar frames={frameInfoB.gopFrames} activeIdx={frameInfoB.frameIdx} />
             )}
-          </span>
-          {frameInfoB.gopFrames.length > 1 && (
-            <GopBar frames={frameInfoB.gopFrames} activeIdx={frameInfoB.frameIdx} side="right" />
-          )}
+            <span
+              className="vp-compare-frame-badge"
+              style={{ backgroundColor: FRAME_TYPE_COLORS[frameInfoB.type] }}
+            >
+              {frameInfoB.type}
+              {frameInfoB.size > 0 && (
+                <span className="vp-compare-frame-size">{formatFrameSize(frameInfoB.size)}</span>
+              )}
+            </span>
+          </div>
         </div>
       )}
 

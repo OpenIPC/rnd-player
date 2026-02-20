@@ -1536,10 +1536,25 @@ video::-webkit-media-text-track-container {
   border-right: 1px solid;
 }
 
-.vp-compare-frame-badge {
+/* ── Compare frame info stack (GOP bar + badge, bottom-aligned) ── */
+.vp-compare-frame-stack {
   position: absolute;
-  bottom: 52px;
+  bottom: 8px;
   left: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.vp-compare-frame-stack-right {
+  left: auto;
+  right: 8px;
+  align-items: flex-end;
+}
+
+.vp-compare-frame-badge {
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 11px;
@@ -1549,31 +1564,16 @@ video::-webkit-media-text-track-container {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-.vp-compare-frame-badge-right {
-  left: auto;
-  right: 8px;
-}
-
 .vp-compare-frame-size {
   margin-left: 3px;
   font-weight: 400;
 }
 
-/* ── Compare GOP bar (inline below frame badge) ── */
 .vp-compare-gop {
-  position: absolute;
-  bottom: 36px;
-  left: 8px;
   display: flex;
   align-items: flex-end;
   height: 24px;
   gap: 1px;
-  pointer-events: none;
-}
-
-.vp-compare-gop-right {
-  left: auto;
-  right: 8px;
 }
 
 .vp-compare-gop-bar {
