@@ -61,6 +61,7 @@ import { fetchWithCorsRetry, getCorsBlockedOrigin } from "../utils/corsProxy";
 import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAtTime";
 import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
+import { formatBitrate } from "../utils/formatBitrate";
 
 const FRAME_TYPE_COLORS: Record<FrameType, string> = {
   I: "rgb(255, 50, 50)",
@@ -101,23 +102,27 @@ function shortCodec(codec: string | null | undefined): string {
   }
 }
 
-function dedupeByHeight(tracks: shaka.extern.Track[]): RenditionOption[] {
-  const byHeight = new Map<number, RenditionOption>();
+function collectRenditions(tracks: shaka.extern.Track[]): RenditionOption[] {
+  const seen = new Map<string, RenditionOption>();
   for (const t of tracks) {
     if (t.height == null) continue;
-    const existing = byHeight.get(t.height);
-    if (!existing || t.bandwidth > existing.bandwidth) {
-      byHeight.set(t.height, { height: t.height, bandwidth: t.bandwidth, videoCodec: t.videoCodec ?? "" });
+    const key = `${t.height}_${t.bandwidth}`;
+    if (!seen.has(key)) {
+      seen.set(key, { height: t.height, bandwidth: t.bandwidth, videoCodec: t.videoCodec ?? "" });
     }
   }
-  return Array.from(byHeight.values()).sort((a, b) => b.height - a.height);
+  return Array.from(seen.values()).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
 }
 
-function selectByHeight(player: shaka.Player, height: number) {
+function selectRendition(player: shaka.Player, height: number, bandwidth?: number) {
   const tracks = player.getVariantTracks();
   let best: shaka.extern.Track | null = null;
   for (const t of tracks) {
     if (t.height === height) {
+      if (bandwidth != null && t.bandwidth === bandwidth) {
+        best = t;
+        break;
+      }
       if (!best || t.bandwidth > best.bandwidth) best = t;
     }
   }
@@ -194,8 +199,8 @@ export default function QualityCompare({
   const [dragging, setDragging] = useState(false);
   const [qualitiesA, setQualitiesA] = useState<RenditionOption[]>([]);
   const [qualitiesB, setQualitiesB] = useState<RenditionOption[]>([]);
-  const [sideA, setSideA] = useState<number | null>(null);
-  const [sideB, setSideB] = useState<number | null>(null);
+  const [sideA, setSideA] = useState<string | null>(null);
+  const [sideB, setSideB] = useState<string | null>(null);
   const [slaveReady, setSlaveReady] = useState(false);
   const [needsSlaveKey, setNeedsSlaveKey] = useState(false);
   const [slaveKey, setSlaveKey] = useState<string | undefined>(undefined);
@@ -443,11 +448,11 @@ export default function QualityCompare({
 
         // Get available qualities — independent lists for dual-manifest
         const slaveTracks = slavePlayer.getVariantTracks();
-        const slaveRenditions = dedupeByHeight(slaveTracks);
+        const slaveRenditions = collectRenditions(slaveTracks);
         setQualitiesA(slaveRenditions);
 
         const masterTracks = masterPlayer.getVariantTracks();
-        const masterRenditions = dedupeByHeight(masterTracks);
+        const masterRenditions = collectRenditions(masterTracks);
         setQualitiesB(masterRenditions);
 
         // Pick initial resolutions
@@ -476,13 +481,15 @@ export default function QualityCompare({
         }
 
         if (pickA) {
-          setSideA(pickA);
-          selectByHeight(slavePlayer, pickA);
+          const rA = slaveRenditions.find((r) => r.height === pickA);
+          setSideA(rA ? `${rA.height}_${rA.bandwidth}` : `${pickA}_0`);
+          selectRendition(slavePlayer, pickA);
         }
 
         if (pickB) {
-          setSideB(pickB);
-          selectByHeight(masterPlayer, pickB);
+          const rB = masterRenditions.find((r) => r.height === pickB);
+          setSideB(rB ? `${rB.height}_${rB.bandwidth}` : `${pickB}_0`);
+          selectRendition(masterPlayer, pickB);
         }
 
         onResolutionChange?.(pickA ?? null, pickB ?? null);
@@ -852,21 +859,25 @@ export default function QualityCompare({
   // ── Rendition selection ──
   const handleSideAChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const height = Number(e.target.value);
-      setSideA(height);
+      const val = e.target.value;
+      const [h, bw] = val.split("_").map(Number);
+      setSideA(val);
       const slave = slavePlayerRef.current;
-      if (slave) selectByHeight(slave, height);
-      onResolutionChange?.(height, sideB);
+      if (slave) selectRendition(slave, h, bw);
+      const sideBHeight = sideB ? Number(sideB.split("_")[0]) : null;
+      onResolutionChange?.(h, sideBHeight);
     },
     [onResolutionChange, sideB],
   );
 
   const handleSideBChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const height = Number(e.target.value);
-      setSideB(height);
-      selectByHeight(masterPlayer, height);
-      onResolutionChange?.(sideA, height);
+      const val = e.target.value;
+      const [h, bw] = val.split("_").map(Number);
+      setSideB(val);
+      selectRendition(masterPlayer, h, bw);
+      const sideAHeight = sideA ? Number(sideA.split("_")[0]) : null;
+      onResolutionChange?.(sideAHeight, h);
     },
     [masterPlayer, onResolutionChange, sideA],
   );
@@ -938,11 +949,14 @@ export default function QualityCompare({
             value={sideA ?? ""}
             onChange={handleSideAChange}
           >
-            {qualitiesA.map((q) => (
-              <option key={q.height} value={q.height}>
-                {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}
-              </option>
-            ))}
+            {qualitiesA.map((q) => {
+              const showBw = qualitiesA.filter((r) => r.height === q.height).length > 1;
+              return (
+                <option key={`${q.height}_${q.bandwidth}`} value={`${q.height}_${q.bandwidth}`}>
+                  {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}{showBw ? ` ${formatBitrate(q.bandwidth)}` : ""}
+                </option>
+              );
+            })}
           </select>
           {isDualManifest && (
             <span className="vp-compare-src-hint" title={slaveSrc} onClick={() => copyUrl(slaveSrc)}>
@@ -961,11 +975,14 @@ export default function QualityCompare({
             value={sideB ?? ""}
             onChange={handleSideBChange}
           >
-            {qualitiesB.map((q) => (
-              <option key={q.height} value={q.height}>
-                {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}
-              </option>
-            ))}
+            {qualitiesB.map((q) => {
+              const showBw = qualitiesB.filter((r) => r.height === q.height).length > 1;
+              return (
+                <option key={`${q.height}_${q.bandwidth}`} value={`${q.height}_${q.bandwidth}`}>
+                  {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}{showBw ? ` ${formatBitrate(q.bandwidth)}` : ""}
+                </option>
+              );
+            })}
           </select>
           <span className="vp-compare-label">B</span>
           <button

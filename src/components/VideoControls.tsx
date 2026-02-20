@@ -26,6 +26,7 @@ import {
   TranslateIcon,
 } from "./icons";
 import { useSegmentExport, type ExportRendition } from "../hooks/useSegmentExport";
+import { formatBitrate } from "../utils/formatBitrate";
 import { useMultiSubtitles, type TextTrackInfo } from "../hooks/useMultiSubtitles";
 import SubtitleOverlay from "./SubtitleOverlay";
 const StatsPanel = lazy(() => import("./StatsPanel"));
@@ -117,6 +118,7 @@ export default function VideoControls({
   // Shaka track state
   const [qualities, setQualities] = useState<QualityOption[]>([]);
   const [activeHeight, setActiveHeight] = useState<number | null>(null);
+  const [activeQualityId, setActiveQualityId] = useState<number | null>(null);
   const [isAutoQuality, setIsAutoQuality] = useState(true);
   const [audioTracks, setAudioTracks] = useState<AudioOption[]>([]);
   const [activeAudioIndex, setActiveAudioIndex] = useState(-1);
@@ -264,13 +266,14 @@ export default function VideoControls({
   const updateTracks = useCallback(() => {
     const variantTracks = player.getVariantTracks();
 
-    // Quality – deduplicate by height, keeping highest bandwidth per height
-    const byHeight = new Map<number, QualityOption>();
+    // Quality – keep all unique (height, bandwidth) pairs so multiple
+    // bitrates at the same resolution each get their own menu item.
+    const seen = new Map<string, QualityOption>();
     for (const t of variantTracks) {
       if (t.height == null) continue;
-      const existing = byHeight.get(t.height);
-      if (!existing || t.bandwidth > existing.bandwidth) {
-        byHeight.set(t.height, {
+      const key = `${t.height}_${t.bandwidth}`;
+      if (!seen.has(key)) {
+        seen.set(key, {
           id: t.id,
           height: t.height,
           bandwidth: t.bandwidth,
@@ -278,11 +281,14 @@ export default function VideoControls({
       }
     }
     setQualities(
-      Array.from(byHeight.values()).sort((a, b) => b.height - a.height)
+      Array.from(seen.values()).sort(
+        (a, b) => b.height - a.height || b.bandwidth - a.bandwidth
+      )
     );
     const activeVariant = variantTracks.find((t) => t.active);
     if (activeVariant?.height != null) {
       setActiveHeight(activeVariant.height);
+      setActiveQualityId(activeVariant.id);
     }
     if (activeVariant?.frameRate != null && activeVariant.frameRate > 0) {
       setDetectedFps(activeVariant.frameRate);
@@ -702,9 +708,16 @@ export default function VideoControls({
     setContextMenu(null);
   };
 
+  const hasMultipleBitratesPerHeight = qualities.some(
+    (q, i) => qualities.findIndex((r) => r.height === q.height) !== i
+  );
   const qualityLabel = isAutoQuality
     ? `Auto${activeHeight ? ` (${activeHeight}p)` : ""}`
-    : activeHeight ? `${activeHeight}p` : "";
+    : activeHeight
+      ? hasMultipleBitratesPerHeight
+        ? `${activeHeight}p ${formatBitrate(qualities.find((q) => q.id === activeQualityId)?.bandwidth ?? 0)}`
+        : `${activeHeight}p`
+      : "";
   const speedLabel = playbackRate === 1 ? "1x" : `${playbackRate}x`;
   const activeAudio = audioTracks[activeAudioIndex];
   const audioLabel = activeAudio
@@ -867,13 +880,16 @@ export default function VideoControls({
                     </div>
                     {qualities.map((q) => (
                       <div
-                        key={q.height}
+                        key={q.id}
                         className={`vp-popup-item${
-                          !isAutoQuality && activeHeight === q.height ? " vp-active" : ""
+                          !isAutoQuality && activeQualityId === q.id ? " vp-active" : ""
                         }`}
                         onClick={() => selectQuality(q)}
                       >
                         {q.height}p
+                        {hasMultipleBitratesPerHeight &&
+                          qualities.filter((r) => r.height === q.height).length > 1 &&
+                          ` ${formatBitrate(q.bandwidth)}`}
                       </div>
                     ))}
                   </div>
@@ -1159,12 +1175,12 @@ export default function VideoControls({
               {(() => {
                 const manifest = player.getManifest();
                 const variants = manifest?.variants ?? [];
-                const byHeight = new Map<number, ExportRendition>();
+                const seen = new Map<string, ExportRendition>();
                 for (const v of variants) {
                   if (!v.video || v.video.height == null) continue;
-                  const existing = byHeight.get(v.video.height);
-                  if (!existing || v.bandwidth > existing.bandwidth) {
-                    byHeight.set(v.video.height, {
+                  const key = `${v.video.height}_${v.bandwidth}`;
+                  if (!seen.has(key)) {
+                    seen.set(key, {
                       width: v.video.width ?? 0,
                       height: v.video.height,
                       videoCodec: v.video.codecs ?? "",
@@ -1172,12 +1188,12 @@ export default function VideoControls({
                     });
                   }
                 }
-                const renditions = Array.from(byHeight.values()).sort(
-                  (a, b) => b.height - a.height,
+                const renditions = Array.from(seen.values()).sort(
+                  (a, b) => b.height - a.height || b.bandwidth - a.bandwidth,
                 );
                 return renditions.map((r) => (
                   <div
-                    key={r.height}
+                    key={`${r.height}_${r.bandwidth}`}
                     className="vp-export-picker-item"
                     onClick={() => {
                       setShowExportPicker(false);
@@ -1188,9 +1204,7 @@ export default function VideoControls({
                     <span className="vp-export-picker-detail">
                       {r.videoCodec}
                       {" · "}
-                      {r.bandwidth >= 1_000_000
-                        ? `${(r.bandwidth / 1_000_000).toFixed(1)} Mbps`
-                        : `${Math.round(r.bandwidth / 1000)} kbps`}
+                      {formatBitrate(r.bandwidth)}
                     </span>
                   </div>
                 ));
