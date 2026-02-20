@@ -2,7 +2,7 @@ import { createFile, MP4BoxBuffer } from "mp4box";
 import type { Sample } from "mp4box";
 import shaka from "shaka-player";
 import { extractInitSegmentUrl } from "./extractInitSegmentUrl";
-import { addCacheBuster } from "./corsProxy";
+import { addCacheBuster, buildProxyUrl, proxyConfigured } from "./corsProxy";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
 export interface FrameInfo {
@@ -113,14 +113,34 @@ function getActiveVideoStream(player: shaka.Player) {
   return null;
 }
 
+/** Origins confirmed to fully block CORS (workaround also failed). */
+const corsBlockedOrigins = new Set<string>();
+
 /**
- * Fetch with CORS retry + cache busting (same strategy as corsProxy.ts).
- * Cross-origin requests get a per-session _cbust param to avoid stale
- * browser-cached ACAO headers. On TypeError (CORS), retries with
- * credentials omitted and cache bypassed.
+ * Fetch with CORS retry + cache busting + proxy fallback (same strategy
+ * as corsProxy.ts). Cross-origin requests get a per-session _cbust param
+ * to avoid stale browser-cached ACAO headers. On TypeError (CORS),
+ * retries with credentials omitted and cache bypassed, then falls back
+ * to the CORS proxy if configured.
  */
 async function fetchSegment(url: string): Promise<ArrayBuffer | null> {
-  const fetchUrl = isCrossOrigin(url) ? addCacheBuster(url) : url;
+  const crossOrigin = isCrossOrigin(url);
+  const fetchUrl = crossOrigin ? addCacheBuster(url) : url;
+
+  // Fast path: known CORS-blocked origin with proxy available
+  if (crossOrigin && proxyConfigured) {
+    try {
+      const origin = new URL(url).origin;
+      if (corsBlockedOrigins.has(origin)) {
+        const resp = await fetch(await buildProxyUrl(url));
+        if (!resp.ok) return null;
+        return resp.arrayBuffer();
+      }
+    } catch {
+      return null;
+    }
+  }
+
   try {
     const resp = await fetch(fetchUrl);
     if (!resp.ok) return null;
@@ -136,6 +156,14 @@ async function fetchSegment(url: string): Promise<ArrayBuffer | null> {
       if (!resp.ok) return null;
       return resp.arrayBuffer();
     } catch {
+      try { corsBlockedOrigins.add(new URL(url).origin); } catch { /* invalid URL */ }
+      if (proxyConfigured) {
+        try {
+          const resp = await fetch(await buildProxyUrl(url));
+          if (!resp.ok) return null;
+          return resp.arrayBuffer();
+        } catch { /* proxy also failed */ }
+      }
       return null;
     }
   }

@@ -4,7 +4,7 @@ declare const __CORS_PROXY_URL__: string;
 declare const __CORS_PROXY_HMAC_KEY__: string;
 
 /** Whether a CORS proxy fallback is configured (build-time constants). */
-const proxyConfigured = Boolean(__CORS_PROXY_URL__ && __CORS_PROXY_HMAC_KEY__);
+export const proxyConfigured = Boolean(__CORS_PROXY_URL__ && __CORS_PROXY_HMAC_KEY__);
 
 /**
  * Origins known to need CORS workaround (credentials: "omit", cache bypass).
@@ -69,7 +69,7 @@ async function computeHmac(message: string, key: string): Promise<string> {
     .join("");
 }
 
-async function buildProxyUrl(targetUrl: string): Promise<string> {
+export async function buildProxyUrl(targetUrl: string): Promise<string> {
   const t = Math.floor(Date.now() / 1000);
   const w = Math.floor(t / 300);
   const sig = await computeHmac(`${w}:${targetUrl}`, __CORS_PROXY_HMAC_KEY__);
