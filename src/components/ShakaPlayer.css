@@ -1435,6 +1435,11 @@ video::-webkit-media-text-track-container {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.vp-compare-src-hint:hover {
+  color: rgba(255, 255, 255, 0.7);
 }
 
 /* ── Compare URL modal ── */

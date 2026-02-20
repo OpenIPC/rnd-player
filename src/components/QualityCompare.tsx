@@ -189,8 +189,18 @@ export default function QualityCompare({
   const [zoomDisplay, setZoomDisplay] = useState(1);
   const [slaveError, setSlaveError] = useState<string | null>(null);
   const errorCloseRef = useRef<HTMLButtonElement>(null);
+  const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
 
   const isDualManifest = slaveSrc !== src;
+
+  const copyUrl = useCallback((url: string) => {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedMsg("URL copied");
+      clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopiedMsg(null), 2000);
+    });
+  }, []);
 
   // ── Native click handler on error close button ──
   // React's onClick fires via event delegation at the root, so stopPropagation
@@ -904,14 +914,14 @@ export default function QualityCompare({
             ))}
           </select>
           {isDualManifest && (
-            <span className="vp-compare-src-hint" title={slaveSrc}>
+            <span className="vp-compare-src-hint" title={slaveSrc} onClick={() => copyUrl(slaveSrc)}>
               {domainLabel(slaveSrc)}
             </span>
           )}
         </div>
         <div className="vp-compare-toolbar-side">
           {isDualManifest && (
-            <span className="vp-compare-src-hint" title={src}>
+            <span className="vp-compare-src-hint" title={src} onClick={() => copyUrl(src)}>
               {domainLabel(src)}
             </span>
           )}
@@ -1013,6 +1023,9 @@ export default function QualityCompare({
           <path d="M12 12l-4 4 4 4M20 12l4 4-4 4" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </div>
+
+      {/* Copied toast */}
+      {copiedMsg && <div className="vp-copied-toast">{copiedMsg}</div>}
     </div>
   );
 }
