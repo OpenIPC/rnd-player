@@ -705,8 +705,10 @@ export default function QualityCompare({
       ) return;
       // Only zoom when paused and slave is ready
       if (!masterVideo.paused || !slaveReady) return;
-      // Ignore if target is toolbar or select
+      // Ignore events outside the compare overlay DOM tree (e.g. portaled modals)
       const target = e.target as HTMLElement;
+      if (!container.contains(target)) return;
+      // Ignore if target is toolbar or select
       if (target.closest(".vp-compare-toolbar") || target.closest("select")) return;
 
       e.preventDefault();
