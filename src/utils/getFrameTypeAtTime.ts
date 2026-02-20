@@ -2,6 +2,7 @@ import { createFile, MP4BoxBuffer } from "mp4box";
 import type { Sample } from "mp4box";
 import shaka from "shaka-player";
 import { extractInitSegmentUrl } from "./extractInitSegmentUrl";
+import { addCacheBuster } from "./corsProxy";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
 interface FrameInfo {
@@ -106,26 +107,38 @@ function getActiveVideoStream(player: shaka.Player) {
 }
 
 /**
- * Fetch with CORS retry (same strategy as corsProxy.ts).
- * First attempt is default; on TypeError (CORS), retries without credentials.
+ * Fetch with CORS retry + cache busting (same strategy as corsProxy.ts).
+ * Cross-origin requests get a per-session _cbust param to avoid stale
+ * browser-cached ACAO headers. On TypeError (CORS), retries with
+ * credentials omitted and cache bypassed.
  */
 async function fetchSegment(url: string): Promise<ArrayBuffer | null> {
+  const fetchUrl = isCrossOrigin(url) ? addCacheBuster(url) : url;
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(fetchUrl);
     if (!resp.ok) return null;
     return resp.arrayBuffer();
   } catch (e) {
     if (!(e instanceof TypeError)) return null;
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch(fetchUrl, {
         credentials: "omit",
         referrerPolicy: "no-referrer",
+        cache: "no-store",
       });
       if (!resp.ok) return null;
       return resp.arrayBuffer();
     } catch {
       return null;
     }
+  }
+}
+
+function isCrossOrigin(url: string): boolean {
+  try {
+    return new URL(url).origin !== window.location.origin;
+  } catch {
+    return false;
   }
 }
 

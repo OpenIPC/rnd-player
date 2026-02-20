@@ -16,7 +16,7 @@ const corsWorkaroundOrigins = new Set<string>();
  */
 const corsSessionId = Math.random().toString(36).slice(2, 10);
 
-function addCacheBuster(url: string): string {
+export function addCacheBuster(url: string): string {
   try {
     const u = new URL(url);
     u.searchParams.set("_cbust", corsSessionId);
