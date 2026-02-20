@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
-import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin } from "../utils/corsProxy";
+import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin, getCorsBlockedOrigin } from "../utils/corsProxy";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
@@ -82,7 +82,12 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
                 : "Media decode error: the video could not be played.",
             );
           } else if (detail.category === 1) {
-            setError("Network error: could not load the video. Check your connection.");
+            const blockedHost = getCorsBlockedOrigin(src);
+            if (blockedHost) {
+              setError(`${blockedHost} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+            } else {
+              setError("Network error: could not load the video. Check your connection.");
+            }
           } else {
             setError(`Playback error (code ${detail.code}): the video could not be played.`);
           }
@@ -115,6 +120,12 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
       // Fetch manifest and extract cenc:default_KID for ClearKey DRM
       const { text: manifestText } = await fetchWithCorsRetry(src);
       if (destroyed) return;
+
+      const corsBlocked = getCorsBlockedOrigin(src);
+      if (corsBlocked) {
+        setError(`${corsBlocked} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+        return;
+      }
 
       let defaultKID: string | null = null;
       if (manifestText) {

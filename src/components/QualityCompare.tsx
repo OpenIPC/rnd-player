@@ -57,7 +57,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
-import { fetchWithCorsRetry } from "../utils/corsProxy";
+import { fetchWithCorsRetry, getCorsBlockedOrigin } from "../utils/corsProxy";
 import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAtTime";
 import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
@@ -345,7 +345,12 @@ export default function QualityCompare({
         );
         if (detail.severity === 2) {
           if (detail.category === 1) {
-            setSlaveError("Compare source: network error loading segments.");
+            const blockedHost = getCorsBlockedOrigin(slaveSrc);
+            if (blockedHost) {
+              setSlaveError(`${blockedHost} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+            } else {
+              setSlaveError("Compare source: network error loading segments.");
+            }
           } else if (detail.category === 6) {
             setSlaveError("Compare source: DRM decryption error.");
           } else {
@@ -369,6 +374,11 @@ export default function QualityCompare({
             const cp = doc.querySelector("[*|default_KID]");
             slaveKid = cp?.getAttribute("cenc:default_KID")?.replaceAll("-", "") ?? undefined;
           } else {
+            const corsBlocked = getCorsBlockedOrigin(slaveSrc);
+            if (corsBlocked) {
+              setSlaveError(`${corsBlocked} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+              return;
+            }
             slaveKid = undefined;
           }
         } catch {
@@ -511,7 +521,12 @@ export default function QualityCompare({
         console.error("QualityCompare: failed to load slave player", e);
         if (e instanceof shaka.util.Error) {
           if (e.category === 1) {
-            setSlaveError("Compare source failed to load: network error.");
+            const blockedHost = getCorsBlockedOrigin(slaveSrc);
+            if (blockedHost) {
+              setSlaveError(`${blockedHost} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+            } else {
+              setSlaveError("Compare source failed to load: network error.");
+            }
           } else if (e.category === 6) {
             setSlaveError("Compare source failed to load: DRM error.");
           } else {

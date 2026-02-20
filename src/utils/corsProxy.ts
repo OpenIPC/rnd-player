@@ -8,6 +8,13 @@ import shaka from "shaka-player";
 const corsWorkaroundOrigins = new Set<string>();
 
 /**
+ * Origins confirmed to fully block CORS (both standard and workaround
+ * fetches failed with TypeError). Used by error handlers to show
+ * specific messaging instead of generic network errors.
+ */
+const corsBlockedOrigins = new Set<string>();
+
+/**
  * Stable per-page-load random value appended as a query param to cross-origin
  * Shaka requests. Prevents the browser from serving stale HTTP-cached
  * responses with wrong Access-Control-Allow-Origin (CDNs that return
@@ -23,6 +30,19 @@ export function addCacheBuster(url: string): string {
     return u.toString();
   } catch {
     return url;
+  }
+}
+
+/**
+ * Check if a URL's origin has been confirmed to fully block CORS.
+ * Returns the hostname for display, or null if not blocked.
+ */
+export function getCorsBlockedOrigin(url: string): string | null {
+  try {
+    const { origin, hostname } = new URL(url);
+    return corsBlockedOrigins.has(origin) ? hostname : null;
+  } catch {
+    return null;
   }
 }
 
@@ -48,6 +68,7 @@ export async function fetchWithCorsRetry(
       });
       return { text: await res.text(), corsWorkaround: true };
     } catch {
+      try { corsBlockedOrigins.add(new URL(url).origin); } catch { /* invalid URL */ }
       return { text: null, corsWorkaround: false };
     }
   }
@@ -110,12 +131,17 @@ export function installCorsSchemePlugin(): void {
 
       if (corsWorkaroundOrigins.has(origin)) {
         // Known CORS-failing origin — use full workaround directly
-        res = await fetch(fetchUri, {
-          ...baseFetchInit,
-          credentials: "omit",
-          referrerPolicy: "no-referrer",
-          cache: "no-store",
-        });
+        try {
+          res = await fetch(fetchUri, {
+            ...baseFetchInit,
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            cache: "no-store",
+          });
+        } catch (e) {
+          corsBlockedOrigins.add(origin);
+          throw e;
+        }
       } else {
         try {
           res = await fetch(fetchUri, baseFetchInit);
@@ -123,12 +149,17 @@ export function installCorsSchemePlugin(): void {
           if (!(e instanceof TypeError)) throw e;
           // CORS failure — remember origin, retry with full workaround
           corsWorkaroundOrigins.add(origin);
-          res = await fetch(fetchUri, {
-            ...baseFetchInit,
-            credentials: "omit",
-            referrerPolicy: "no-referrer",
-            cache: "no-store",
-          });
+          try {
+            res = await fetch(fetchUri, {
+              ...baseFetchInit,
+              credentials: "omit",
+              referrerPolicy: "no-referrer",
+              cache: "no-store",
+            });
+          } catch (e2) {
+            corsBlockedOrigins.add(origin);
+            throw e2;
+          }
         }
       }
 
@@ -183,6 +214,7 @@ export function installCorsSchemePlugin(): void {
  */
 export function uninstallCorsSchemePlugin(): void {
   corsWorkaroundOrigins.clear();
+  corsBlockedOrigins.clear();
   // Must use APPLICATION priority (same as install) because Shaka's
   // registerScheme only replaces if newPriority >= existingPriority.
   const priority = shaka.net.NetworkingEngine.PluginPriority.APPLICATION;
