@@ -1577,15 +1577,32 @@ video::-webkit-media-text-track-container {
 }
 
 .vp-compare-gop-bar {
+  position: relative;
   width: 3px;
   min-height: 2px;
   border-radius: 1px 1px 0 0;
   opacity: 0.6;
+  color: inherit;
 }
+
+.vp-compare-gop-bar.vp-gop-bar-I { color: rgb(255, 50, 50); }
+.vp-compare-gop-bar.vp-gop-bar-P { color: rgb(60, 130, 255); }
+.vp-compare-gop-bar.vp-gop-bar-B { color: rgb(50, 200, 50); }
 
 .vp-compare-gop-active {
   opacity: 1;
-  box-shadow: 0 -2px 0 0 #fff;
+}
+
+.vp-compare-gop-active::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 1px;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid currentColor;
 }
 
 .vp-compare-error {
