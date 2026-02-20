@@ -57,7 +57,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
-import { fetchWithCorsRetry, installCorsSchemePlugin } from "../utils/corsProxy";
+import { fetchWithCorsRetry } from "../utils/corsProxy";
 import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
 
@@ -187,8 +187,26 @@ export default function QualityCompare({
   const [frameInfoA, setFrameInfoA] = useState<{ type: FrameType; size: number } | null>(null);
   const [frameInfoB, setFrameInfoB] = useState<{ type: FrameType; size: number } | null>(null);
   const [zoomDisplay, setZoomDisplay] = useState(1);
+  const [slaveError, setSlaveError] = useState<string | null>(null);
+  const errorCloseRef = useRef<HTMLButtonElement>(null);
 
   const isDualManifest = slaveSrc !== src;
+
+  // ── Native click handler on error close button ──
+  // React's onClick fires via event delegation at the root, so stopPropagation
+  // runs too late — the native click handler on .vp-container has already
+  // toggled play/pause. A native handler on the button itself fires during
+  // bubble phase before reaching .vp-container.
+  useEffect(() => {
+    const btn = errorCloseRef.current;
+    if (!btn) return;
+    const handler = (e: MouseEvent) => {
+      e.stopPropagation();
+      onClose();
+    };
+    btn.addEventListener("click", handler);
+    return () => btn.removeEventListener("click", handler);
+  }, [slaveError, onClose]);
 
   // ── Zoom/pan helpers ──
 
@@ -291,6 +309,25 @@ export default function QualityCompare({
     slavePlayer.attach(slaveVideo).then(async () => {
       if (destroyed) return;
 
+      slavePlayer.addEventListener("error", (event) => {
+        const detail = (event as CustomEvent).detail;
+        console.error(
+          "QualityCompare slave error: severity=%d category=%d code=%d",
+          detail.severity,
+          detail.category,
+          detail.code,
+        );
+        if (detail.severity === 2) {
+          if (detail.category === 1) {
+            setSlaveError("Compare source: network error loading segments.");
+          } else if (detail.category === 6) {
+            setSlaveError("Compare source: DRM decryption error.");
+          } else {
+            setSlaveError(`Compare source error (code ${detail.code}).`);
+          }
+        }
+      });
+
       // Determine DRM credentials for the slave
       let slaveKid = kid;
       let slaveClearKey = clearKey;
@@ -298,16 +335,8 @@ export default function QualityCompare({
       if (isDualManifest) {
         // Fetch slave manifest to detect its KID independently
         try {
-          const { text: slaveManifestText, corsWorkaround: slaveCorsWorkaround } = await fetchWithCorsRetry(slaveSrc);
+          const { text: slaveManifestText } = await fetchWithCorsRetry(slaveSrc);
           if (destroyed) return;
-
-          // If the slave manifest required a CORS workaround (e.g. the CDN
-          // rejects requests with a Referer header from this origin), install
-          // the global CORS scheme plugin so Shaka's network engine also
-          // uses credentials-less, referrer-less fetches for segment requests.
-          if (slaveCorsWorkaround) {
-            installCorsSchemePlugin();
-          }
 
           if (slaveManifestText) {
             const doc = new DOMParser().parseFromString(slaveManifestText, "text/xml");
@@ -318,7 +347,8 @@ export default function QualityCompare({
           }
         } catch {
           if (destroyed) return;
-          slaveKid = undefined;
+          setSlaveError("Failed to load compare manifest. Check the URL or your connection.");
+          return;
         }
 
         if (slaveKid) {
@@ -451,7 +481,19 @@ export default function QualityCompare({
         // LOAD_INTERRUPTED (7000) is expected when effect re-runs or unmounts
         const code = (e as { code?: number }).code;
         if (code === 7000) return;
+        if (destroyed) return;
         console.error("QualityCompare: failed to load slave player", e);
+        if (e instanceof shaka.util.Error) {
+          if (e.category === 1) {
+            setSlaveError("Compare source failed to load: network error.");
+          } else if (e.category === 6) {
+            setSlaveError("Compare source failed to load: DRM error.");
+          } else {
+            setSlaveError(`Compare source failed to load (code ${e.code}).`);
+          }
+        } else {
+          setSlaveError("Compare source failed to load.");
+        }
       }
     });
 
@@ -833,6 +875,16 @@ export default function QualityCompare({
               Decrypt
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Slave load error */}
+      {slaveError && (
+        <div className="vp-compare-error">
+          <div className="vp-compare-error-message">{slaveError}</div>
+          <button ref={errorCloseRef} className="vp-compare-error-close">
+            Close compare
+          </button>
         </div>
       )}
 
