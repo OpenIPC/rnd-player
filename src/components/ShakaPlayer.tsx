@@ -107,13 +107,14 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
             ? savedState.time
             : null;
 
-      // Fetch manifest and extract cenc:default_KID for ClearKey DRM
-      const { text: manifestText, corsWorkaround } = await fetchWithCorsRetry(src);
-      if (destroyed) return;
+      // Install CORS scheme plugin unconditionally — handles stale browser
+      // cache (CDNs returning max-age without Vary: Origin) and credential
+      // rejection on segment CDN origins that differ from the manifest origin.
+      installCorsSchemePlugin();
 
-      if (corsWorkaround) {
-        installCorsSchemePlugin();
-      }
+      // Fetch manifest and extract cenc:default_KID for ClearKey DRM
+      const { text: manifestText } = await fetchWithCorsRetry(src);
+      if (destroyed) return;
 
       let defaultKID: string | null = null;
       if (manifestText) {
