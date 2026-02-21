@@ -9,7 +9,7 @@
  * Pipeline under test (matches the planned real implementation):
  *   1. Two video frames at full resolution (e.g. 1920×1080)
  *   2. Downscale both to 1/4 (e.g. 480×270)
- *   3. Compute SSIM at quarter resolution → get SSIM map + mssim
+ *   3. Compute SSIM at quarter resolution → get SSIM map + mean SSIM
  *   4. Bilinear upscale the SSIM map to full resolution for overlay display
  *   5. Compare against SSIM computed at full resolution (ground truth)
  *
