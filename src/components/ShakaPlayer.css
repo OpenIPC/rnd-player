@@ -1869,3 +1869,60 @@ video::-webkit-media-text-track-container {
   margin-left: auto;
   color: rgba(255, 255, 255, 0.5);
 }
+
+/* ── Adaptation (ABR switch) toast ── */
+.vp-adaptation-toast {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 25;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(10px);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: "SF Mono", "Cascadia Mono", "Roboto Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #fff;
+  animation: vp-adaptation-lifecycle 4.3s ease forwards;
+}
+
+.vp-adaptation-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.vp-adaptation-audio-line {
+  font-size: 11px;
+}
+
+.vp-adaptation-from {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.vp-adaptation-to {
+  color: #fff;
+}
+
+.vp-adaptation-arrow {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 11px;
+}
+
+.vp-adaptation-arrow.vp-up {
+  color: rgb(74, 222, 128);
+}
+
+.vp-adaptation-arrow.vp-down {
+  color: rgb(251, 191, 36);
+}
+
+@keyframes vp-adaptation-lifecycle {
+  0% { opacity: 0; transform: translateX(20px); }
+  4.7% { opacity: 1; transform: translateX(0); }
+  93% { opacity: 1; }
+  100% { opacity: 0; }
+}
