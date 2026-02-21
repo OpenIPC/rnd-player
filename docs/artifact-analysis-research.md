@@ -296,7 +296,12 @@ FilmstripTimeline paint loop (every rAF):
 
 3. ~~**Frame sync for analysis**~~ **Confirmed acceptable:** rAF drift correction keeps videos within 16ms during playback. The diff map tolerates slight desync visually. PSNR readout is only computed when paused (exact frame alignment via `seeked` event).
 
-4. **ssim.js `weber` algorithm accuracy** — fastest mode doesn't match Wang et al. exactly. Is the approximation sufficient for a video player? Prototype with the DASH fixture to measure speed/accuracy delta.
+4. ~~**ssim.js `weber` algorithm accuracy**~~ **Benchmarked** (`src/utils/ssimBenchmark.test.ts`): 75 synthetic comparisons (3 image types × 5 distortion patterns × 5 severities) across all 4 ssim.js algorithms. Key findings:
+   - **`fast` is identical to `original`** (zero error) — same Wang et al. algorithm, just skips downsampling. 4× faster.
+   - **`bezkrovny` is the fastest** (0.20ms mean at 160×90) — 37× faster than `original` (7.4ms). Not `weber` as expected.
+   - **`weber`** (1.66ms mean) is 4.4× faster than `original` but slower than `bezkrovny`.
+   - **Weber vs original accuracy**: mean Δ=0.010, max Δ=0.134. The max error occurs at extreme distortion (gradient + banding @ 0.4 severity). Quality band agreement: 92% (69/75). The 6 disagreements are all at severity 0.4 (heavy degradation) where the distinction between "fair" and "poor" is irrelevant for practical assessment.
+   - **Verdict**: Weber is sufficient for a video player. For the SSIM heatmap feature, `bezkrovny` is the best choice — fastest algorithm with similar accuracy to weber (max Δ=0.153 vs original). At 480×270 (the planned 1/4-resolution path), `bezkrovny` should compute in ~3–12ms — well within the paused-only budget.
 
 5. **Dual-manifest resolution mismatch** — two CDNs may serve different pixel dimensions at the same selected height (e.g., 1920×1080 vs 1920×1088 due to codec alignment). The WebGL shader handles this implicitly (textures stretch to fill the quad), but PSNR values may be slightly affected by interpolation.
 
