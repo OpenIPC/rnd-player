@@ -1165,7 +1165,7 @@ export default function VideoControls({
       {/* ABR adaptation toast — only in Auto quality mode */}
       {isAutoQuality &&
         createPortal(
-          <AdaptationToast player={player} />,
+          <AdaptationToast player={player} videoEl={videoEl} />,
           containerEl
         )}
 

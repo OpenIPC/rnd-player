@@ -42,22 +42,38 @@ function channelLabel(count?: number): string {
   }
 }
 
+/** Seconds of video buffered ahead of the current playback position. */
+function getBufferedAhead(video: HTMLVideoElement): number {
+  const ct = video.currentTime;
+  for (let i = 0; i < video.buffered.length; i++) {
+    // Small epsilon so a currentTime sitting right on a range start isn't missed
+    if (video.buffered.start(i) <= ct + 0.1 && video.buffered.end(i) > ct) {
+      return video.buffered.end(i) - ct;
+    }
+  }
+  return 0;
+}
+
 interface AdaptationToastProps {
   player: shaka.Player;
+  videoEl: HTMLVideoElement;
 }
 
 // Mounted only when isAutoQuality is true (parent gates rendering).
 // Unmounting naturally clears state when the user switches to manual quality.
-export default function AdaptationToast({ player }: AdaptationToastProps) {
+export default function AdaptationToast({ player, videoEl }: AdaptationToastProps) {
   const [toast, setToast] = useState<ToastData | null>(null);
   const [pinned, setPinned] = useState(false);
   const [exiting, setExiting] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
 
   const prevRef = useRef<VariantSnapshot | null>(null);
   const pinnedRef = useRef(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const dismissRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const exitRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
   const keyRef = useRef(0);
 
   const startExit = useCallback(() => {
@@ -67,9 +83,21 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
       setToast(null);
       setExiting(false);
       setPinned(false);
+      setConfirmed(false);
       pinnedRef.current = false;
     }, 300);
   }, []);
+
+  /** Mark the rendition switch as visually active and start the dismiss timer. */
+  const confirmSwitch = useCallback(() => {
+    setConfirmed(true);
+    resizeCleanupRef.current?.();
+    clearTimeout(confirmTimerRef.current);
+    clearTimeout(dismissRef.current);
+    dismissRef.current = setTimeout(() => {
+      if (!pinnedRef.current) startExit();
+    }, 4000);
+  }, [startExit]);
 
   const getActiveVariant = useCallback((): VariantSnapshot | null => {
     const tracks = player.getVariantTracks();
@@ -111,7 +139,6 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
 
         const prev = prevRef.current;
         if (!prev) {
-          // First known variant — just record it
           prevRef.current = now;
           return;
         }
@@ -126,15 +153,47 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
           pinnedRef.current = false;
           setPinned(false);
           setExiting(false);
+          setConfirmed(false);
           setToast({ from: prev, to: now, key: keyRef.current });
 
+          // Clean up previous confirmation state
+          resizeCleanupRef.current?.();
+          clearTimeout(confirmTimerRef.current);
           clearTimeout(dismissRef.current);
           clearTimeout(exitRef.current);
-          dismissRef.current = setTimeout(() => {
-            if (!pinnedRef.current) {
-              startExit();
+
+          const resolutionChanged = prev.height !== now.height;
+          const bufferedAhead = getBufferedAhead(videoEl);
+          const rate = videoEl.playbackRate || 1;
+          const bufferDelay = Math.max(500, (bufferedAhead / rate) * 1000);
+
+          if (resolutionChanged) {
+            // Resolution changed — the exact moment is when videoHeight updates.
+            // Check immediately in case resize already fired during debounce.
+            if (videoEl.videoHeight === now.height) {
+              confirmSwitch();
+            } else {
+              const onResize = () => {
+                if (videoEl.videoHeight === now.height) {
+                  confirmSwitch();
+                }
+              };
+              videoEl.addEventListener("resize", onResize);
+              resizeCleanupRef.current = () => {
+                videoEl.removeEventListener("resize", onResize);
+                resizeCleanupRef.current = null;
+              };
+              // Fallback: buffer-ahead heuristic + 1 s margin
+              confirmTimerRef.current = setTimeout(() => {
+                confirmSwitch();
+              }, bufferDelay + 1000);
             }
-          }, 4000);
+          } else {
+            // Same resolution, bitrate-only change — buffer-ahead heuristic
+            confirmTimerRef.current = setTimeout(() => {
+              confirmSwitch();
+            }, bufferDelay);
+          }
         }
         prevRef.current = now;
       }, 500);
@@ -146,8 +205,10 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
       clearTimeout(debounceRef.current);
       clearTimeout(dismissRef.current);
       clearTimeout(exitRef.current);
+      clearTimeout(confirmTimerRef.current);
+      resizeCleanupRef.current?.();
     };
-  }, [player, getActiveVariant, startExit]);
+  }, [player, videoEl, getActiveVariant, confirmSwitch, startExit]);
 
   const handleMouseEnter = useCallback(() => {
     pinnedRef.current = true;
@@ -158,6 +219,8 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     clearTimeout(dismissRef.current);
+    clearTimeout(confirmTimerRef.current);
+    resizeCleanupRef.current?.();
     startExit();
   }, [startExit]);
 
@@ -191,8 +254,11 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
     return parts.join(" ");
   };
 
+  const pending = !confirmed;
+
   const cls = [
     "vp-adaptation-toast",
+    pending ? "vp-adaptation-pending" : "",
     pinned ? "vp-adaptation-pinned" : "",
     exiting ? "vp-adaptation-exiting" : "",
   ].filter(Boolean).join(" ");
@@ -207,14 +273,16 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
       <div className="vp-adaptation-line">
         <span className="vp-adaptation-from">{fmtVideo(from)}</span>
         <span className={`vp-adaptation-arrow ${isUpgrade ? "vp-up" : "vp-down"}`}>
-          {"\u2192"}
+          {confirmed ? "\u2713" : "\u2192"}
         </span>
         <span className="vp-adaptation-to">{fmtVideo(to)}</span>
       </div>
       {audioChanged && (
         <div className="vp-adaptation-line vp-adaptation-audio-line">
           <span className="vp-adaptation-from">{fmtAudio(from)}</span>
-          <span className="vp-adaptation-arrow">{"\u2192"}</span>
+          <span className="vp-adaptation-arrow">
+            {confirmed ? "\u2713" : "\u2192"}
+          </span>
           <span className="vp-adaptation-to">{fmtAudio(to)}</span>
         </div>
       )}
