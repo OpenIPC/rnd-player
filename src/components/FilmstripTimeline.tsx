@@ -20,6 +20,7 @@ interface FilmstripTimelineProps {
   inPoint?: number | null;
   outPoint?: number | null;
   startOffset?: number;
+  psnrHistory?: React.RefObject<Map<number, number>>;
 }
 
 const RULER_HEIGHT = 22;
@@ -36,6 +37,16 @@ const FRAME_BORDER_B = "rgba(50, 200, 50, 0.8)";
 const GRAPH_MEASURED_COLOR = "rgba(74, 158, 237, 0.6)";
 const GRAPH_ESTIMATED_COLOR = "rgba(74, 158, 237, 0.25)";
 const GRAPH_AVG_COLOR = "rgba(74, 158, 237, 0.5)";
+const PSNR_STRIP_HEIGHT = 8;
+
+/** Map PSNR dB value to a color string using 5-stop gradient matching the shader */
+function psnrColor(dB: number): string {
+  if (dB >= 50) return "rgb(0, 102, 0)";
+  if (dB >= 40) return `rgb(0, ${Math.round(204 - (dB - 40) / 10 * 102)}, 0)`;
+  if (dB >= 30) { const t = (dB - 30) / 10; return `rgb(${Math.round(255 - t * 255)}, ${Math.round(255 * (1 - t) + 204 * t)}, 0)`; }
+  if (dB >= 20) { const t = (dB - 20) / 10; return `rgb(255, ${Math.round(t * 255)}, 0)`; }
+  { const t = Math.max(0, Math.min(1, (dB - 15) / 5)); return `rgb(255, 0, ${Math.round(255 - t * 255)})`; }
+}
 
 export default function FilmstripTimeline({
   videoEl,
@@ -47,6 +58,7 @@ export default function FilmstripTimeline({
   inPoint,
   outPoint,
   startOffset = 0,
+  psnrHistory,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -124,6 +136,8 @@ export default function FilmstripTimeline({
 
   const startOffsetRef = useRef(startOffset);
   startOffsetRef.current = startOffset;
+  const psnrHistoryRef = useRef(psnrHistory);
+  psnrHistoryRef.current = psnrHistory;
 
 
   const saveFrame = useCallback(async () => {
@@ -651,6 +665,34 @@ export default function FilmstripTimeline({
           ctx.font = FONT;
           ctx.textAlign = "center";
         }
+      }
+
+      // ── PSNR strip ──
+      const psnrMap = psnrHistoryRef.current?.current;
+      if (psnrMap && psnrMap.size > 0) {
+        // If bitrate graph is off, we still need a graph area for the strip
+        const stripGraphTop = graphOn
+          ? THUMB_ROW_TOP + thumbH
+          : THUMB_ROW_TOP + thumbH;
+        const stripY = graphOn
+          ? stripGraphTop + GRAPH_HEIGHT - PSNR_STRIP_HEIGHT
+          : stripGraphTop;
+
+        for (const [t, dB] of psnrMap) {
+          const x = t * pxPerSec - sl;
+          if (x < -2 || x > w + 2) continue;
+          ctx.fillStyle = psnrColor(dB);
+          ctx.fillRect(x, stripY, 2, PSNR_STRIP_HEIGHT);
+        }
+
+        // "PSNR" label at top-right of strip area
+        ctx.font = "9px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+        ctx.fillText("PSNR", w - 4, stripY + PSNR_STRIP_HEIGHT - 1);
+        ctx.font = FONT;
+        ctx.textAlign = "center";
       }
 
       // ── In/Out markers ──

@@ -107,6 +107,7 @@ interface QualityCompareProps {
   initialAmp?: number;
   initialPalette?: string;
   viewStateRef?: React.RefObject<CompareViewState | null>;
+  psnrHistoryRef?: React.MutableRefObject<Map<number, number>>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
 }
@@ -230,6 +231,7 @@ export default function QualityCompare({
   initialAmp,
   initialPalette,
   viewStateRef,
+  psnrHistoryRef,
   onResolutionChange,
   onClose,
 }: QualityCompareProps) {
@@ -305,7 +307,7 @@ export default function QualityCompare({
   const [psnrValue, setPsnrValue] = useState<number | null>(null);
 
   // ── Diff renderer (WebGL2 per-pixel difference map) ──
-  useDiffRenderer({
+  const { psnrHistory } = useDiffRenderer({
     canvasRef: diffCanvasRef,
     videoA: slaveVideoRef.current,
     videoB: masterVideo,
@@ -1072,6 +1074,14 @@ export default function QualityCompare({
     if (slaveVideo) {
       slaveVideo.style.visibility = analysisMode === "diff" ? "hidden" : "visible";
     }
+    // Forward PSNR history to parent (ref-based, no re-renders)
+    if (psnrHistoryRef) {
+      if (analysisMode === "diff") {
+        psnrHistoryRef.current = psnrHistory.current;
+      } else {
+        psnrHistoryRef.current = new Map();
+      }
+    }
     // Update viewStateRef when mode/interval/amp/palette changes
     if (viewStateRef && (viewStateRef as React.MutableRefObject<CompareViewState | null>).current) {
       const vs = (viewStateRef as React.MutableRefObject<CompareViewState | null>).current!;
@@ -1080,7 +1090,7 @@ export default function QualityCompare({
       vs.amplification = analysisMode === "diff" && amplification !== 1 ? amplification : undefined;
       vs.palette = analysisMode === "diff" && palette !== "grayscale" ? palette : undefined;
     }
-  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef]);
+  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory]);
 
   // ── Toggle/Flicker mode: alternate slave visibility ──
   useEffect(() => {
@@ -1501,11 +1511,9 @@ export default function QualityCompare({
               >
                 {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : "PSNR"}
               </button>
-              {palette === "psnr" && (
-                <span className="vp-compare-diff-psnr">
-                  {psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014"}
-                </span>
-              )}
+              <span className="vp-compare-diff-psnr">
+                {psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014"}
+              </span>
             </>
           )}
         </div>
