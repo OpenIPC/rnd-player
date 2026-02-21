@@ -8,6 +8,11 @@
  * Rendering is scheduled on `seeked` events when paused, or via a rAF loop when
  * playing. Each frame takes <1ms (GPU-to-GPU texture upload via texImage2D).
  *
+ * CPU-side metrics (PSNR + SSIM) are computed on every frame, both paused and
+ * playing. During playback, an EMA of computation time is tracked; if it exceeds
+ * 4ms (25% of a 16ms frame budget), metrics are disabled for the playback session
+ * to avoid dropping frames on slow machines. They re-enable on the next pause.
+ *
  * GL resources are created lazily when `active` becomes true (canvas must be visible
  * for a valid WebGL2 context), and destroyed when deactivated or on unmount.
  */
@@ -481,11 +486,34 @@ export function useDiffRenderer({
       videoB.addEventListener("seeked", onSeeked);
       return () => videoB.removeEventListener("seeked", onSeeked);
     } else {
-      // Continuous rAF loop during playback (metrics skipped — too expensive at 60fps)
-      onPsnrRef.current?.(null);
-      onSsimRef.current?.(null);
+      // Continuous rAF loop during playback with adaptive metrics.
+      // Metrics (PSNR + SSIM) are computed every frame when fast enough.
+      // An EMA of fireMetrics() cost is tracked; if it exceeds the budget
+      // (25% of a 16ms frame), metrics are disabled for this playback session
+      // to avoid dropping frames on slow machines.
+      let metricsEnabled = true;
+      let metricsSamples = 0;
+      let metricsEma = 0;
+      const METRICS_BUDGET_MS = 4;
+      const EMA_ALPHA = 0.3;
+      const MIN_SAMPLES = 5; // avoid disabling on JIT warmup spikes
+
       let rafId: number;
       const loop = () => {
+        if (metricsEnabled) {
+          const t0 = performance.now();
+          fireMetrics();
+          const elapsed = performance.now() - t0;
+          metricsSamples++;
+          metricsEma = metricsSamples === 1
+            ? elapsed
+            : metricsEma * (1 - EMA_ALPHA) + elapsed * EMA_ALPHA;
+          if (metricsSamples >= MIN_SAMPLES && metricsEma > METRICS_BUDGET_MS) {
+            metricsEnabled = false;
+            onPsnrRef.current?.(null);
+            onSsimRef.current?.(null);
+          }
+        }
         render();
         if (activeRef.current && !pausedRef.current) {
           rafId = requestAnimationFrame(loop);
