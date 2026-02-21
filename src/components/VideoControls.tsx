@@ -451,6 +451,8 @@ export default function VideoControls({
   // ── Click on video area to toggle play/pause ──
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
+      // Only primary (left) button toggles play/pause
+      if (e.button !== 0) return;
       const target = e.target as HTMLElement;
       // Ignore clicks on control bar or popups
       if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop") || target.closest(".vp-adaptation-toast")) return;
