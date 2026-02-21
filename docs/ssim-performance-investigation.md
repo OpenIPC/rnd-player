@@ -6,7 +6,7 @@ Investigate and implement optimizations to the SSIM computation pipeline in `use
 
 ## Current Status
 
-**60 fps, 11% frame budget, video-blended SSIM heatmap.** The SSIM palette now blends the 5-stop heatmap color over the encoded video (video B) so the user sees the actual content with a quality-colored tint. High-quality regions (green) are mostly transparent (15% opacity), low-quality regions (red/magenta) are more opaque (70%) to highlight problem areas. The blend is entirely in the fragment shader — zero additional CPU cost.
+**60 fps, 12% frame budget, video-blended SSIM + MS-SSIM heatmaps.** Five palette modes: grayscale, temperature, PSNR, SSIM, and MS-SSIM. The SSIM and MS-SSIM palettes both blend the 5-stop heatmap color over the encoded video (video B), sharing the same shader branch (palette int 3). High-quality regions (green) are mostly transparent (15% opacity), low-quality regions (red/magenta) are more opaque (70%). MS-SSIM adds ~0.4ms to `fireMetrics()` when active (6.4ms → 6.8ms), still within the adaptive throttle budget.
 
 ## Measured Performance Profile (Apple M4 MacBook Air, Chrome, DevTools closed)
 
@@ -27,20 +27,21 @@ fireMetrics() total wall time:  ~14.4ms per call
 ### After optimization (fused kernel, 120×68, video-blended heatmap)
 
 ```
-fireMetrics() total wall time:  ~6.4ms per call
+fireMetrics() total wall time:  ~6.4ms per call (SSIM) / ~6.8ms (MS-SSIM)
 ├── drawImage(videoA → 120×68):    0.2ms
 ├── drawImage(videoB → 120×68):    0.1ms
 ├── getImageData(A):               5.7ms  (GPU pipeline flush — fixed cost)
 ├── getImageData(B):               0.4ms  (pipeline already flushed, small data)
 ├── PSNR compute:                  0.0ms
 ├── fused SSIM kernel:             0.1ms  (was 0.4ms with ssim.js)
+├── MS-SSIM (when active):        +0.4ms  (3-scale decomposition + combine)
 ├── texImage2D (R8 upload):        0.0ms
 └── total readback:                6.4ms
 
 render() (WebGL2 fragment shader):  0.3ms per frame
 ```
 
-**55% total reduction** (14.4ms → 6.4ms).
+**55% total reduction** (14.4ms → 6.4ms). MS-SSIM adds ~0.4ms when its palette is active.
 
 ### Realtime playback performance
 
@@ -86,7 +87,39 @@ The SSIM heatmap blends over video B with zero additional render cost — the bl
 
 **User benefit**: Previously the SSIM palette showed an opaque green/red screen with no spatial context. Now the user sees the actual video content with a quality-colored overlay, making it easy to identify which regions of the frame have compression artifacts.
 
-### 4. `willReadFrequently: true` — REJECTED
+### 4. MS-SSIM (Multi-Scale SSIM) palette mode — APPLIED
+
+**Change**: Added `"msssim"` palette mode to the diff renderer. MS-SSIM (Wang et al. 2003) computes SSIM at progressively downsampled scales and combines them with empirical weights, producing a better perceptual quality metric than single-scale SSIM.
+
+**Algorithm**: 3-scale decomposition at the 120×68 metrics resolution:
+- Scale 1: 120×68 → 11×7 block grid (same as regular SSIM)
+- Scale 2: 60×34 → 6×4 block grid
+- Scale 3: 30×17 → 3×2 block grid
+
+At each scale, the SSIM formula is split into luminance (l) and contrast-structure (cs) components. The final MS-SSIM value per block is: `l_3^w_3 × Π(cs_j^w_j)` — luminance only from the coarsest scale, contrast-structure from all scales. Standard weights [0.0448, 0.2856, 0.3001] renormalized to 3 scales: [0.071, 0.453, 0.476].
+
+The coarser-scale cs maps are upsampled to the finest 11×7 grid via nearest-neighbor, then combined per-block into a single MS-SSIM map. This map is uploaded to the same R8 texture as regular SSIM — no shader changes needed (both use palette int 3, same 5-stop gradient, same video blend).
+
+**Implementation**: Four new helper functions in `useDiffRenderer.ts`:
+- `toGrayscale()` — RGBA ImageData → Float32Array using BT.601 weights (~0.05ms)
+- `downsampleGray()` — 2× box filter on Float32Array (~0.01ms per call)
+- `computeScaleComponents()` — like `computeSsimMap` but on grayscale arrays, returns separate l and cs Float32Arrays (~0.1ms per scale)
+- `computeMsSsimMap()` — orchestrates the 3-scale pipeline, returns Uint8Array map + mean value
+
+**Performance**: MS-SSIM is only computed when the `"msssim"` palette is active (gated on `palRef.current`). Cost breakdown:
+- `toGrayscale()` ×2: ~0.1ms
+- `downsampleGray()` ×2 calls ×2 images: ~0.04ms
+- `computeScaleComponents()` ×3 scales: ~0.3ms
+- Upsample + combine: ~0.01ms
+- **Total: ~0.4ms** (on top of existing 6.4ms fireMetrics = 6.8ms, 41% of 16.67ms budget)
+
+**Integration points**:
+- `useDiffRenderer`: `onMsSsim` callback, `msSsimHistory` ref (same pattern as SSIM)
+- `QualityCompare`: palette cycles Gray → Temp → PSNR → SSIM → MS-SSIM → Gray; readout shows 4-decimal value
+- `FilmstripTimeline`: MS-SSIM strip rendered above SSIM strip using same `ssimColor()` gradient
+- URL param `?pal=msssim` persists and restores the palette selection
+
+### 5. `willReadFrequently: true` — REJECTED
 
 **Hypothesis**: Setting `willReadFrequently: true` on the 2d canvas context would optimize `getImageData()` by keeping pixel data in CPU RAM.
 
@@ -112,6 +145,7 @@ Four parallel investigation agents were run. All findings are backed by test fil
 | **Fused SSIM kernel** | **4× vs ssim.js** | 0.4→0.1ms | Drop-in | **APPLIED** |
 | **Resolution 120×68** | N/A | **14.4→6.4ms total** | Trivial | **APPLIED** |
 | **Video-blended heatmap** | N/A | **Zero cost** (shader ALU) | Trivial | **APPLIED** |
+| **MS-SSIM palette** | N/A | **+0.4ms** when active | Medium | **APPLIED** |
 | `willReadFrequently: true` | N/A | **3.6× WORSE** | 1 line | **REJECTED** |
 | WASM-ready kernel | 5.0× vs ssim.js | Compute only | Low | Tested, ready |
 | WASM + SIMD (projected) | 10-30× vs ssim.js | Compute only | Medium | Not yet built |

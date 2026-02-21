@@ -22,6 +22,7 @@ interface FilmstripTimelineProps {
   startOffset?: number;
   psnrHistory?: React.RefObject<Map<number, number>>;
   ssimHistory?: React.RefObject<Map<number, number>>;
+  msSsimHistory?: React.RefObject<Map<number, number>>;
 }
 
 const RULER_HEIGHT = 22;
@@ -40,6 +41,7 @@ const GRAPH_ESTIMATED_COLOR = "rgba(74, 158, 237, 0.25)";
 const GRAPH_AVG_COLOR = "rgba(74, 158, 237, 0.5)";
 const PSNR_STRIP_HEIGHT = 8;
 const SSIM_STRIP_HEIGHT = 8;
+const MSSSIM_STRIP_HEIGHT = 8;
 
 /** Map PSNR dB value to a color string using 5-stop gradient matching the shader */
 function psnrColor(dB: number): string {
@@ -71,6 +73,7 @@ export default function FilmstripTimeline({
   startOffset = 0,
   psnrHistory,
   ssimHistory,
+  msSsimHistory,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -152,6 +155,8 @@ export default function FilmstripTimeline({
   psnrHistoryRef.current = psnrHistory;
   const ssimHistoryRef = useRef(ssimHistory);
   ssimHistoryRef.current = ssimHistory;
+  const msSsimHistoryRef = useRef(msSsimHistory);
+  msSsimHistoryRef.current = msSsimHistory;
 
 
   const saveFrame = useCallback(async () => {
@@ -733,6 +738,36 @@ export default function FilmstripTimeline({
         ctx.textBaseline = "bottom";
         ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
         ctx.fillText("SSIM", w - 4, ssimStripY + SSIM_STRIP_HEIGHT - 1);
+        ctx.font = FONT;
+        ctx.textAlign = "center";
+      }
+
+      // ── MS-SSIM strip ──
+      const msSsimMap = msSsimHistoryRef.current?.current;
+      if (msSsimMap && msSsimMap.size > 0) {
+        const psnrMap = psnrHistoryRef.current?.current;
+        const hasPsnr = psnrMap && psnrMap.size > 0;
+        const ssimMap = ssimHistoryRef.current?.current;
+        const hasSsim = ssimMap && ssimMap.size > 0;
+        const stripGraphTop = THUMB_ROW_TOP + thumbH;
+        // Position MS-SSIM strip above SSIM strip (and PSNR strip) when present
+        const msSsimStripY = graphOn
+          ? stripGraphTop + GRAPH_HEIGHT - MSSSIM_STRIP_HEIGHT - (hasPsnr ? PSNR_STRIP_HEIGHT : 0) - (hasSsim ? SSIM_STRIP_HEIGHT : 0)
+          : stripGraphTop + (hasPsnr ? PSNR_STRIP_HEIGHT : 0) + (hasSsim ? SSIM_STRIP_HEIGHT : 0);
+
+        for (const [t, s] of msSsimMap) {
+          const x = t * pxPerSec - sl;
+          if (x < -2 || x > w + 2) continue;
+          ctx.fillStyle = ssimColor(s);
+          ctx.fillRect(x, msSsimStripY, 2, MSSSIM_STRIP_HEIGHT);
+        }
+
+        // "MS-SSIM" label at top-right of strip area
+        ctx.font = "9px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+        ctx.fillText("MS-SSIM", w - 4, msSsimStripY + MSSSIM_STRIP_HEIGHT - 1);
         ctx.font = FONT;
         ctx.textAlign = "center";
       }

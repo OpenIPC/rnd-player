@@ -109,6 +109,7 @@ interface QualityCompareProps {
   viewStateRef?: React.RefObject<CompareViewState | null>;
   psnrHistoryRef?: React.MutableRefObject<Map<number, number>>;
   ssimHistoryRef?: React.MutableRefObject<Map<number, number>>;
+  msSsimHistoryRef?: React.MutableRefObject<Map<number, number>>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
 }
@@ -234,6 +235,7 @@ export default function QualityCompare({
   viewStateRef,
   psnrHistoryRef,
   ssimHistoryRef,
+  msSsimHistoryRef,
   onResolutionChange,
   onClose,
 }: QualityCompareProps) {
@@ -293,7 +295,7 @@ export default function QualityCompare({
     : 500;
   const VALID_AMPS: DiffAmplification[] = [1, 2, 4, 8];
   const initAmp: DiffAmplification = initialAmp && VALID_AMPS.includes(initialAmp as DiffAmplification) ? initialAmp as DiffAmplification : 1;
-  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr", "ssim"];
+  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr", "ssim", "msssim"];
   const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "grayscale";
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
   const [flickerInterval, setFlickerInterval] = useState(initFlicker);
@@ -308,9 +310,10 @@ export default function QualityCompare({
 
   const [psnrValue, setPsnrValue] = useState<number | null>(null);
   const [ssimValue, setSsimValue] = useState<number | null>(null);
+  const [msSsimValue, setMsSsimValue] = useState<number | null>(null);
 
   // ── Diff renderer (WebGL2 per-pixel difference map) ──
-  const { psnrHistory, ssimHistory } = useDiffRenderer({
+  const { psnrHistory, ssimHistory, msSsimHistory } = useDiffRenderer({
     canvasRef: diffCanvasRef,
     videoA: slaveVideoRef.current,
     videoB: masterVideo,
@@ -320,6 +323,7 @@ export default function QualityCompare({
     palette,
     onPsnr: setPsnrValue,
     onSsim: setSsimValue,
+    onMsSsim: setMsSsimValue,
   });
 
   const isDualManifest = slaveSrc !== src;
@@ -1093,6 +1097,13 @@ export default function QualityCompare({
         ssimHistoryRef.current = new Map();
       }
     }
+    if (msSsimHistoryRef) {
+      if (analysisMode === "diff") {
+        msSsimHistoryRef.current = msSsimHistory.current;
+      } else {
+        msSsimHistoryRef.current = new Map();
+      }
+    }
     // Update viewStateRef when mode/interval/amp/palette changes
     if (viewStateRef && (viewStateRef as React.MutableRefObject<CompareViewState | null>).current) {
       const vs = (viewStateRef as React.MutableRefObject<CompareViewState | null>).current!;
@@ -1101,7 +1112,7 @@ export default function QualityCompare({
       vs.amplification = analysisMode === "diff" && amplification !== 1 ? amplification : undefined;
       vs.palette = analysisMode === "diff" && palette !== "grayscale" ? palette : undefined;
     }
-  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory, ssimHistoryRef, ssimHistory]);
+  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory, ssimHistoryRef, ssimHistory, msSsimHistoryRef, msSsimHistory]);
 
   // ── Toggle/Flicker mode: alternate slave visibility ──
   useEffect(() => {
@@ -1520,12 +1531,14 @@ export default function QualityCompare({
                 })}
                 title="Cycle palette"
               >
-                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : "SSIM"}
+                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : palette === "ssim" ? "SSIM" : "MS-SSIM"}
               </button>
               <span className="vp-compare-diff-psnr">
-                {palette === "ssim"
-                  ? (ssimValue != null ? ssimValue.toFixed(4) : "\u2014")
-                  : (psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014")}
+                {palette === "msssim"
+                  ? (msSsimValue != null ? msSsimValue.toFixed(4) : "\u2014")
+                  : palette === "ssim"
+                    ? (ssimValue != null ? ssimValue.toFixed(4) : "\u2014")
+                    : (psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014")}
               </span>
             </>
           )}
