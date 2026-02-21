@@ -1487,6 +1487,19 @@ video::-webkit-media-text-track-container {
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+.vp-compare-diff-psnr {
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(20, 20, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  padding: 2px 6px;
+  min-width: 52px;
+  text-align: center;
+  backdrop-filter: blur(10px);
+}
+
 .vp-compare-select {
   background: rgba(20, 20, 20, 0.85);
   color: #fff;
