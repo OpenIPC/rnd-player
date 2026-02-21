@@ -285,6 +285,9 @@ export function useDiffRenderer({
   const glStateRef = useRef<GlState | null>(null);
   const contextLostRef = useRef(false);
 
+  /** Accumulated PSNR values keyed by time (rounded to 3dp to deduplicate) */
+  const psnrHistory = useRef<Map<number, number>>(new Map());
+
   // Single effect: create GL when active, render, clean up when inactive/unmount.
   // Dependencies include active, paused, videoA, amplification, palette so the
   // render scheduling is refreshed when any of these change.
@@ -367,6 +370,10 @@ export function useDiffRenderer({
       if (!state) return;
       const psnr = computePsnr(videoA, videoB, state.psnrCtxA, state.psnrCtxB);
       onPsnrRef.current(psnr);
+      if (psnr != null) {
+        const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
+        psnrHistory.current.set(roundedTime, psnr);
+      }
     };
 
     if (paused) {
@@ -391,6 +398,13 @@ export function useDiffRenderer({
     }
   }, [active, videoA, videoB, paused, canvasRef, amplification, palette]);
 
+  // Clear PSNR history when diff mode is deactivated
+  useEffect(() => {
+    if (!active) {
+      psnrHistory.current = new Map();
+    }
+  }, [active]);
+
   // Destroy GL resources on unmount
   useEffect(() => {
     return () => {
@@ -400,4 +414,6 @@ export function useDiffRenderer({
       }
     };
   }, []);
+
+  return { psnrHistory };
 }

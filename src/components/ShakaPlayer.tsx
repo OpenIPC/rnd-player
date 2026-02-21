@@ -84,6 +84,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
   const [startOffset, setStartOffset] = useState(0);
+  const psnrHistoryRef = useRef<Map<number, number>>(new Map());
   useEffect(() => {
     if (!polyfillsInstalled) {
       shaka.polyfill.installAll();
@@ -478,6 +479,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
                 initialAmp={compareAmp}
                 initialPalette={comparePal}
                 viewStateRef={compareViewRef}
+                psnrHistoryRef={psnrHistoryRef}
                 onResolutionChange={(a, b) => {
                   setCompareHeightA(a);
                   setCompareHeightB(b);
@@ -510,6 +512,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               inPoint={inPoint}
               outPoint={outPoint}
               startOffset={startOffset}
+              psnrHistory={psnrHistoryRef}
             />
           </Suspense>
         )}
