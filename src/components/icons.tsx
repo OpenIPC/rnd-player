@@ -216,3 +216,12 @@ export function PipIcon() {
     </svg>
   );
 }
+
+export function SettingsIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <circle cx="10" cy="10" r="3" />
+      <path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M15.78 4.22l-1.42 1.42M5.64 14.36l-1.42 1.42" strokeLinecap="round" />
+    </svg>
+  );
+}

@@ -62,6 +62,7 @@ import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAt
 import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
 import { formatBitrate } from "../utils/formatBitrate";
+import { loadSettings } from "../hooks/useSettings";
 
 const FRAME_TYPE_COLORS: Record<FrameType, string> = {
   I: "rgb(255, 50, 50)",
@@ -967,7 +968,7 @@ export default function QualityCompare({
             onChange={handleSideAChange}
           >
             {qualitiesA.map((q) => {
-              const showBw = qualitiesA.filter((r) => r.height === q.height).length > 1;
+              const showBw = qualitiesA.filter((r) => r.height === q.height).length > 1 || loadSettings().alwaysShowBitrate;
               return (
                 <option key={`${q.height}_${q.bandwidth}`} value={`${q.height}_${q.bandwidth}`}>
                   {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}{showBw ? ` ${formatBitrate(q.bandwidth)}` : ""}
@@ -993,7 +994,7 @@ export default function QualityCompare({
             onChange={handleSideBChange}
           >
             {qualitiesB.map((q) => {
-              const showBw = qualitiesB.filter((r) => r.height === q.height).length > 1;
+              const showBw = qualitiesB.filter((r) => r.height === q.height).length > 1 || loadSettings().alwaysShowBitrate;
               return (
                 <option key={`${q.height}_${q.bandwidth}`} value={`${q.height}_${q.bandwidth}`}>
                   {q.height}p{q.videoCodec ? ` ${shortCodec(q.videoCodec)}` : ""}{showBw ? ` ${formatBitrate(q.bandwidth)}` : ""}

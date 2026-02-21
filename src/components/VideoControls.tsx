@@ -13,6 +13,7 @@ import {
   AudioIcon,
   SubtitleIcon,
   PipIcon,
+  SettingsIcon,
   CopyLinkIcon,
   StatsNerdIcon,
   AudioLevelsIcon,
@@ -31,10 +32,12 @@ import { useMultiSubtitles, type TextTrackInfo } from "../hooks/useMultiSubtitle
 import SubtitleOverlay from "./SubtitleOverlay";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
+const SettingsModal = lazy(() => import("./SettingsModal"));
 import AdaptationToast from "./AdaptationToast";
 import { formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { loadSettings } from "../hooks/useSettings";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -140,6 +143,7 @@ export default function VideoControls({
   const [subtitleResetSignal, setSubtitleResetSignal] = useState(0);
   const [translateSetupSignal, setTranslateSetupSignal] = useState(0);
   const [showHelp, setShowHelp] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -715,10 +719,12 @@ export default function VideoControls({
   const hasMultipleBitratesPerHeight = qualities.some(
     (q, i) => qualities.findIndex((r) => r.height === q.height) !== i
   );
+  const alwaysShowBitrate = loadSettings().alwaysShowBitrate;
+  const showBitrate = hasMultipleBitratesPerHeight || alwaysShowBitrate;
   const qualityLabel = isAutoQuality
     ? `Auto${activeHeight ? ` (${activeHeight}p)` : ""}`
     : activeHeight
-      ? hasMultipleBitratesPerHeight
+      ? showBitrate
         ? `${activeHeight}p ${formatBitrate(qualities.find((q) => q.id === activeQualityId)?.bandwidth ?? 0)}`
         : `${activeHeight}p`
       : "";
@@ -891,8 +897,9 @@ export default function VideoControls({
                         onClick={() => selectQuality(q)}
                       >
                         {q.height}p
-                        {hasMultipleBitratesPerHeight &&
-                          qualities.filter((r) => r.height === q.height).length > 1 &&
+                        {(alwaysShowBitrate ||
+                          (hasMultipleBitratesPerHeight &&
+                            qualities.filter((r) => r.height === q.height).length > 1)) &&
                           ` ${formatBitrate(q.bandwidth)}`}
                       </div>
                     ))}
@@ -1015,6 +1022,10 @@ export default function VideoControls({
 
             <button className="vp-btn" onClick={togglePip}>
               <PipIcon />
+            </button>
+
+            <button className="vp-btn" onClick={() => setShowSettings(true)} title="Settings">
+              <SettingsIcon />
             </button>
 
             <button className="vp-btn" onClick={toggleFullscreen}>
@@ -1324,6 +1335,13 @@ export default function VideoControls({
           </div>
         </div>,
         document.body
+      )}
+
+      {/* Settings modal — portaled to body */}
+      {showSettings && (
+        <Suspense fallback={null}>
+          <SettingsModal onClose={() => setShowSettings(false)} />
+        </Suspense>
       )}
     </div>
   );
