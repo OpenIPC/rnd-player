@@ -31,6 +31,24 @@ interface ShakaPlayerProps {
 
 let polyfillsInstalled = false;
 
+function describeLoadError(e: shaka.util.Error): string {
+  // BAD_HTTP_STATUS (1001): data = [uri, httpStatus, responseText, headers, requestType]
+  if (e.code === 1001 && e.data?.[1]) {
+    const httpStatus = e.data[1] as number;
+    if (httpStatus === 410) {
+      return "The video stream has expired (HTTP 410 Gone). Try obtaining a fresh CDN link.";
+    }
+    if (httpStatus === 403) {
+      return "Access denied (HTTP 403). The stream URL may have expired or require authentication.";
+    }
+    if (httpStatus === 404) {
+      return "Video not found (HTTP 404). The stream may have been removed.";
+    }
+    return `Failed to load video (HTTP ${httpStatus}). Check the stream URL.`;
+  }
+  return `Failed to load video (code ${e.code}).`;
+}
+
 function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -97,20 +115,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
             const blockedHost = getCorsBlockedOrigin(src);
             if (blockedHost) {
               setError(`${blockedHost} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
-            } else if (detail.code === 1001 && detail.data?.[1]) {
-              // BAD_HTTP_STATUS: data[0]=uri, data[1]=httpStatus
-              const httpStatus = detail.data[1] as number;
-              if (httpStatus === 410) {
-                setError("The video stream has expired (HTTP 410 Gone). Try obtaining a fresh CDN link.");
-              } else if (httpStatus === 403) {
-                setError("Access denied (HTTP 403). The stream URL may have expired or require authentication.");
-              } else if (httpStatus === 404) {
-                setError("Video not found (HTTP 404). The stream may have been removed.");
-              } else {
-                setError(`Failed to load video (HTTP ${httpStatus}). Check the stream URL.`);
-              }
             } else {
-              setError("Network error: could not load the video. Check your connection.");
+              setError(describeLoadError(detail));
             }
           } else {
             setError(`Playback error (code ${detail.code}): the video could not be played.`);
@@ -242,8 +248,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
         }
 
         if (e instanceof shaka.util.Error) {
-          console.error("Error loading manifest:", e.code, e.message);
-          setError(`Failed to load video (code ${e.code}).`);
+          console.error("Error loading manifest:", e.code, e.message, "data=", e.data);
+          setError(describeLoadError(e));
         } else {
           setError("Failed to load video.");
         }
@@ -296,8 +302,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
       }
     } catch (e: unknown) {
       if (e instanceof shaka.util.Error) {
-        console.error("Error loading manifest:", e.code, e.message);
-        setError(`Failed to load video (code ${e.code}).`);
+        console.error("Error loading manifest:", e.code, e.message, "data=", e.data);
+        setError(describeLoadError(e));
       } else {
         setError("Failed to load video.");
       }
