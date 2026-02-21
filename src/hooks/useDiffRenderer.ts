@@ -2,8 +2,10 @@
  * useDiffRenderer — WebGL2-based per-pixel difference map between two video elements.
  *
  * Renders `abs(A - B) * amplify` with a selectable palette (grayscale, temperature,
- * PSNR-clip) onto a canvas overlay. The fragment shader normalizes the RGB difference
- * by sqrt(3) so the result is 0..1, then applies amplification and palette mapping.
+ * PSNR, SSIM) onto a canvas overlay. The fragment shader normalizes the RGB
+ * difference by sqrt(3) so the result is 0..1, then applies amplification and
+ * palette mapping. The SSIM palette blends the heatmap over video B so the user
+ * sees the actual content with a quality-colored tint.
  *
  * Rendering is scheduled on `seeked` events when paused, or via a rAF loop when
  * playing. Each frame takes <1ms (GPU-to-GPU texture upload via texImage2D).
@@ -82,25 +84,30 @@ const FRAG_SRC = [
 "      color = mix(vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), t);",
 "    }",
 "  } else if (u_palette == 3) {",
-// SSIM heatmap: sample from precomputed R8 SSIM map, apply 5-stop gradient
-// GPU bilinear sampling upscales the small SSIM map (≈150×80) to full resolution
+// SSIM heatmap blended over video B: heatmap color overlaid on the encoded video
+// so the user sees the actual content with quality-colored tint.
+// High SSIM (green) = mostly transparent, low SSIM (red/magenta) = more opaque.
 "    float s = texture(u_texSsim, v_texCoord).r;",
-// 5 stops: ≥0.99 dark green, 0.95-0.99 green, 0.85-0.95 yellow, 0.70-0.85 red, ≤0.50 magenta
+"    vec3 heatColor;",
 "    if (s >= 0.99) {",
-"      color = vec3(0.0, 0.4, 0.0);",
+"      heatColor = vec3(0.0, 0.4, 0.0);",
 "    } else if (s >= 0.95) {",
 "      float t = (s - 0.95) / 0.04;",
-"      color = mix(vec3(0.0, 0.8, 0.0), vec3(0.0, 0.4, 0.0), t);",
+"      heatColor = mix(vec3(0.0, 0.8, 0.0), vec3(0.0, 0.4, 0.0), t);",
 "    } else if (s >= 0.85) {",
 "      float t = (s - 0.85) / 0.10;",
-"      color = mix(vec3(1.0, 1.0, 0.0), vec3(0.0, 0.8, 0.0), t);",
+"      heatColor = mix(vec3(1.0, 1.0, 0.0), vec3(0.0, 0.8, 0.0), t);",
 "    } else if (s >= 0.70) {",
 "      float t = (s - 0.70) / 0.15;",
-"      color = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), t);",
+"      heatColor = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), t);",
 "    } else {",
 "      float t = clamp((s - 0.50) / 0.20, 0.0, 1.0);",
-"      color = mix(vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), t);",
+"      heatColor = mix(vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), t);",
 "    }",
+// Blend: opacity ramps from 0.15 (high quality) to 0.7 (low quality)
+// so good regions show mostly video, bad regions show mostly heatmap
+"    float opacity = mix(0.7, 0.15, clamp((s - 0.50) / 0.49, 0.0, 1.0));",
+"    color = mix(colB, heatColor, opacity);",
 "  } else {",
 "    color = vec3(val);",
 "  }",
@@ -470,13 +477,6 @@ export function useDiffRenderer({
       gl.bindVertexArray(null);
     };
 
-    // Benchmark logging: collect samples and log every Nth call
-    let benchSamples: Array<{
-      drawA: number; drawB: number; getDataA: number; getDataB: number;
-      psnr: number; ssimCompute: number; ssimQuantize: number; texUpload: number; total: number;
-    }> = [];
-    const BENCH_LOG_INTERVAL = 20;
-
     /** Draw both videos to offscreen canvases once, compute PSNR + SSIM, upload SSIM texture */
     const fireMetrics = () => {
       if (!videoA || !videoB || !state) return;
@@ -486,25 +486,11 @@ export function useDiffRenderer({
       let dataA: ImageData;
       let dataB: ImageData;
 
-      const tTotal = performance.now();
-
-      let tDrawA: number, tDrawB: number, tGetDataA: number, tGetDataB: number;
       try {
-        const t0 = performance.now();
         metricsCtxA.drawImage(videoA, 0, 0, w, h);
-        tDrawA = performance.now() - t0;
-
-        const t1 = performance.now();
         metricsCtxB.drawImage(videoB, 0, 0, w, h);
-        tDrawB = performance.now() - t1;
-
-        const t2 = performance.now();
         dataA = metricsCtxA.getImageData(0, 0, w, h);
-        tGetDataA = performance.now() - t2;
-
-        const t3 = performance.now();
         dataB = metricsCtxB.getImageData(0, 0, w, h);
-        tGetDataB = performance.now() - t3;
       } catch {
         onPsnrRef.current?.(null);
         onSsimRef.current?.(null);
@@ -512,9 +498,7 @@ export function useDiffRenderer({
       }
 
       // PSNR
-      const tPsnr0 = performance.now();
       const psnr = computePsnrFromData(dataA, dataB);
-      const tPsnrElapsed = performance.now() - tPsnr0;
       onPsnrRef.current?.(psnr);
       if (psnr != null) {
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
@@ -522,19 +506,13 @@ export function useDiffRenderer({
       }
 
       // SSIM
-      const tSsim0 = performance.now();
       const ssimResult = computeSsimMap(dataA, dataB);
-      const tSsimCompute = performance.now() - tSsim0;
-
-      let tSsimQuantize = 0;
-      let tTexUpload = 0;
       if (ssimResult) {
         onSsimRef.current?.(ssimResult.meanSsim);
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
         ssimHistory.current.set(roundedTime, ssimResult.meanSsim);
 
         // Upload SSIM map as R8 texture
-        const tUpload0 = performance.now();
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, texSsim);
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -544,51 +522,8 @@ export function useDiffRenderer({
           gl.RED, gl.UNSIGNED_BYTE, ssimResult.mapBytes,
         );
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-        tTexUpload = performance.now() - tUpload0;
       } else {
         onSsimRef.current?.(null);
-      }
-
-      const totalElapsed = performance.now() - tTotal;
-
-      // Collect benchmark sample
-      benchSamples.push({
-        drawA: tDrawA!, drawB: tDrawB!, getDataA: tGetDataA!, getDataB: tGetDataB!,
-        psnr: tPsnrElapsed, ssimCompute: tSsimCompute, ssimQuantize: tSsimQuantize,
-        texUpload: tTexUpload, total: totalElapsed,
-      });
-
-      if (benchSamples.length >= BENCH_LOG_INTERVAL) {
-        const median = (arr: number[]) => {
-          const s = [...arr].sort((a, b) => a - b);
-          return s[Math.floor(s.length / 2)];
-        };
-        const fmt = (v: number) => v.toFixed(3);
-        const n = benchSamples.length;
-        const stats = {
-          drawA: median(benchSamples.map(s => s.drawA)),
-          drawB: median(benchSamples.map(s => s.drawB)),
-          getDataA: median(benchSamples.map(s => s.getDataA)),
-          getDataB: median(benchSamples.map(s => s.getDataB)),
-          psnr: median(benchSamples.map(s => s.psnr)),
-          ssimCompute: median(benchSamples.map(s => s.ssimCompute)),
-          texUpload: median(benchSamples.map(s => s.texUpload)),
-          total: median(benchSamples.map(s => s.total)),
-        };
-        const readback = stats.drawA + stats.drawB + stats.getDataA + stats.getDataB;
-        console.log(
-          `[fireMetrics] ${n} samples, median ms:\n` +
-          `  drawImage A:    ${fmt(stats.drawA)}\n` +
-          `  drawImage B:    ${fmt(stats.drawB)}\n` +
-          `  getImageData A: ${fmt(stats.getDataA)}\n` +
-          `  getImageData B: ${fmt(stats.getDataB)}\n` +
-          `  ── readback:    ${fmt(readback)}\n` +
-          `  PSNR compute:   ${fmt(stats.psnr)}\n` +
-          `  SSIM compute:   ${fmt(stats.ssimCompute)}\n` +
-          `  texImage2D:     ${fmt(stats.texUpload)}\n` +
-          `  ── TOTAL:       ${fmt(stats.total)}`,
-        );
-        benchSamples = [];
       }
     };
 
@@ -626,7 +561,6 @@ export function useDiffRenderer({
           metricsEma = metricsSamples === 1
             ? elapsed
             : metricsEma * (1 - EMA_ALPHA) + elapsed * EMA_ALPHA;
-          // Adjust skip interval: run often enough to stay within budget
           skipInterval = Math.max(1, Math.ceil(metricsEma / TARGET_PER_FRAME_MS));
         }
         render();

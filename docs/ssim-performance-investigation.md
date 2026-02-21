@@ -2,7 +2,11 @@
 
 ## Objective
 
-Investigate and implement optimizations to the SSIM computation pipeline in `useDiffRenderer.ts`. The current implementation uses the `ssim.js` library (bezkrovny algorithm) and spends ~14ms per frame on Apple M4, forcing adaptive frame-skip to maintain smooth playback. Goal: reduce total `fireMetrics()` cost so the heatmap updates every frame at 30fps (budget: ~2ms total).
+Investigate and implement optimizations to the SSIM computation pipeline in `useDiffRenderer.ts`. The original implementation used the `ssim.js` library (bezkrovny algorithm) and spent ~14ms per frame on Apple M4, forcing adaptive frame-skip to maintain smooth playback. Goal: reduce total `fireMetrics()` cost so the heatmap updates every frame at 30fps (budget: ~2ms total).
+
+## Current Status
+
+**60 fps, 11% frame budget, video-blended SSIM heatmap.** The SSIM palette now blends the 5-stop heatmap color over the encoded video (video B) so the user sees the actual content with a quality-colored tint. High-quality regions (green) are mostly transparent (15% opacity), low-quality regions (red/magenta) are more opaque (70%) to highlight problem areas. The blend is entirely in the fragment shader — zero additional CPU cost.
 
 ## Measured Performance Profile (Apple M4 MacBook Air, Chrome, DevTools closed)
 
@@ -20,21 +24,35 @@ fireMetrics() total wall time:  ~14.4ms per call
 └── total readback:               14.1ms
 ```
 
-### After optimization (fused kernel, 120×68)
+### After optimization (fused kernel, 120×68, video-blended heatmap)
 
 ```
-fireMetrics() total wall time:  ~6.5ms per call
+fireMetrics() total wall time:  ~6.4ms per call
 ├── drawImage(videoA → 120×68):    0.2ms
 ├── drawImage(videoB → 120×68):    0.1ms
-├── getImageData(A):               5.8ms  (GPU pipeline flush — fixed cost)
+├── getImageData(A):               5.7ms  (GPU pipeline flush — fixed cost)
 ├── getImageData(B):               0.4ms  (pipeline already flushed, small data)
 ├── PSNR compute:                  0.0ms
 ├── fused SSIM kernel:             0.1ms  (was 0.4ms with ssim.js)
 ├── texImage2D (R8 upload):        0.0ms
-└── total readback:                6.5ms
+└── total readback:                6.4ms
+
+render() (WebGL2 fragment shader):  0.3ms per frame
 ```
 
-**55% total reduction** (14.4ms → 6.5ms).
+**55% total reduction** (14.4ms → 6.4ms).
+
+### Realtime playback performance
+
+```
+60 fps, 180 frames / 3s
+├── render():        0.26ms avg  (WebGL2 diff shader + SSIM blend)
+├── fireMetrics():   6.45ms avg, ~16 calls/s (adaptive skip=3)
+├── total frame:     1.94ms avg
+└── budget used:     11.7% of 16.67ms
+```
+
+The SSIM heatmap blends over video B with zero additional render cost — the blend is a few ALU ops in the existing fragment shader. The adaptive throttle runs metrics ~16×/s (every 3rd-4th frame), keeping total frame JS cost under 2ms.
 
 ---
 
@@ -58,7 +76,17 @@ fireMetrics() total wall time:  ~6.5ms per call
 
 **Key discovery — GPU pipeline flush dominates**: The first `getImageData` call pays a ~5.8ms fixed GPU sync cost regardless of pixel count. The second call is nearly free (0.4ms) because the pipeline is already flushed. This explains why resolution reduction helped dramatically for the second call (7.6ms → 0.4ms) but barely affected the first (6.1ms → 5.8ms). Further resolution reduction will yield diminishing returns.
 
-### 3. `willReadFrequently: true` — REJECTED
+### 3. Video-blended SSIM heatmap — APPLIED
+
+**Change**: SSIM palette now blends the heatmap color over video B (the encoded stream) instead of replacing the video entirely.
+
+**Technique**: In the fragment shader, the 5-stop gradient color is computed into `heatColor`, then blended with `colB` using `mix(colB, heatColor, opacity)`. Opacity scales inversely with quality: SSIM ≥ 0.99 → 15% tint (video shows through clearly), SSIM ≤ 0.50 → 70% tint (heatmap dominates to highlight problem areas).
+
+**Measured impact**: Zero — render() stayed at 0.26ms (was 0.32ms, within noise). The blend is a few extra ALU ops in the existing fragment shader, no additional textures or CPU work.
+
+**User benefit**: Previously the SSIM palette showed an opaque green/red screen with no spatial context. Now the user sees the actual video content with a quality-colored overlay, making it easy to identify which regions of the frame have compression artifacts.
+
+### 4. `willReadFrequently: true` — REJECTED
 
 **Hypothesis**: Setting `willReadFrequently: true` on the 2d canvas context would optimize `getImageData()` by keeping pixel data in CPU RAM.
 
@@ -82,7 +110,8 @@ Four parallel investigation agents were run. All findings are backed by test fil
 | Approach | Compute Speedup | Main-thread Savings | Effort | Status |
 |----------|----------------|---------------------|--------|--------|
 | **Fused SSIM kernel** | **4× vs ssim.js** | 0.4→0.1ms | Drop-in | **APPLIED** |
-| **Resolution 120×68** | N/A | **14.4→6.5ms total** | Trivial | **APPLIED** |
+| **Resolution 120×68** | N/A | **14.4→6.4ms total** | Trivial | **APPLIED** |
+| **Video-blended heatmap** | N/A | **Zero cost** (shader ALU) | Trivial | **APPLIED** |
 | `willReadFrequently: true` | N/A | **3.6× WORSE** | 1 line | **REJECTED** |
 | WASM-ready kernel | 5.0× vs ssim.js | Compute only | Low | Tested, ready |
 | WASM + SIMD (projected) | 10-30× vs ssim.js | Compute only | Medium | Not yet built |
