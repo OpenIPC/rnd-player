@@ -21,7 +21,7 @@
  */
 import { useEffect, useRef } from "react";
 
-export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim";
+export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim" | "msssim";
 export type DiffAmplification = 1 | 2 | 4 | 8;
 
 /* eslint-disable @stylistic/indent */
@@ -127,6 +127,7 @@ interface UseDiffRendererParams {
   palette: DiffPalette;
   onPsnr?: (psnr: number | null) => void;
   onSsim?: (ssim: number | null) => void;
+  onMsSsim?: (msSsim: number | null) => void;
 }
 
 interface GlState {
@@ -280,6 +281,7 @@ function paletteInt(p: DiffPalette): number {
   if (p === "temperature") return 1;
   if (p === "psnr") return 2;
   if (p === "ssim") return 3;
+  if (p === "msssim") return 3; // same shader branch as SSIM
   return 0;
 }
 
@@ -306,6 +308,143 @@ function computePsnrFromData(dataA: ImageData, dataB: ImageData): number | null 
 const SSIM_C1 = (0.01 * 255) * (0.01 * 255); // 6.5025
 const SSIM_C2 = (0.03 * 255) * (0.03 * 255); // 58.5225
 const SSIM_WINDOW = 11;
+
+/** Convert RGBA ImageData to Float32Array grayscale using BT.601 weights */
+function toGrayscale(data: ImageData): Float32Array {
+  const { width, height, data: rgba } = data;
+  const gray = new Float32Array(width * height);
+  for (let i = 0, j = 0; i < rgba.length; i += 4, j++) {
+    gray[j] = (77 * rgba[i] + 150 * rgba[i + 1] + 29 * rgba[i + 2] + 128) >> 8;
+  }
+  return gray;
+}
+
+/** 2x box-filter downsample on Float32Array grayscale */
+function downsampleGray(src: Float32Array, w: number, h: number): { data: Float32Array; width: number; height: number } {
+  const dw = Math.floor(w / 2);
+  const dh = Math.floor(h / 2);
+  const dst = new Float32Array(dw * dh);
+  for (let y = 0; y < dh; y++) {
+    for (let x = 0; x < dw; x++) {
+      const sx = x * 2;
+      const sy = y * 2;
+      dst[y * dw + x] = (
+        src[sy * w + sx] + src[sy * w + sx + 1] +
+        src[(sy + 1) * w + sx] + src[(sy + 1) * w + sx + 1]
+      ) * 0.25;
+    }
+  }
+  return { data: dst, width: dw, height: dh };
+}
+
+/** Compute per-block luminance (l) and contrast-structure (cs) components from grayscale arrays */
+function computeScaleComponents(
+  grayA: Float32Array, grayB: Float32Array, w: number, h: number,
+): { l: Float32Array; cs: Float32Array; mapW: number; mapH: number } {
+  const mapW = Math.ceil(w / SSIM_WINDOW);
+  const mapH = Math.ceil(h / SSIM_WINDOW);
+  const size = mapW * mapH;
+  const l = new Float32Array(size);
+  const cs = new Float32Array(size);
+  let idx = 0;
+
+  for (let by = 0; by < h; by += SSIM_WINDOW) {
+    for (let bx = 0; bx < w; bx += SSIM_WINDOW) {
+      const ww = Math.min(SSIM_WINDOW, w - bx);
+      const wh = Math.min(SSIM_WINDOW, h - by);
+      const n = ww * wh;
+
+      let s1 = 0, s2 = 0, sq1 = 0, sq2 = 0, cross = 0;
+      for (let dy = 0; dy < wh; dy++) {
+        const rowStart = (by + dy) * w + bx;
+        for (let dx = 0; dx < ww; dx++) {
+          const px = rowStart + dx;
+          const g1 = grayA[px];
+          const g2 = grayB[px];
+          s1 += g1; s2 += g2;
+          sq1 += g1 * g1; sq2 += g2 * g2;
+          cross += g1 * g2;
+        }
+      }
+
+      const avg1 = s1 / n;
+      const avg2 = s2 / n;
+      const var1 = sq1 / n - avg1 * avg1;
+      const var2 = sq2 / n - avg2 * avg2;
+      const cov = cross / n - avg1 * avg2;
+
+      l[idx] = (2 * avg1 * avg2 + SSIM_C1) / (avg1 * avg1 + avg2 * avg2 + SSIM_C1);
+      cs[idx] = (2 * cov + SSIM_C2) / (var1 + var2 + SSIM_C2);
+      idx++;
+    }
+  }
+
+  return { l, cs, mapW, mapH };
+}
+
+// MS-SSIM weights (Wang et al. 2003) for 3 scales, renormalized from [0.0448, 0.2856, 0.3001]
+const MSSSIM_WEIGHTS = [0.071, 0.453, 0.476];
+
+/** Compute MS-SSIM map from two ImageData objects at the metrics resolution */
+function computeMsSsimMap(
+  dataA: ImageData, dataB: ImageData,
+): { meanMsSsim: number; mapBytes: Uint8Array; mapWidth: number; mapHeight: number } | null {
+  const { width, height } = dataA;
+
+  // Convert to grayscale
+  let grayA = toGrayscale(dataA);
+  let grayB = toGrayscale(dataB);
+  let w = width;
+  let h = height;
+
+  // Compute components at each scale, then downsample
+  const scales: { l: Float32Array; cs: Float32Array; mapW: number; mapH: number }[] = [];
+  for (let s = 0; s < 3; s++) {
+    scales.push(computeScaleComponents(grayA, grayB, w, h));
+    if (s < 2) {
+      const dA = downsampleGray(grayA, w, h);
+      const dB = downsampleGray(grayB, w, h);
+      grayA = dA.data; grayB = dB.data;
+      w = dA.width; h = dA.height;
+    }
+  }
+
+  // Finest grid (scale 0)
+  const fineW = scales[0].mapW;
+  const fineH = scales[0].mapH;
+  const mapSize = fineW * fineH;
+  const mapBytes = new Uint8Array(mapSize);
+  let totalMsSsim = 0;
+
+  for (let i = 0; i < mapSize; i++) {
+    const fineX = i % fineW;
+    const fineY = Math.floor(i / fineW);
+
+    // Combine: MS-SSIM = l_M^w_M * product(cs_j^w_j)
+    let msSsim = 1;
+    for (let s = 0; s < 3; s++) {
+      const sc = scales[s];
+      // Nearest-neighbor upsample: map fine grid position to this scale's grid
+      const sx = Math.min(sc.mapW - 1, Math.floor(fineX * sc.mapW / fineW));
+      const sy = Math.min(sc.mapH - 1, Math.floor(fineY * sc.mapH / fineH));
+      const si = sy * sc.mapW + sx;
+
+      const csVal = Math.max(0, sc.cs[si]);
+      msSsim *= Math.pow(csVal, MSSSIM_WEIGHTS[s]);
+
+      // At the coarsest scale (M=2), also include luminance
+      if (s === 2) {
+        const lVal = Math.max(0, sc.l[si]);
+        msSsim *= Math.pow(lVal, MSSSIM_WEIGHTS[s]);
+      }
+    }
+
+    totalMsSsim += msSsim;
+    mapBytes[i] = Math.max(0, Math.min(255, Math.round(msSsim * 255)));
+  }
+
+  return { meanMsSsim: totalMsSsim / mapSize, mapBytes, mapWidth: fineW, mapHeight: fineH };
+}
 
 /** Compute SSIM map using fused bezkrovny kernel — inline grayscale, in-place stats, zero intermediate allocations */
 function computeSsimMap(
@@ -372,6 +511,7 @@ export function useDiffRenderer({
   palette,
   onPsnr,
   onSsim,
+  onMsSsim,
 }: UseDiffRendererParams) {
   // Stable refs for rAF render loop access (avoids stale closures)
   const ampRef = useRef(amplification);
@@ -380,12 +520,14 @@ export function useDiffRenderer({
   const activeRef = useRef(active);
   const onPsnrRef = useRef(onPsnr);
   const onSsimRef = useRef(onSsim);
+  const onMsSsimRef = useRef(onMsSsim);
   ampRef.current = amplification;
   palRef.current = palette;
   pausedRef.current = paused;
   activeRef.current = active;
   onPsnrRef.current = onPsnr;
   onSsimRef.current = onSsim;
+  onMsSsimRef.current = onMsSsim;
 
   const glStateRef = useRef<GlState | null>(null);
   const contextLostRef = useRef(false);
@@ -394,6 +536,8 @@ export function useDiffRenderer({
   const psnrHistory = useRef<Map<number, number>>(new Map());
   /** Accumulated SSIM values keyed by time (rounded to 3dp to deduplicate) */
   const ssimHistory = useRef<Map<number, number>>(new Map());
+  /** Accumulated MS-SSIM values keyed by time (rounded to 3dp to deduplicate) */
+  const msSsimHistory = useRef<Map<number, number>>(new Map());
 
   // Single effect: create GL when active, render, clean up when inactive/unmount.
   // Dependencies include active, paused, videoA, amplification, palette so the
@@ -511,19 +655,37 @@ export function useDiffRenderer({
         onSsimRef.current?.(ssimResult.meanSsim);
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
         ssimHistory.current.set(roundedTime, ssimResult.meanSsim);
+      } else {
+        onSsimRef.current?.(null);
+      }
 
-        // Upload SSIM map as R8 texture
+      // MS-SSIM (only when palette is active — ~0.4ms extra cost)
+      let uploadMap: { mapBytes: Uint8Array; mapWidth: number; mapHeight: number } | null = ssimResult;
+      if (palRef.current === "msssim") {
+        const msSsimResult = computeMsSsimMap(dataA, dataB);
+        if (msSsimResult) {
+          onMsSsimRef.current?.(msSsimResult.meanMsSsim);
+          const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
+          msSsimHistory.current.set(roundedTime, msSsimResult.meanMsSsim);
+          uploadMap = msSsimResult;
+        } else {
+          onMsSsimRef.current?.(null);
+        }
+      } else {
+        onMsSsimRef.current?.(null);
+      }
+
+      // Upload heatmap as R8 texture (MS-SSIM map when active, SSIM otherwise)
+      if (uploadMap) {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, texSsim);
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
         gl.texImage2D(
           gl.TEXTURE_2D, 0, gl.R8,
-          ssimResult.mapWidth, ssimResult.mapHeight, 0,
-          gl.RED, gl.UNSIGNED_BYTE, ssimResult.mapBytes,
+          uploadMap.mapWidth, uploadMap.mapHeight, 0,
+          gl.RED, gl.UNSIGNED_BYTE, uploadMap.mapBytes,
         );
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-      } else {
-        onSsimRef.current?.(null);
       }
     };
 
@@ -578,6 +740,7 @@ export function useDiffRenderer({
     if (!active) {
       psnrHistory.current = new Map();
       ssimHistory.current = new Map();
+      msSsimHistory.current = new Map();
     }
   }, [active]);
 
@@ -591,5 +754,5 @@ export function useDiffRenderer({
     };
   }, []);
 
-  return { psnrHistory, ssimHistory };
+  return { psnrHistory, ssimHistory, msSsimHistory };
 }
