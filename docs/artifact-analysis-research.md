@@ -54,8 +54,8 @@ WebGL2 fullscreen-quad shader that uploads both video elements as textures and c
 - Resources destroyed on deactivation or unmount
 
 **Rendering schedule:**
-- **Paused:** render once + on each `seeked` event
-- **Playing:** `requestAnimationFrame` loop (PSNR readout skipped during playback — too expensive at 60fps)
+- **Paused:** render once + on each `seeked` event (metrics always computed)
+- **Playing:** `requestAnimationFrame` loop with adaptive metrics (see section 4)
 
 **Fragment shader — difference normalization:**
 ```glsl
@@ -112,9 +112,9 @@ CPU-side PSNR for the overall frame, computed at reduced resolution to avoid blo
 - `MSE = sumSqDiff / (pixelCount × 3)`
 - `PSNR = -10 × log₁₀(MSE)`, capped at 60 dB for identical frames
 
-**Trigger:** fired on `seeked` event when paused. Skipped during playback (the `onPsnr` callback receives `null`).
+**Trigger:** fired on every frame — on `seeked` when paused, on every rAF when playing (via `fireMetrics()`). During playback, an adaptive circuit breaker monitors computation cost via an exponential moving average (EMA); if the EMA exceeds 4ms (25% of a 16ms frame budget at 60fps) after at least 5 warmup samples, metrics are disabled for the remainder of that playback session. They re-enable automatically when the user pauses. This avoids dropped frames on slow machines while keeping live readout on fast ones.
 
-**Display:** `QualityCompare.tsx` toolbar shows `{psnr.toFixed(1)} dB` or em-dash when null. Visible in all diff palettes (not gated on PSNR palette selection).
+**Display:** `QualityCompare.tsx` toolbar shows `{psnr.toFixed(1)} dB` or em-dash when null (metrics disabled or not yet computed). Visible in all diff palettes (not gated on PSNR palette selection).
 
 ### 5. PSNR History Accumulation & Filmstrip Strip
 
@@ -182,13 +182,13 @@ Samples the small SSIM texture at full-res UV coords. GPU bilinear filtering int
 
 **Metric readout:** toolbar shows `ssim.toFixed(4)` when SSIM palette is active, PSNR dB otherwise.
 
-**Both metrics always computed:** `fireMetrics()` computes PSNR + SSIM on every `seeked` (total <0.5ms at 160×90). Both histories accumulate regardless of active palette.
+**Both metrics always computed:** `fireMetrics()` computes PSNR + SSIM on every frame (total <0.5ms at 160×90). Both histories accumulate regardless of active palette. During playback, the adaptive circuit breaker (see section 4) may disable metrics if the browser is too slow.
 
 **Key design decisions:**
 - **R8 not R32F:** SSIM values 0–1 quantized to 0–255. No float extension needed, `LINEAR` filtering always supported on R8 in WebGL2.
 - **GPU bilinear, no CPU upscale:** The SSIM map from 160×90 input is ≈150×80. Uploading as a small texture with `LINEAR` filter lets the GPU bilinear-upscale for free when sampling at full-res UVs. No CPU upscale code needed.
 - **UNPACK_ALIGNMENT = 1:** WebGL2 defaults to 4-byte row alignment. For R8 textures with non-multiple-of-4 widths (e.g. 150), the default alignment causes row misalignment — the GPU reads padding bytes that aren't there, shifting every row. Setting alignment to 1 fixes this.
-- **Paused-only computation:** Like PSNR, SSIM is only computed on seeked events. During playback, the texture retains the last-computed map; the readout shows a dash.
+- **Adaptive playback metrics:** Metrics are computed on every rAF frame during playback. An EMA tracks `fireMetrics()` cost; if it exceeds 4ms after 5 warmup samples, metrics are disabled for the playback session (readout shows dash, SSIM texture retains last-computed map). Re-enables on pause.
 
 ### 7. SSIM History Accumulation & Filmstrip Strip
 
@@ -295,20 +295,21 @@ FilmstripTimeline.tsx
 **Data flow for difference map (WebGL, during playback):**
 
 ```
-rAF loop:
-  1. gl.texImage2D(TEXTURE0, masterVideo)  -- GPU upload, ~0.1ms
-  2. gl.texImage2D(TEXTURE1, slaveVideo)   -- GPU upload, ~0.1ms
-  3. gl.bindTexture(TEXTURE2, texSsim)     -- bind pre-uploaded SSIM map
-  4. gl.drawArrays(TRIANGLES, 0, 6)        -- fragment shader, <0.5ms
-  5. Browser composites diffCanvas          -- standard compositing
+rAF loop (every frame, paused or playing):
+  1. fireMetrics()                          -- CPU metrics (if enabled)
+  2. gl.texImage2D(TEXTURE0, masterVideo)   -- GPU upload, ~0.1ms
+  3. gl.texImage2D(TEXTURE1, slaveVideo)    -- GPU upload, ~0.1ms
+  4. gl.bindTexture(TEXTURE2, texSsim)      -- bind SSIM map from step 1
+  5. gl.drawArrays(TRIANGLES, 0, 6)         -- fragment shader, <0.5ms
+  6. Browser composites diffCanvas           -- standard compositing
 ```
 
-No pixel readback needed. Total: <1ms per frame. Feasible at 60fps.
+No pixel readback needed. Render: <1ms per frame. Metrics: <0.5ms per frame.
 
-**Data flow for metrics (CPU, on seeked):**
+**Data flow for metrics (CPU, every frame):**
 
 ```
-seeked event (fireMetrics):
+fireMetrics():
   1. drawImage(videoA, 0, 0, 160, 90)      -- offscreen canvas A
   2. drawImage(videoB, 0, 0, 160, 90)      -- offscreen canvas B
   3. getImageData() for both                -- ~0.1ms at 160×90
@@ -318,6 +319,12 @@ seeked event (fireMetrics):
   7. gl.texImage2D(R8, mapW, mapH, bytes)   -- upload SSIM map texture
   8. Store in psnrHistory + ssimHistory      -- keyed by rounded time
   9. Fire onPsnr + onSsim callbacks          -- updates toolbar display
+
+Adaptive throttle (playback only):
+  - EMA of fireMetrics() wall time tracked per frame
+  - If EMA > 4ms after 5 warmup samples → disable for this playback session
+  - Callbacks receive null, SSIM texture retains last map
+  - Re-enables on next pause
 ```
 
 **Data flow for filmstrip metric strips:**
