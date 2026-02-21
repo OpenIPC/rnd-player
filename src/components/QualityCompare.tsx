@@ -858,7 +858,7 @@ export default function QualityCompare({
   const onPanPointerDown = useCallback((e: React.PointerEvent) => {
     // Don't start pan if target is handle or toolbar
     const target = e.target as HTMLElement;
-    if (target.closest(".vp-compare-handle") || target.closest(".vp-compare-toolbar")) return;
+    if (target.closest(".vp-compare-strip") || target.closest(".vp-compare-toolbar")) return;
     panningRef.current = true;
     panStartRef.current = {
       x: e.clientX,
@@ -1140,21 +1140,23 @@ export default function QualityCompare({
         <div className="vp-compare-zoom-label">{zoomDisplay.toFixed(1)}&times;</div>
       )}
 
-      {/* Slider line + handle */}
+      {/* Slider strip: full-height interactive zone with line + handle */}
       <div
-        className="vp-compare-slider"
+        className="vp-compare-strip"
         style={{ left: `${sliderPct}%` }}
-      />
-      <div
-        className="vp-compare-handle"
-        style={{ left: `${sliderPct}%` }}
-        onPointerDown={onPointerDown}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onPointerDown(e);
+        }}
         onClick={(e) => e.stopPropagation()}
       >
-        <svg width="32" height="32" viewBox="0 0 32 32">
-          <circle cx="16" cy="16" r="14" fill="rgba(0,0,0,0.5)" stroke="#fff" strokeWidth="2" />
-          <path d="M12 12l-4 4 4 4M20 12l4 4-4 4" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <div className="vp-compare-slider" />
+        <div className="vp-compare-handle">
+          <svg width="32" height="32" viewBox="0 0 32 32">
+            <circle cx="16" cy="16" r="14" fill="rgba(0,0,0,0.5)" stroke="#fff" strokeWidth="2" />
+            <path d="M12 12l-4 4 4 4M20 12l4 4-4 4" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </div>
       </div>
 
       {/* Copied toast */}
