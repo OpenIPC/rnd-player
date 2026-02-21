@@ -288,7 +288,7 @@ FilmstripTimeline paint loop (every rAF):
 
 ---
 
-## Open Questions
+## Open Questions (all resolved)
 
 1. ~~**WebGL `texImage2D` from EME video** — does it also taint/fail like `canvas.drawImage()`?~~ **Confirmed:** same origin-clean restriction applies. Diff mode works with unencrypted content; encrypted streams would need the WebCodecs decode path.
 
@@ -303,7 +303,7 @@ FilmstripTimeline paint loop (every rAF):
    - **Weber vs original accuracy**: mean Δ=0.010, max Δ=0.134. The max error occurs at extreme distortion (gradient + banding @ 0.4 severity). Quality band agreement: 92% (69/75). The 6 disagreements are all at severity 0.4 (heavy degradation) where the distinction between "fair" and "poor" is irrelevant for practical assessment.
    - **Verdict**: Weber is sufficient for a video player. For the SSIM heatmap feature, `bezkrovny` is the best choice — fastest algorithm with similar accuracy to weber (max Δ=0.153 vs original). At 480×270 (the planned 1/4-resolution path), `bezkrovny` should compute in ~3–12ms — well within the paused-only budget.
 
-5. **Dual-manifest resolution mismatch** — two CDNs may serve different pixel dimensions at the same selected height (e.g., 1920×1080 vs 1920×1088 due to codec alignment). The WebGL shader handles this implicitly (textures stretch to fill the quad), but PSNR values may be slightly affected by interpolation.
+5. ~~**Dual-manifest resolution mismatch**~~ **Not actionable.** Two CDNs may serve different pixel dimensions at the same nominal height (e.g., 1920×1080 vs 1920×1088 due to codec macroblock alignment). The WebGL shader already handles this implicitly (textures stretch to fill the quad). PSNR/SSIM may see a few pixels of interpolation blur at the bottom/right edge from the padding rows — negligible in practice and not worth a benchmark.
 
 6. ~~**SSIM at 1/4 resolution upscale artifacts**~~ **Benchmarked** (`src/utils/ssimUpscale.test.ts`): 15 patterns (3 image types × 5 spatially varying distortions) comparing full-res (320×180) vs downscale-compute-upscale (80×45 → bilinear upscale) pipeline. Key findings:
    - **Structural distortions (blocking, blur) are well-preserved**: mean Δmssim=0.041, map RMSE=0.001–0.30. These are the primary video compression artifacts — the 1/4 res path is accurate for them.
