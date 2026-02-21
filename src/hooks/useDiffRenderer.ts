@@ -8,10 +8,11 @@
  * Rendering is scheduled on `seeked` events when paused, or via a rAF loop when
  * playing. Each frame takes <1ms (GPU-to-GPU texture upload via texImage2D).
  *
- * CPU-side metrics (PSNR + SSIM) are computed on every frame, both paused and
- * playing. During playback, an EMA of computation time is tracked; if it exceeds
- * 4ms (25% of a 16ms frame budget), metrics are disabled for the playback session
- * to avoid dropping frames on slow machines. They re-enable on the next pause.
+ * CPU-side metrics (PSNR + SSIM) are computed every frame when paused, and at
+ * an adaptive rate during playback. An EMA of fireMetrics() cost is tracked;
+ * the skip interval is adjusted so metrics consume at most ~2ms of average
+ * per-frame budget (e.g. 8ms cost → compute every 4th frame). The heatmap
+ * and readout always update, just at a lower rate on slow machines.
  *
  * GL resources are created lazily when `active` becomes true (canvas must be visible
  * for a valid WebGL2 context), and destroyed when deactivated or on unmount.
@@ -486,21 +487,25 @@ export function useDiffRenderer({
       videoB.addEventListener("seeked", onSeeked);
       return () => videoB.removeEventListener("seeked", onSeeked);
     } else {
-      // Continuous rAF loop during playback with adaptive metrics.
-      // Metrics (PSNR + SSIM) are computed every frame when fast enough.
-      // An EMA of fireMetrics() cost is tracked; if it exceeds the budget
-      // (25% of a 16ms frame), metrics are disabled for this playback session
-      // to avoid dropping frames on slow machines.
-      let metricsEnabled = true;
+      // Continuous rAF loop during playback with adaptive metrics throttle.
+      // Metrics (PSNR + SSIM) are computed every Nth frame, where N is
+      // dynamically adjusted based on measured cost. Target: metrics should
+      // consume at most ~2ms of average per-frame budget. If fireMetrics()
+      // takes 8ms, it runs every 4th frame (8/2=4). If it takes 0.5ms, every
+      // frame. The heatmap and readout always update, just at a lower rate
+      // on slow machines.
       let metricsSamples = 0;
       let metricsEma = 0;
-      const METRICS_BUDGET_MS = 4;
-      const EMA_ALPHA = 0.3;
-      const MIN_SAMPLES = 5; // avoid disabling on JIT warmup spikes
+      const TARGET_PER_FRAME_MS = 2;
+      const EMA_ALPHA = 0.2;
+      let skipInterval = 1;
+      let frameCounter = 0;
 
       let rafId: number;
       const loop = () => {
-        if (metricsEnabled) {
+        frameCounter++;
+        if (frameCounter >= skipInterval) {
+          frameCounter = 0;
           const t0 = performance.now();
           fireMetrics();
           const elapsed = performance.now() - t0;
@@ -508,11 +513,8 @@ export function useDiffRenderer({
           metricsEma = metricsSamples === 1
             ? elapsed
             : metricsEma * (1 - EMA_ALPHA) + elapsed * EMA_ALPHA;
-          if (metricsSamples >= MIN_SAMPLES && metricsEma > METRICS_BUDGET_MS) {
-            metricsEnabled = false;
-            onPsnrRef.current?.(null);
-            onSsimRef.current?.(null);
-          }
+          // Adjust skip interval: run often enough to stay within budget
+          skipInterval = Math.max(1, Math.ceil(metricsEma / TARGET_PER_FRAME_MS));
         }
         render();
         if (activeRef.current && !pausedRef.current) {

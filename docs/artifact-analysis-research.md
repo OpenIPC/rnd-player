@@ -112,9 +112,9 @@ CPU-side PSNR for the overall frame, computed at reduced resolution to avoid blo
 - `MSE = sumSqDiff / (pixelCount × 3)`
 - `PSNR = -10 × log₁₀(MSE)`, capped at 60 dB for identical frames
 
-**Trigger:** fired on every frame — on `seeked` when paused, on every rAF when playing (via `fireMetrics()`). During playback, an adaptive circuit breaker monitors computation cost via an exponential moving average (EMA); if the EMA exceeds 4ms (25% of a 16ms frame budget at 60fps) after at least 5 warmup samples, metrics are disabled for the remainder of that playback session. They re-enable automatically when the user pauses. This avoids dropped frames on slow machines while keeping live readout on fast ones.
+**Trigger:** fired on every frame — on `seeked` when paused, at an adaptive rate during playback (via `fireMetrics()`). During playback, an EMA of `fireMetrics()` wall time is tracked and the skip interval is adjusted so metrics consume at most ~2ms of average per-frame budget. For example, if `fireMetrics()` takes 8ms (dominated by `drawImage` + `getImageData` GPU→CPU readback), it runs every 4th frame (~15fps metrics updates). On fast machines where metrics take <2ms, it runs every frame. The heatmap and readout always update — they never fully disable.
 
-**Display:** `QualityCompare.tsx` toolbar shows `{psnr.toFixed(1)} dB` or em-dash when null (metrics disabled or not yet computed). Visible in all diff palettes (not gated on PSNR palette selection).
+**Display:** `QualityCompare.tsx` toolbar shows `{psnr.toFixed(1)} dB` or em-dash when null. Visible in all diff palettes (not gated on PSNR palette selection).
 
 ### 5. PSNR History Accumulation & Filmstrip Strip
 
@@ -182,13 +182,13 @@ Samples the small SSIM texture at full-res UV coords. GPU bilinear filtering int
 
 **Metric readout:** toolbar shows `ssim.toFixed(4)` when SSIM palette is active, PSNR dB otherwise.
 
-**Both metrics always computed:** `fireMetrics()` computes PSNR + SSIM on every frame (total <0.5ms at 160×90). Both histories accumulate regardless of active palette. During playback, the adaptive circuit breaker (see section 4) may disable metrics if the browser is too slow.
+**Both metrics always computed:** `fireMetrics()` computes PSNR + SSIM together. Both histories accumulate regardless of active palette. During playback, the adaptive throttle (see section 4) reduces the update rate on slow machines but never disables metrics entirely.
 
 **Key design decisions:**
 - **R8 not R32F:** SSIM values 0–1 quantized to 0–255. No float extension needed, `LINEAR` filtering always supported on R8 in WebGL2.
 - **GPU bilinear, no CPU upscale:** The SSIM map from 160×90 input is ≈150×80. Uploading as a small texture with `LINEAR` filter lets the GPU bilinear-upscale for free when sampling at full-res UVs. No CPU upscale code needed.
 - **UNPACK_ALIGNMENT = 1:** WebGL2 defaults to 4-byte row alignment. For R8 textures with non-multiple-of-4 widths (e.g. 150), the default alignment causes row misalignment — the GPU reads padding bytes that aren't there, shifting every row. Setting alignment to 1 fixes this.
-- **Adaptive playback metrics:** Metrics are computed on every rAF frame during playback. An EMA tracks `fireMetrics()` cost; if it exceeds 4ms after 5 warmup samples, metrics are disabled for the playback session (readout shows dash, SSIM texture retains last-computed map). Re-enables on pause.
+- **Adaptive frame-skip throttle:** During playback, an EMA tracks `fireMetrics()` wall time and adjusts a skip interval so metrics consume ≤2ms of average per-frame budget. The dominant cost is `drawImage` + `getImageData` GPU→CPU readback (~5-10ms on Apple M4), not ssim.js itself (~0.2ms). At 8ms/call the skip interval settles to 4 (~15fps metric updates). On fast machines (<2ms), metrics run every frame.
 
 ### 7. SSIM History Accumulation & Filmstrip Strip
 
@@ -304,15 +304,15 @@ rAF loop (every frame, paused or playing):
   6. Browser composites diffCanvas           -- standard compositing
 ```
 
-No pixel readback needed. Render: <1ms per frame. Metrics: <0.5ms per frame.
+No pixel readback needed. Render: <1ms per frame.
 
-**Data flow for metrics (CPU, every frame):**
+**Data flow for metrics (CPU, adaptive rate):**
 
 ```
-fireMetrics():
-  1. drawImage(videoA, 0, 0, 160, 90)      -- offscreen canvas A
-  2. drawImage(videoB, 0, 0, 160, 90)      -- offscreen canvas B
-  3. getImageData() for both                -- ~0.1ms at 160×90
+fireMetrics() — called every Nth rAF frame (N=1 when paused):
+  1. drawImage(videoA, 0, 0, 160, 90)      -- offscreen canvas A     ─┐
+  2. drawImage(videoB, 0, 0, 160, 90)      -- offscreen canvas B      │ ~5-10ms total
+  3. getImageData() for both                -- GPU→CPU readback       ─┘  (dominates)
   4. Per-pixel RGB MSE → PSNR dB            -- ~0.05ms (14,400 pixels)
   5. ssim(dataA, dataB, {bezkrovny})        -- ~0.2ms at 160×90
   6. Quantize ssim_map to Uint8Array        -- val × 255
@@ -320,11 +320,11 @@ fireMetrics():
   8. Store in psnrHistory + ssimHistory      -- keyed by rounded time
   9. Fire onPsnr + onSsim callbacks          -- updates toolbar display
 
-Adaptive throttle (playback only):
-  - EMA of fireMetrics() wall time tracked per frame
-  - If EMA > 4ms after 5 warmup samples → disable for this playback session
-  - Callbacks receive null, SSIM texture retains last map
-  - Re-enables on next pause
+Adaptive frame-skip (playback only):
+  - EMA of fireMetrics() wall time tracked per call (alpha=0.2)
+  - skipInterval = max(1, ceil(ema / 2ms))
+  - 8ms cost → every 4th frame (~15fps), 0.5ms → every frame
+  - Heatmap + readout always update, never fully disabled
 ```
 
 **Data flow for filmstrip metric strips:**
