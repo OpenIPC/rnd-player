@@ -8,7 +8,7 @@
 - **PSNR heatmap** — per-pixel dB computation in the same fragment shader, mapped to a 5-stop color gradient.
 - **Per-frame PSNR readout** — CPU-side PSNR computed on `seeked` event at 160×90 resolution, displayed in the compare toolbar. Shown in all diff palettes, not just PSNR mode.
 - **PSNR filmstrip strip** — accumulated PSNR values rendered as color-coded bars in the filmstrip timeline graph area.
-- **SSIM heatmap** — CPU-side ssim.js `bezkrovny` at 160×90, quantized to R8 texture, GPU bilinear-upscaled to full resolution in the fragment shader. 5-stop color gradient. Per-frame mssim readout in toolbar.
+- **SSIM heatmap** — CPU-side ssim.js `bezkrovny` at 160×90, quantized to R8 texture, GPU bilinear-upscaled to full resolution in the fragment shader. 5-stop color gradient. Per-frame SSIM readout in toolbar.
 - **SSIM filmstrip strip** — accumulated SSIM values rendered as color-coded bars above the PSNR strip.
 - **Amplification & palette controls** — 4 amplification levels (1×/2×/4×/8×), 4 palettes (grayscale/temperature/PSNR/SSIM).
 - **Mode switching UI + URL params** — toolbar button + keyboard shortcuts (T to cycle, D to toggle diff), all state persisted in shareable URL.
@@ -180,7 +180,7 @@ Samples the small SSIM texture at full-res UV coords. GPU bilinear filtering int
 | 0.70–0.85 | Red → yellow | `(1, 0→1, 0)` |
 | ≤ 0.50–0.70 | Magenta → red | `(1, 0, 1→0)` |
 
-**Metric readout:** toolbar shows `mssim.toFixed(4)` when SSIM palette is active, PSNR dB otherwise.
+**Metric readout:** toolbar shows `ssim.toFixed(4)` when SSIM palette is active, PSNR dB otherwise.
 
 **Both metrics always computed:** `fireMetrics()` computes PSNR + SSIM on every `seeked` (total <0.5ms at 160×90). Both histories accumulate regardless of active palette.
 
@@ -196,7 +196,7 @@ Samples the small SSIM texture at full-res UV coords. GPU bilinear filtering int
 
 **Data flow:** Same pattern as PSNR history (section 5):
 1. `useDiffRenderer` maintains `ssimHistory` ref: `Map<number, number>` keyed by time rounded to 3dp
-2. Each `fireMetrics()` call stores `ssimHistory.set(roundedTime, mssim)`
+2. Each `fireMetrics()` call stores `ssimHistory.set(roundedTime, ssimValue)`
 3. Map is cleared when `active` becomes false
 4. `QualityCompare` forwards the ref to the parent via `ssimHistoryRef` prop
 5. `ShakaPlayer` creates the shared ref and passes to both `QualityCompare` and `FilmstripTimeline`
@@ -275,7 +275,7 @@ QualityCompare.tsx
   +-- palette state: "grayscale" | "temperature" | "psnr" | "ssim"
   +-- flickerInterval: 250 | 500 | 1000 ms
   +-- psnrValue state: number | null (CPU-side readout)
-  +-- ssimValue state: number | null (CPU-side mssim readout)
+  +-- ssimValue state: number | null (CPU-side SSIM readout)
   +-- viewStateRef: zoom, pan, slider, cmode, amp, palette
 
 ShakaPlayer.tsx
@@ -326,7 +326,7 @@ seeked event (fireMetrics):
 FilmstripTimeline paint loop (every rAF):
   1. Read psnrHistory.current (Map<time, dB>)
   2. For each entry: ctx.fillRect(x, stripY, 2, 8) with psnrColor(dB)
-  3. Read ssimHistory.current (Map<time, mssim>)
+  3. Read ssimHistory.current (Map<time, ssim>)
   4. For each entry: ctx.fillRect(x, ssimStripY, 2, 8) with ssimColor(s)
   5. SSIM strip positioned above PSNR strip when both present
 ```
@@ -367,8 +367,8 @@ FilmstripTimeline paint loop (every rAF):
 5. ~~**Dual-manifest resolution mismatch**~~ **Not actionable.** Two CDNs may serve different pixel dimensions at the same nominal height (e.g., 1920×1080 vs 1920×1088 due to codec macroblock alignment). The WebGL shader already handles this implicitly (textures stretch to fill the quad). PSNR/SSIM may see a few pixels of interpolation blur at the bottom/right edge from the padding rows — negligible in practice and not worth a benchmark.
 
 6. ~~**SSIM at 1/4 resolution upscale artifacts**~~ **Benchmarked** (`src/utils/ssimUpscale.test.ts`): 15 patterns (3 image types × 5 spatially varying distortions) comparing full-res (320×180) vs downscale-compute-upscale (80×45 → bilinear upscale) pipeline. Key findings:
-   - **Structural distortions (blocking, blur) are well-preserved**: mean Δmssim=0.041, map RMSE=0.001–0.30. These are the primary video compression artifacts — the 1/4 res path is accurate for them.
-   - **Noise-based distortions are smoothed by downscaling**: mean Δmssim=0.35, because 4× area averaging cancels out per-pixel noise. This is inherent to downscaling, not an upscaling artifact. The spatial quality pattern is still preserved (damaged regions still show lower SSIM than clean regions).
+   - **Structural distortions (blocking, blur) are well-preserved**: mean ΔSSIM=0.041, map RMSE=0.001–0.30. These are the primary video compression artifacts — the 1/4 res path is accurate for them.
+   - **Noise-based distortions are smoothed by downscaling**: mean ΔSSIM=0.35, because 4× area averaging cancels out per-pixel noise. This is inherent to downscaling, not an upscaling artifact. The spatial quality pattern is still preserved (damaged regions still show lower SSIM than clean regions).
    - **Bilinear vs nearest-neighbor**: bilinear upscaling produces marginally smoother error gradients. At 1/4 resolution the SSIM map has so few pixels (8×5 for the test size) that both methods produce similar results — the SSIM 11×11 Gaussian window already smooths the map.
    - **Speed**: ~15× speedup from quarter resolution computation.
    - **Verdict**: The 1/4 resolution path is viable for a video player diagnostic overlay. Structural quality loss (the kind video compression produces) is accurately represented. The bilinear upscale introduces no visible blockiness. Noise sensitivity is reduced but this is acceptable — video players analyze compression artifacts, not sensor noise.

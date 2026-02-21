@@ -114,7 +114,7 @@ interface UseDiffRendererParams {
   amplification: DiffAmplification;
   palette: DiffPalette;
   onPsnr?: (psnr: number | null) => void;
-  onSsim?: (mssim: number | null) => void;
+  onSsim?: (ssim: number | null) => void;
 }
 
 interface GlState {
@@ -294,7 +294,7 @@ function computePsnrFromData(dataA: ImageData, dataB: ImageData): number | null 
 function computeSsimMap(
   dataA: ImageData,
   dataB: ImageData,
-): { mssim: number; mapBytes: Uint8Array; mapWidth: number; mapHeight: number } | null {
+): { meanSsim: number; mapBytes: Uint8Array; mapWidth: number; mapHeight: number } | null {
   try {
     const result = ssim(dataA, dataB, { ssim: "bezkrovny", downsample: false });
     const map = result.ssim_map;
@@ -302,7 +302,7 @@ function computeSsimMap(
     for (let i = 0; i < map.data.length; i++) {
       bytes[i] = Math.round(Math.max(0, Math.min(1, map.data[i])) * 255);
     }
-    return { mssim: result.mssim, mapBytes: bytes, mapWidth: map.width, mapHeight: map.height };
+    return { meanSsim: result.mssim, mapBytes: bytes, mapWidth: map.width, mapHeight: map.height };
   } catch {
     return null;
   }
@@ -453,9 +453,9 @@ export function useDiffRenderer({
       // SSIM
       const ssimResult = computeSsimMap(dataA, dataB);
       if (ssimResult) {
-        onSsimRef.current?.(ssimResult.mssim);
+        onSsimRef.current?.(ssimResult.meanSsim);
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
-        ssimHistory.current.set(roundedTime, ssimResult.mssim);
+        ssimHistory.current.set(roundedTime, ssimResult.meanSsim);
 
         // Upload SSIM map as R8 texture
         // R8 rows may not be 4-byte aligned — set UNPACK_ALIGNMENT to 1
