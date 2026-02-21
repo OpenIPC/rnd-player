@@ -108,6 +108,7 @@ interface QualityCompareProps {
   initialPalette?: string;
   viewStateRef?: React.RefObject<CompareViewState | null>;
   psnrHistoryRef?: React.MutableRefObject<Map<number, number>>;
+  ssimHistoryRef?: React.MutableRefObject<Map<number, number>>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
 }
@@ -232,6 +233,7 @@ export default function QualityCompare({
   initialPalette,
   viewStateRef,
   psnrHistoryRef,
+  ssimHistoryRef,
   onResolutionChange,
   onClose,
 }: QualityCompareProps) {
@@ -291,7 +293,7 @@ export default function QualityCompare({
     : 500;
   const VALID_AMPS: DiffAmplification[] = [1, 2, 4, 8];
   const initAmp: DiffAmplification = initialAmp && VALID_AMPS.includes(initialAmp as DiffAmplification) ? initialAmp as DiffAmplification : 1;
-  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr"];
+  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr", "ssim"];
   const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "grayscale";
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
   const [flickerInterval, setFlickerInterval] = useState(initFlicker);
@@ -305,9 +307,10 @@ export default function QualityCompare({
   const paletteRef = useRef<DiffPalette>(initPalette);
 
   const [psnrValue, setPsnrValue] = useState<number | null>(null);
+  const [ssimValue, setSsimValue] = useState<number | null>(null);
 
   // ── Diff renderer (WebGL2 per-pixel difference map) ──
-  const { psnrHistory } = useDiffRenderer({
+  const { psnrHistory, ssimHistory } = useDiffRenderer({
     canvasRef: diffCanvasRef,
     videoA: slaveVideoRef.current,
     videoB: masterVideo,
@@ -316,6 +319,7 @@ export default function QualityCompare({
     amplification,
     palette,
     onPsnr: setPsnrValue,
+    onSsim: setSsimValue,
   });
 
   const isDualManifest = slaveSrc !== src;
@@ -1074,12 +1078,19 @@ export default function QualityCompare({
     if (slaveVideo) {
       slaveVideo.style.visibility = analysisMode === "diff" ? "hidden" : "visible";
     }
-    // Forward PSNR history to parent (ref-based, no re-renders)
+    // Forward metric histories to parent (ref-based, no re-renders)
     if (psnrHistoryRef) {
       if (analysisMode === "diff") {
         psnrHistoryRef.current = psnrHistory.current;
       } else {
         psnrHistoryRef.current = new Map();
+      }
+    }
+    if (ssimHistoryRef) {
+      if (analysisMode === "diff") {
+        ssimHistoryRef.current = ssimHistory.current;
+      } else {
+        ssimHistoryRef.current = new Map();
       }
     }
     // Update viewStateRef when mode/interval/amp/palette changes
@@ -1090,7 +1101,7 @@ export default function QualityCompare({
       vs.amplification = analysisMode === "diff" && amplification !== 1 ? amplification : undefined;
       vs.palette = analysisMode === "diff" && palette !== "grayscale" ? palette : undefined;
     }
-  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory]);
+  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory, ssimHistoryRef, ssimHistory]);
 
   // ── Toggle/Flicker mode: alternate slave visibility ──
   useEffect(() => {
@@ -1509,10 +1520,12 @@ export default function QualityCompare({
                 })}
                 title="Cycle palette"
               >
-                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : "PSNR"}
+                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : "SSIM"}
               </button>
               <span className="vp-compare-diff-psnr">
-                {psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014"}
+                {palette === "ssim"
+                  ? (ssimValue != null ? ssimValue.toFixed(4) : "\u2014")
+                  : (psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014")}
               </span>
             </>
           )}

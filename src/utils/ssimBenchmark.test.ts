@@ -13,25 +13,6 @@
  * Run: npx vitest run src/utils/ssimBenchmark.test.ts
  */
 
-declare module "ssim.js" {
-  interface SSIMResult {
-    mssim: number;
-    performance: number;
-  }
-  type Algorithm = "original" | "fast" | "bezkrovny" | "weber";
-  interface SSIMOptions {
-    ssim?: Algorithm;
-    downsample?: boolean;
-  }
-  function ssim(
-    imageA: ImageData,
-    imageB: ImageData,
-    options?: SSIMOptions,
-  ): SSIMResult;
-  export default ssim;
-  export { ssim };
-}
-
 import { describe, it, expect } from "vitest";
 import ssim from "ssim.js";
 

@@ -8,11 +8,10 @@
 - **PSNR heatmap** — per-pixel dB computation in the same fragment shader, mapped to a 5-stop color gradient.
 - **Per-frame PSNR readout** — CPU-side PSNR computed on `seeked` event at 160×90 resolution, displayed in the compare toolbar. Shown in all diff palettes, not just PSNR mode.
 - **PSNR filmstrip strip** — accumulated PSNR values rendered as color-coded bars in the filmstrip timeline graph area.
-- **Amplification & palette controls** — 4 amplification levels (1×/2×/4×/8×), 3 palettes (grayscale/temperature/PSNR).
+- **SSIM heatmap** — CPU-side ssim.js `bezkrovny` at 160×90, quantized to R8 texture, GPU bilinear-upscaled to full resolution in the fragment shader. 5-stop color gradient. Per-frame mssim readout in toolbar.
+- **SSIM filmstrip strip** — accumulated SSIM values rendered as color-coded bars above the PSNR strip.
+- **Amplification & palette controls** — 4 amplification levels (1×/2×/4×/8×), 4 palettes (grayscale/temperature/PSNR/SSIM).
 - **Mode switching UI + URL params** — toolbar button + keyboard shortcuts (T to cycle, D to toggle diff), all state persisted in shareable URL.
-
-**Feasible with significant effort (not yet implemented):**
-- **SSIM heatmap** — 11×11 Gaussian window per pixel. CPU at 1080p is 500ms–2s. Downscaled (540p) with upscaled overlay is the pragmatic path. WebGL multi-pass FBO approach is feasible but ~200 lines of shader code.
 
 **Not feasible (skip):**
 - **Block boundary overlay** — mp4box.js is container-level only, no macroblock/CTU parsing. Would require porting a full H.264/HEVC NAL parser to WASM (~10k+ lines per codec). Heuristic edge detection is unreliable due to deblocking filters.
@@ -64,13 +63,14 @@ float diff = length(colA - colB) / 1.732;  // sqrt(3) normalizes RGB to 0..1
 float val = clamp(diff * u_amplify, 0.0, 1.0);
 ```
 
-**Three palette modes (uniform `u_palette`):**
+**Four palette modes (uniform `u_palette`):**
 
 | Palette | `u_palette` | Mapping |
 |---------|------------|---------|
 | Grayscale | 0 | `color = vec3(val)` |
 | Temperature | 1 | Blue → white → red (val < 0.5: blue→white, else white→red) |
 | PSNR | 2 | Per-pixel dB heatmap with 5-stop gradient (see below) |
+| SSIM | 3 | Samples precomputed R8 SSIM map texture, 5-stop gradient (see section 6) |
 
 **Amplification values:** 1×, 2×, 4×, 8× — directly scales difference visibility and inversely affects PSNR calculation (`ampMse = mse / (amplify²)`).
 
@@ -147,7 +147,67 @@ function psnrColor(dB: number): string {
 - Entries outside viewport are skipped for performance
 - The ref-based approach avoids re-renders on every seek
 
-### 6. Mode Switching & URL Persistence
+### 6. SSIM Heatmap (CPU + GPU Hybrid)
+
+**Files:** `useDiffRenderer.ts`, `QualityCompare.tsx`
+
+SSIM cannot be computed per-pixel in a fragment shader because it requires an 11×11 Gaussian windowed operation. The approach: compute SSIM map on CPU using ssim.js at 160×90, upload as a WebGL texture, let the GPU bilinear-sample it at full resolution, and apply a 5-stop color gradient in the shader.
+
+**CPU computation** (`computeSsimMap`):
+- Uses ssim.js `bezkrovny` algorithm (~0.2ms at 160×90, benchmarked in Q4)
+- Input: two `ImageData` objects from the same offscreen canvases used for PSNR
+- Output: `ssim_map` (per-window SSIM values, ≈150×80 for 160×90 input — 11×11 window trims edges)
+- Quantization: `float → Uint8Array` via `Math.round(clamp(val, 0, 1) × 255)`. 1/255 precision loss invisible in heatmap.
+
+**GPU upload** (`uploadSsimMap`):
+- R8 texture (single unsigned byte channel) — universal WebGL2 compatibility, no float extension needed
+- `LINEAR` filter on both min and mag — gives free GPU bilinear upscaling from ≈150×80 to full resolution
+- `UNPACK_ALIGNMENT` set to 1 before upload (R8 row widths are not 4-byte aligned by default)
+
+**Fragment shader** (`u_palette == 3`):
+```glsl
+float s = texture(u_texSsim, v_texCoord).r;
+```
+Samples the small SSIM texture at full-res UV coords. GPU bilinear filtering interpolates between texels.
+
+**5-stop color gradient:**
+
+| SSIM range | Color | RGB |
+|------------|-------|-----|
+| ≥ 0.99 | Dark green | `(0, 0.4, 0)` |
+| 0.95–0.99 | Green blend | `(0, 0.8→0.4, 0)` |
+| 0.85–0.95 | Yellow → green | `(1→0, 1→0.8, 0)` |
+| 0.70–0.85 | Red → yellow | `(1, 0→1, 0)` |
+| ≤ 0.50–0.70 | Magenta → red | `(1, 0, 1→0)` |
+
+**Metric readout:** toolbar shows `mssim.toFixed(4)` when SSIM palette is active, PSNR dB otherwise.
+
+**Both metrics always computed:** `fireMetrics()` computes PSNR + SSIM on every `seeked` (total <0.5ms at 160×90). Both histories accumulate regardless of active palette.
+
+**Key design decisions:**
+- **R8 not R32F:** SSIM values 0–1 quantized to 0–255. No float extension needed, `LINEAR` filtering always supported on R8 in WebGL2.
+- **GPU bilinear, no CPU upscale:** The SSIM map from 160×90 input is ≈150×80. Uploading as a small texture with `LINEAR` filter lets the GPU bilinear-upscale for free when sampling at full-res UVs. No CPU upscale code needed.
+- **UNPACK_ALIGNMENT = 1:** WebGL2 defaults to 4-byte row alignment. For R8 textures with non-multiple-of-4 widths (e.g. 150), the default alignment causes row misalignment — the GPU reads padding bytes that aren't there, shifting every row. Setting alignment to 1 fixes this.
+- **Paused-only computation:** Like PSNR, SSIM is only computed on seeked events. During playback, the texture retains the last-computed map; the readout shows a dash.
+
+### 7. SSIM History Accumulation & Filmstrip Strip
+
+**Files:** `useDiffRenderer.ts`, `QualityCompare.tsx`, `ShakaPlayer.tsx`, `FilmstripTimeline.tsx`
+
+**Data flow:** Same pattern as PSNR history (section 5):
+1. `useDiffRenderer` maintains `ssimHistory` ref: `Map<number, number>` keyed by time rounded to 3dp
+2. Each `fireMetrics()` call stores `ssimHistory.set(roundedTime, mssim)`
+3. Map is cleared when `active` becomes false
+4. `QualityCompare` forwards the ref to the parent via `ssimHistoryRef` prop
+5. `ShakaPlayer` creates the shared ref and passes to both `QualityCompare` and `FilmstripTimeline`
+6. `FilmstripTimeline` reads the map in its paint loop
+
+**Filmstrip rendering:**
+- Strip height: 8px, positioned above the PSNR strip when both are present
+- Color uses `ssimColor(s)` with the same 5-stop gradient as the shader
+- "SSIM" label at bottom-right (40% opacity)
+
+### 8. Mode Switching & URL Persistence
 
 **Three analysis modes** (`AnalysisMode = "split" | "toggle" | "diff"`):
 
@@ -155,7 +215,7 @@ function psnrColor(dB: number): string {
 |------|-----|----------|---------------|
 | Split | — (default) | Slider position | Yes |
 | Toggle | `T` (cycle) | Flicker speed (250/500/1000ms) | No |
-| Diff | `D` (toggle), `T` (cycle) | Amp (1×–8×), Palette, PSNR readout | Yes |
+| Diff | `D` (toggle), `T` (cycle) | Amp (1×–8×), Palette, PSNR/SSIM readout | Yes |
 
 **Keyboard shortcuts:**
 - **T**: cycle split → toggle → diff → split
@@ -169,7 +229,7 @@ function psnrColor(dB: number): string {
 | `cmode` | `compareCmode` | `"toggle"`, `"diff"` | Omitted if `"split"` |
 | `flickerInterval` | `compareCfi` | 250, 500, 1000 | Only when `cmode=toggle` |
 | `amplification` | `compareAmp` | 2, 4, 8 | Only when `cmode=diff`, omit if 1 |
-| `palette` | `comparePal` | `"temperature"`, `"psnr"` | Only when `cmode=diff`, omit if `"grayscale"` |
+| `palette` | `comparePal` | `"temperature"`, `"psnr"`, `"ssim"` | Only when `cmode=diff`, omit if `"grayscale"` |
 
 State is written to `viewStateRef` on every transform update and mode/settings change, enabling shareable URLs that restore the exact analysis configuration.
 
@@ -177,22 +237,14 @@ State is written to `viewStateRef` on every transform update and mode/settings c
 
 ## Research: Remaining Features
 
-### SSIM Heatmap — Medium-Hard (not implemented)
+### SSIM Heatmap — Implemented
 
-CPU at 1080p: 500ms–2s (11×11 Gaussian window × 2M pixels). Not real-time, but acceptable paused-only with spinner.
+Implemented via the CPU + GPU hybrid approach described in section 6. The ssim.js `bezkrovny` algorithm at 160×90 resolution computes in ~0.2ms. R8 texture with GPU bilinear sampling eliminated the need for CPU upscaling or multi-pass FBO shaders. Both PSNR and SSIM are computed together in `fireMetrics()` with a total budget under 0.5ms.
 
-**Pragmatic path**: compute at 1/4 resolution (480×270), ~30–120ms on CPU, upscale the heatmap overlay. SSIM is designed to be multi-scale so downscaling preserves structural information well.
-
-Existing JS libraries:
-- **ssim.js** (https://github.com/obartra/ssim) — pure JS, supports `weber` (fastest), `bezkrovny`, `fast`, `original` algorithms. Returns mssim (mean) + ssim_map (per-pixel).
-- **image-ssim** (https://github.com/darosh/image-ssim-js) — TypeScript, simpler API.
-
-**GPU acceleration options:**
-
-| Approach | Feasibility | Performance | Notes |
-|----------|-------------|-------------|-------|
-| WebGL multi-pass FBOs | Medium | ~2–5ms | Separable Gaussian blur (2 passes for mean), then variance/covariance textures, then SSIM formula. 4–6 render passes total |
-| WebGPU compute shader | Medium-Hard | ~1–2ms | More natural for neighborhood operations but browser support gaps |
+**Evaluated but not used:**
+- GPU multi-pass FBO approach (~200 lines of shader code) — unnecessary given CPU compute at 160×90 is sub-millisecond
+- WebGPU compute shader — browser support gaps, and CPU performance is already more than sufficient
+- R32F texture — float extension not universally supported; R8 with 1/255 precision is invisible in heatmap
 
 ### Block Boundary Overlay — Infeasible (skip)
 
@@ -212,29 +264,32 @@ QualityCompare.tsx
   +-- diffCanvas (.vp-compare-diff-canvas, WebGL2 context)
   |     |
   |     +-- useDiffRenderer hook manages GL lifecycle
-  |     +-- Two textures: masterVideo + slaveVideo via texImage2D
-  |     +-- Fragment shader: diff/temperature/PSNR per u_palette + u_amplify
+  |     +-- Three textures: masterVideo + slaveVideo via texImage2D, SSIM map (R8)
+  |     +-- Fragment shader: diff/temperature/PSNR/SSIM per u_palette + u_amplify
   |     +-- Renders on seeked (paused) or rAF loop (playing)
   |     +-- Hidden when mode === "split" or "toggle"
-  |     +-- Returns psnrHistory ref (Map<time, dB>)
+  |     +-- Returns psnrHistory + ssimHistory refs (Map<time, value>)
   |
   +-- analysisMode state: "split" | "toggle" | "diff"
   +-- amplification state: 1 | 2 | 4 | 8
-  +-- palette state: "grayscale" | "temperature" | "psnr"
+  +-- palette state: "grayscale" | "temperature" | "psnr" | "ssim"
   +-- flickerInterval: 250 | 500 | 1000 ms
   +-- psnrValue state: number | null (CPU-side readout)
+  +-- ssimValue state: number | null (CPU-side mssim readout)
   +-- viewStateRef: zoom, pan, slider, cmode, amp, palette
 
 ShakaPlayer.tsx
   |
   +-- psnrHistoryRef: shared ref between QualityCompare and FilmstripTimeline
-  +-- Passes psnrHistoryRef to QualityCompare (writes) and FilmstripTimeline (reads)
+  +-- ssimHistoryRef: shared ref between QualityCompare and FilmstripTimeline
+  +-- Passes both to QualityCompare (writes) and FilmstripTimeline (reads)
 
 FilmstripTimeline.tsx
   |
-  +-- Reads psnrHistory ref in paint loop
-  +-- Draws 2px colored bars at bottom of bitrate graph area (8px strip)
-  +-- psnrColor(dB) maps to 5-stop gradient matching shader
+  +-- Reads psnrHistory + ssimHistory refs in paint loop
+  +-- PSNR: 2px colored bars at bottom of bitrate graph area (8px strip)
+  +-- SSIM: 2px colored bars above PSNR strip (8px strip)
+  +-- psnrColor(dB) and ssimColor(s) map to 5-stop gradients matching shaders
 ```
 
 **Data flow for difference map (WebGL, during playback):**
@@ -243,32 +298,37 @@ FilmstripTimeline.tsx
 rAF loop:
   1. gl.texImage2D(TEXTURE0, masterVideo)  -- GPU upload, ~0.1ms
   2. gl.texImage2D(TEXTURE1, slaveVideo)   -- GPU upload, ~0.1ms
-  3. gl.drawArrays(TRIANGLES, 0, 6)        -- fragment shader, <0.5ms
-  4. Browser composites diffCanvas          -- standard compositing
+  3. gl.bindTexture(TEXTURE2, texSsim)     -- bind pre-uploaded SSIM map
+  4. gl.drawArrays(TRIANGLES, 0, 6)        -- fragment shader, <0.5ms
+  5. Browser composites diffCanvas          -- standard compositing
 ```
 
 No pixel readback needed. Total: <1ms per frame. Feasible at 60fps.
 
-**Data flow for PSNR readout (CPU, on seeked):**
+**Data flow for metrics (CPU, on seeked):**
 
 ```
-seeked event:
+seeked event (fireMetrics):
   1. drawImage(videoA, 0, 0, 160, 90)      -- offscreen canvas A
   2. drawImage(videoB, 0, 0, 160, 90)      -- offscreen canvas B
   3. getImageData() for both                -- ~0.1ms at 160×90
   4. Per-pixel RGB MSE → PSNR dB            -- ~0.05ms (14,400 pixels)
-  5. Store in psnrHistory map               -- keyed by rounded time
-  6. Fire onPsnr callback                   -- updates toolbar display
+  5. ssim(dataA, dataB, {bezkrovny})        -- ~0.2ms at 160×90
+  6. Quantize ssim_map to Uint8Array        -- val × 255
+  7. gl.texImage2D(R8, mapW, mapH, bytes)   -- upload SSIM map texture
+  8. Store in psnrHistory + ssimHistory      -- keyed by rounded time
+  9. Fire onPsnr + onSsim callbacks          -- updates toolbar display
 ```
 
-**Data flow for PSNR filmstrip strip:**
+**Data flow for filmstrip metric strips:**
 
 ```
 FilmstripTimeline paint loop (every rAF):
   1. Read psnrHistory.current (Map<time, dB>)
-  2. For each entry: x = time × pxPerSec - scrollLeft
-  3. Skip if outside viewport
-  4. ctx.fillRect(x, stripY, 2, 8) with psnrColor(dB)
+  2. For each entry: ctx.fillRect(x, stripY, 2, 8) with psnrColor(dB)
+  3. Read ssimHistory.current (Map<time, mssim>)
+  4. For each entry: ctx.fillRect(x, ssimStripY, 2, 8) with ssimColor(s)
+  5. SSIM strip positioned above PSNR strip when both present
 ```
 
 ---
@@ -284,7 +344,8 @@ FilmstripTimeline paint loop (every rAF):
 | 5 | Per-frame PSNR readout in toolbar | Done | Easy | Medium — instant quality number |
 | 6 | Mode switching UI + URL params | Done | Easy | Medium — discoverability |
 | 7 | PSNR strip on filmstrip | Done | Easy | Medium — quality-over-time |
-| 8 | SSIM heatmap (downscaled CPU) | — | Hard | Low-Medium — niche metric |
+| 8 | SSIM heatmap (CPU + GPU hybrid) | Done | Medium | Medium — structural quality metric |
+| 9 | SSIM strip on filmstrip | Done | Easy | Medium — SSIM-over-time |
 
 ---
 
@@ -322,4 +383,4 @@ FilmstripTimeline paint loop (every rAF):
 | [Vicuesoft VQ Probe](https://vicuesoft.com/blog/titles/VQ_Probe_Advantages/) | Split-line, per-pixel diff (heat map + B&W), PSNR/SSIM/VMAF heatmaps, zoom to pixel values | Closest model for our UX — split + analysis overlay modes |
 | [MSU VQMT](https://videoprocessing.ai/vqmt/basic/) | Per-frame metric Results Plot, residue visualization with gamma, toggle view (Ctrl+1/2/3), bad frame detection | Best model for quality-over-time graph and frame comparison |
 | [Vicuesoft VQ Analyzer](https://vicuesoft.com/vq-analyzer/) | Block-level codec internals: loop filter, SAO, ALF, per-pixel formulas on click | Deep codec analysis — not replicable in browser without bitstream parser |
-| [ssim.js](https://github.com/obartra/ssim) | Pure JS SSIM with multiple algorithm modes | Candidate library for CPU SSIM path |
+| [ssim.js](https://github.com/obartra/ssim) | Pure JS SSIM with multiple algorithm modes | Used for SSIM heatmap — `bezkrovny` algorithm at 160×90 |

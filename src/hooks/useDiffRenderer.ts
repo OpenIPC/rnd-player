@@ -12,8 +12,9 @@
  * for a valid WebGL2 context), and destroyed when deactivated or on unmount.
  */
 import { useEffect, useRef } from "react";
+import ssim from "ssim.js";
 
-export type DiffPalette = "grayscale" | "temperature" | "psnr";
+export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim";
 export type DiffAmplification = 1 | 2 | 4 | 8;
 
 /* eslint-disable @stylistic/indent */
@@ -33,6 +34,7 @@ const FRAG_SRC = [
 "in vec2 v_texCoord;",
 "uniform sampler2D u_texA;",
 "uniform sampler2D u_texB;",
+"uniform sampler2D u_texSsim;",
 "uniform float u_amplify;",
 "uniform int u_palette;",
 "out vec4 fragColor;",
@@ -74,6 +76,26 @@ const FRAG_SRC = [
 "      float t = clamp((psnr - 15.0) / 5.0, 0.0, 1.0);",
 "      color = mix(vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), t);",
 "    }",
+"  } else if (u_palette == 3) {",
+// SSIM heatmap: sample from precomputed R8 SSIM map, apply 5-stop gradient
+// GPU bilinear sampling upscales the small SSIM map (≈150×80) to full resolution
+"    float s = texture(u_texSsim, v_texCoord).r;",
+// 5 stops: ≥0.99 dark green, 0.95-0.99 green, 0.85-0.95 yellow, 0.70-0.85 red, ≤0.50 magenta
+"    if (s >= 0.99) {",
+"      color = vec3(0.0, 0.4, 0.0);",
+"    } else if (s >= 0.95) {",
+"      float t = (s - 0.95) / 0.04;",
+"      color = mix(vec3(0.0, 0.8, 0.0), vec3(0.0, 0.4, 0.0), t);",
+"    } else if (s >= 0.85) {",
+"      float t = (s - 0.85) / 0.10;",
+"      color = mix(vec3(1.0, 1.0, 0.0), vec3(0.0, 0.8, 0.0), t);",
+"    } else if (s >= 0.70) {",
+"      float t = (s - 0.70) / 0.15;",
+"      color = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), t);",
+"    } else {",
+"      float t = clamp((s - 0.50) / 0.20, 0.0, 1.0);",
+"      color = mix(vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), t);",
+"    }",
 "  } else {",
 "    color = vec3(val);",
 "  }",
@@ -92,6 +114,7 @@ interface UseDiffRendererParams {
   amplification: DiffAmplification;
   palette: DiffPalette;
   onPsnr?: (psnr: number | null) => void;
+  onSsim?: (mssim: number | null) => void;
 }
 
 interface GlState {
@@ -99,17 +122,19 @@ interface GlState {
   program: WebGLProgram;
   texA: WebGLTexture;
   texB: WebGLTexture;
+  texSsim: WebGLTexture;
   vao: WebGLVertexArrayObject;
   vbo: WebGLBuffer;
   uAmp: WebGLUniformLocation | null;
   uPal: WebGLUniformLocation | null;
   uTexA: WebGLUniformLocation | null;
   uTexB: WebGLUniformLocation | null;
-  /** Offscreen canvases for CPU-side PSNR readout (reduced resolution) */
-  psnrCanvasA: OffscreenCanvas;
-  psnrCanvasB: OffscreenCanvas;
-  psnrCtxA: OffscreenCanvasRenderingContext2D;
-  psnrCtxB: OffscreenCanvasRenderingContext2D;
+  uTexSsim: WebGLUniformLocation | null;
+  /** Offscreen canvases for CPU-side metrics (reduced resolution) */
+  metricsCanvasA: OffscreenCanvas;
+  metricsCanvasB: OffscreenCanvas;
+  metricsCtxA: OffscreenCanvasRenderingContext2D;
+  metricsCtxB: OffscreenCanvasRenderingContext2D;
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null {
@@ -186,36 +211,53 @@ function initGl(canvas: HTMLCanvasElement): GlState | null {
     textures.push(tex);
   }
 
-  // Offscreen canvases for CPU-side PSNR readout (160px wide, 16:9 aspect)
-  const PSNR_W = 160;
-  const PSNR_H = 90;
-  const psnrCanvasA = new OffscreenCanvas(PSNR_W, PSNR_H);
-  const psnrCanvasB = new OffscreenCanvas(PSNR_W, PSNR_H);
-  const psnrCtxA = psnrCanvasA.getContext("2d")!;
-  const psnrCtxB = psnrCanvasB.getContext("2d")!;
+  // SSIM heatmap texture (R8, small resolution — GPU bilinear upscales for free)
+  const texSsim = gl.createTexture()!;
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, texSsim);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  // Initialize with 1×1 placeholder (mid-gray = 0.5 SSIM)
+  // R8 rows are 1 byte wide — UNPACK_ALIGNMENT must be 1 (default 4 causes row padding)
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([128]));
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+
+  // Offscreen canvases for CPU-side metrics (160px wide, 16:9 aspect)
+  const METRICS_W = 160;
+  const METRICS_H = 90;
+  const metricsCanvasA = new OffscreenCanvas(METRICS_W, METRICS_H);
+  const metricsCanvasB = new OffscreenCanvas(METRICS_W, METRICS_H);
+  const metricsCtxA = metricsCanvasA.getContext("2d")!;
+  const metricsCtxB = metricsCanvasB.getContext("2d")!;
 
   return {
     gl,
     program,
     texA: textures[0],
     texB: textures[1],
+    texSsim,
     vao,
     vbo,
     uAmp: gl.getUniformLocation(program, "u_amplify"),
     uPal: gl.getUniformLocation(program, "u_palette"),
     uTexA: gl.getUniformLocation(program, "u_texA"),
     uTexB: gl.getUniformLocation(program, "u_texB"),
-    psnrCanvasA,
-    psnrCanvasB,
-    psnrCtxA,
-    psnrCtxB,
+    uTexSsim: gl.getUniformLocation(program, "u_texSsim"),
+    metricsCanvasA,
+    metricsCanvasB,
+    metricsCtxA,
+    metricsCtxB,
   };
 }
 
 function destroyGl(state: GlState) {
-  const { gl, program, texA, texB, vao, vbo } = state;
+  const { gl, program, texA, texB, texSsim, vao, vbo } = state;
   gl.deleteTexture(texA);
   gl.deleteTexture(texB);
+  gl.deleteTexture(texSsim);
   gl.deleteVertexArray(vao);
   gl.deleteBuffer(vbo);
   gl.deleteProgram(program);
@@ -225,32 +267,20 @@ function destroyGl(state: GlState) {
 function paletteInt(p: DiffPalette): number {
   if (p === "temperature") return 1;
   if (p === "psnr") return 2;
+  if (p === "ssim") return 3;
   return 0;
 }
 
-/** Compute overall frame PSNR (dB) from two videos via offscreen canvases */
-function computePsnr(
-  videoA: HTMLVideoElement,
-  videoB: HTMLVideoElement,
-  ctxA: OffscreenCanvasRenderingContext2D,
-  ctxB: OffscreenCanvasRenderingContext2D,
-): number | null {
-  const w = ctxA.canvas.width;
-  const h = ctxA.canvas.height;
-  try {
-    ctxA.drawImage(videoA, 0, 0, w, h);
-    ctxB.drawImage(videoB, 0, 0, w, h);
-  } catch {
-    return null; // cross-origin tainted or video not ready
-  }
-  const dataA = ctxA.getImageData(0, 0, w, h).data;
-  const dataB = ctxB.getImageData(0, 0, w, h).data;
+/** Compute overall frame PSNR (dB) from two ImageData objects */
+function computePsnrFromData(dataA: ImageData, dataB: ImageData): number | null {
+  const pixelsA = dataA.data;
+  const pixelsB = dataB.data;
   let sumSqDiff = 0;
   let pixelCount = 0;
-  for (let i = 0; i < dataA.length; i += 4) {
+  for (let i = 0; i < pixelsA.length; i += 4) {
     // RGB channels only (skip alpha)
     for (let c = 0; c < 3; c++) {
-      const diff = (dataA[i + c] - dataB[i + c]) / 255;
+      const diff = (pixelsA[i + c] - pixelsB[i + c]) / 255;
       sumSqDiff += diff * diff;
     }
     pixelCount++;
@@ -258,6 +288,24 @@ function computePsnr(
   const mse = sumSqDiff / (pixelCount * 3);
   if (mse < 1e-10) return 60; // identical frames, cap at 60 dB
   return -10 * Math.log10(mse);
+}
+
+/** Compute SSIM map using ssim.js bezkrovny algorithm, return quantized R8 bytes for GPU upload */
+function computeSsimMap(
+  dataA: ImageData,
+  dataB: ImageData,
+): { mssim: number; mapBytes: Uint8Array; mapWidth: number; mapHeight: number } | null {
+  try {
+    const result = ssim(dataA, dataB, { ssim: "bezkrovny", downsample: false });
+    const map = result.ssim_map;
+    const bytes = new Uint8Array(map.data.length);
+    for (let i = 0; i < map.data.length; i++) {
+      bytes[i] = Math.round(Math.max(0, Math.min(1, map.data[i])) * 255);
+    }
+    return { mssim: result.mssim, mapBytes: bytes, mapWidth: map.width, mapHeight: map.height };
+  } catch {
+    return null;
+  }
 }
 
 export function useDiffRenderer({
@@ -269,6 +317,7 @@ export function useDiffRenderer({
   amplification,
   palette,
   onPsnr,
+  onSsim,
 }: UseDiffRendererParams) {
   // Stable refs for rAF render loop access (avoids stale closures)
   const ampRef = useRef(amplification);
@@ -276,17 +325,21 @@ export function useDiffRenderer({
   const pausedRef = useRef(paused);
   const activeRef = useRef(active);
   const onPsnrRef = useRef(onPsnr);
+  const onSsimRef = useRef(onSsim);
   ampRef.current = amplification;
   palRef.current = palette;
   pausedRef.current = paused;
   activeRef.current = active;
   onPsnrRef.current = onPsnr;
+  onSsimRef.current = onSsim;
 
   const glStateRef = useRef<GlState | null>(null);
   const contextLostRef = useRef(false);
 
   /** Accumulated PSNR values keyed by time (rounded to 3dp to deduplicate) */
   const psnrHistory = useRef<Map<number, number>>(new Map());
+  /** Accumulated SSIM values keyed by time (rounded to 3dp to deduplicate) */
+  const ssimHistory = useRef<Map<number, number>>(new Map());
 
   // Single effect: create GL when active, render, clean up when inactive/unmount.
   // Dependencies include active, paused, videoA, amplification, palette so the
@@ -318,7 +371,7 @@ export function useDiffRenderer({
       canvas.addEventListener("webglcontextrestored", onRestored);
     }
 
-    const { gl, program, texA, texB, vao, uAmp, uPal, uTexA, uTexB } = state;
+    const { gl, program, texA, texB, texSsim, vao, uAmp, uPal, uTexA, uTexB, uTexSsim } = state;
 
     const render = () => {
       if (contextLostRef.current || !activeRef.current) return;
@@ -355,8 +408,13 @@ export function useDiffRenderer({
         return;
       }
 
+      // Bind SSIM texture to TEXTURE2 (already uploaded by fireMetrics)
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, texSsim);
+
       gl.uniform1i(uTexA, 0);
       gl.uniform1i(uTexB, 1);
+      gl.uniform1i(uTexSsim, 2);
       gl.uniform1f(uAmp, ampRef.current);
       gl.uniform1i(uPal, paletteInt(palRef.current));
 
@@ -365,27 +423,67 @@ export function useDiffRenderer({
       gl.bindVertexArray(null);
     };
 
-    const firePsnr = () => {
-      if (!onPsnrRef.current || !videoA || !videoB) return;
-      if (!state) return;
-      const psnr = computePsnr(videoA, videoB, state.psnrCtxA, state.psnrCtxB);
-      onPsnrRef.current(psnr);
+    /** Draw both videos to offscreen canvases once, compute PSNR + SSIM, upload SSIM texture */
+    const fireMetrics = () => {
+      if (!videoA || !videoB || !state) return;
+      const { metricsCtxA, metricsCtxB } = state;
+      const w = metricsCtxA.canvas.width;
+      const h = metricsCtxA.canvas.height;
+      let dataA: ImageData;
+      let dataB: ImageData;
+      try {
+        metricsCtxA.drawImage(videoA, 0, 0, w, h);
+        metricsCtxB.drawImage(videoB, 0, 0, w, h);
+        dataA = metricsCtxA.getImageData(0, 0, w, h);
+        dataB = metricsCtxB.getImageData(0, 0, w, h);
+      } catch {
+        onPsnrRef.current?.(null);
+        onSsimRef.current?.(null);
+        return;
+      }
+
+      // PSNR
+      const psnr = computePsnrFromData(dataA, dataB);
+      onPsnrRef.current?.(psnr);
       if (psnr != null) {
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
         psnrHistory.current.set(roundedTime, psnr);
       }
+
+      // SSIM
+      const ssimResult = computeSsimMap(dataA, dataB);
+      if (ssimResult) {
+        onSsimRef.current?.(ssimResult.mssim);
+        const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
+        ssimHistory.current.set(roundedTime, ssimResult.mssim);
+
+        // Upload SSIM map as R8 texture
+        // R8 rows may not be 4-byte aligned — set UNPACK_ALIGNMENT to 1
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, texSsim);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texImage2D(
+          gl.TEXTURE_2D, 0, gl.R8,
+          ssimResult.mapWidth, ssimResult.mapHeight, 0,
+          gl.RED, gl.UNSIGNED_BYTE, ssimResult.mapBytes,
+        );
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      } else {
+        onSsimRef.current?.(null);
+      }
     };
 
     if (paused) {
-      // Render once now, then on each seeked event
+      // Compute metrics first so SSIM texture is ready, then render
+      fireMetrics();
       render();
-      firePsnr();
-      const onSeeked = () => { render(); firePsnr(); };
+      const onSeeked = () => { fireMetrics(); render(); };
       videoB.addEventListener("seeked", onSeeked);
       return () => videoB.removeEventListener("seeked", onSeeked);
     } else {
-      // Continuous rAF loop during playback (PSNR skipped — too expensive at 60fps)
+      // Continuous rAF loop during playback (metrics skipped — too expensive at 60fps)
       onPsnrRef.current?.(null);
+      onSsimRef.current?.(null);
       let rafId: number;
       const loop = () => {
         render();
@@ -398,10 +496,11 @@ export function useDiffRenderer({
     }
   }, [active, videoA, videoB, paused, canvasRef, amplification, palette]);
 
-  // Clear PSNR history when diff mode is deactivated
+  // Clear metric histories when diff mode is deactivated
   useEffect(() => {
     if (!active) {
       psnrHistory.current = new Map();
+      ssimHistory.current = new Map();
     }
   }, [active]);
 
@@ -415,5 +514,5 @@ export function useDiffRenderer({
     };
   }, []);
 
-  return { psnrHistory };
+  return { psnrHistory, ssimHistory };
 }
