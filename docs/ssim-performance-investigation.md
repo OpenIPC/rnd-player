@@ -2,54 +2,112 @@
 
 ## Objective
 
-Investigate and implement optimizations to the SSIM computation pipeline in `useDiffRenderer.ts`. The current implementation uses the `ssim.js` library (bezkrovny algorithm) and spends ~5-10ms per frame on Apple M4, forcing adaptive frame-skip to maintain smooth playback. Goal: reduce total `fireMetrics()` cost so the heatmap updates every frame at 30fps (budget: ~2ms total).
+Investigate and implement optimizations to the SSIM computation pipeline in `useDiffRenderer.ts`. The current implementation uses the `ssim.js` library (bezkrovny algorithm) and spends ~14ms per frame on Apple M4, forcing adaptive frame-skip to maintain smooth playback. Goal: reduce total `fireMetrics()` cost so the heatmap updates every frame at 30fps (budget: ~2ms total).
 
-## Current Performance Profile (Apple M4 MacBook Air)
+## Measured Performance Profile (Apple M4 MacBook Air, Chrome, DevTools closed)
+
+### Before optimization (ssim.js, 160×90)
 
 ```
-fireMetrics() total wall time:  5-10ms per call
-├── drawImage(videoA → 160×90):  }
-├── drawImage(videoB → 160×90):  }  ~4-8ms combined (GPU→CPU readback)
-├── getImageData() × 2:          }
-├── ssim.js bezkrovny:           ~0.2ms
-├── PSNR computation:            ~0.05ms
-├── quantize + texImage2D:       ~0.05ms
-└── callbacks + bookkeeping:     ~0.01ms
+fireMetrics() total wall time:  ~14.4ms per call
+├── drawImage(videoA → 160×90):    0.3ms  (GPU→GPU copy+downscale)
+├── drawImage(videoB → 160×90):    0.1ms
+├── getImageData(A):               6.1ms  (GPU→CPU readback, triggers GPU pipeline flush)
+├── getImageData(B):               7.6ms  (GPU already flushed, but large data)
+├── PSNR compute:                  0.1ms
+├── ssim.js bezkrovny:             0.4ms
+├── texImage2D (R8 upload):        0.0ms
+└── total readback:               14.1ms
 ```
 
-The ssim.js compute itself is only 0.2ms — but the library has significant optimization headroom since it uses `Array` (not typed arrays), allocates sub-windows per block, and does separate rgb2gray conversion. Even though the bottleneck is currently drawImage/getImageData, reducing SSIM compute time matters for: (a) higher resolution inputs if we find a way to eliminate readback, (b) CPU budget headroom on weaker devices.
+### After optimization (fused kernel, 120×68)
+
+```
+fireMetrics() total wall time:  ~6.5ms per call
+├── drawImage(videoA → 120×68):    0.2ms
+├── drawImage(videoB → 120×68):    0.1ms
+├── getImageData(A):               5.8ms  (GPU pipeline flush — fixed cost)
+├── getImageData(B):               0.4ms  (pipeline already flushed, small data)
+├── PSNR compute:                  0.0ms
+├── fused SSIM kernel:             0.1ms  (was 0.4ms with ssim.js)
+├── texImage2D (R8 upload):        0.0ms
+└── total readback:                6.5ms
+```
+
+**55% total reduction** (14.4ms → 6.5ms).
 
 ---
 
-## Investigation Results
+## Applied Optimizations
 
-Four parallel investigation agents were run, covering Phases 1-5. All findings are backed by test files with synthetic image datasets (75-case distortion matrix), correctness validation against ssim.js bezkrovny reference, and performance benchmarks.
+### 1. Fused SSIM kernel (replaced ssim.js) — APPLIED
+
+**Change**: Replaced `ssim()` library call with inline fused kernel in `useDiffRenderer.ts`.
+
+**Technique**: Inline RGB→gray conversion directly in the per-block statistics loop. Single pass over RGBA data, no intermediate grayscale buffers, no sub-window extraction. One allocation (output `Uint8Array`) vs ssim.js's ~273 per call.
+
+**Measured impact**: SSIM compute 0.4ms → 0.1ms (75% reduction). Bit-identical output to ssim.js bezkrovny.
+
+**ssim.js removed from runtime imports** — only used in test files now.
+
+### 2. Resolution reduction 160×90 → 120×68 — APPLIED
+
+**Change**: `METRICS_W=120, METRICS_H=68` in `initGl()`.
+
+**Measured impact**: Total readback 14.1ms → 6.5ms (54% reduction). The SSIM map goes from 15×9 (135 cells) to 11×7 (77 cells) — still adequate spatial detail, GPU bilinear upscaling smooths the heatmap to full resolution.
+
+**Key discovery — GPU pipeline flush dominates**: The first `getImageData` call pays a ~5.8ms fixed GPU sync cost regardless of pixel count. The second call is nearly free (0.4ms) because the pipeline is already flushed. This explains why resolution reduction helped dramatically for the second call (7.6ms → 0.4ms) but barely affected the first (6.1ms → 5.8ms). Further resolution reduction will yield diminishing returns.
+
+### 3. `willReadFrequently: true` — REJECTED
+
+**Hypothesis**: Setting `willReadFrequently: true` on the 2d canvas context would optimize `getImageData()` by keeping pixel data in CPU RAM.
+
+**Actual result**: **3.6× worse** (14.4ms → 36ms). The flag switches the canvas to software rendering. `getImageData()` becomes free (0.0ms) but `drawImage(video)` explodes from 0.3ms to 36ms because it now must:
+1. Read the video frame from GPU (expensive readback)
+2. Software-downscale to 120×68
+3. Write to CPU-backed bitmap
+
+The `drawImage B` call was particularly affected (0.1ms → 28ms). This optimization only works when the canvas is drawn to from CPU data, **not** GPU-decoded video frames.
+
+**Lesson**: The investigation's theoretical estimate (15-25% improvement) was wrong for video sources. Always benchmark with real video elements.
+
+---
+
+## Investigation Results (Phases 1-5)
+
+Four parallel investigation agents were run. All findings are backed by test files with synthetic image datasets (75-case distortion matrix), correctness validation against ssim.js bezkrovny reference, and performance benchmarks.
 
 ### Results Summary
 
 | Approach | Compute Speedup | Main-thread Savings | Effort | Status |
 |----------|----------------|---------------------|--------|--------|
-| JS fusedGray (Variant C) | **3.5×** vs ssim.js | Compute only (0.2→0.06ms) | Drop-in | Tested, ready |
-| WASM-ready kernel | **5.0×** vs ssim.js | Compute only | Low | Tested, ready |
+| **Fused SSIM kernel** | **4× vs ssim.js** | 0.4→0.1ms | Drop-in | **APPLIED** |
+| **Resolution 120×68** | N/A | **14.4→6.5ms total** | Trivial | **APPLIED** |
+| `willReadFrequently: true` | N/A | **3.6× WORSE** | 1 line | **REJECTED** |
+| WASM-ready kernel | 5.0× vs ssim.js | Compute only | Low | Tested, ready |
 | WASM + SIMD (projected) | 10-30× vs ssim.js | Compute only | Medium | Not yet built |
-| WebGPU compute shader | Eliminates readback | **5-10ms → <0.5ms** | High | Shader + orchestration written |
-| Worker offload (VideoFrame) | Same total | **5-10ms → ~0.1ms** main | Medium | Architecture documented |
-| `willReadFrequently: true` | N/A | **15-25% readback** | **1 line** | Trivial to apply |
-| `requestVideoFrameCallback` | N/A | Eliminates 4× redundant | Low | Documented |
-| Resolution 120×68 | ~1.6× | 1.8× less readback | Low | Tested, acceptable |
-| Resolution 80×45 | ~3× | 4× less readback | Low | Tested, marginal |
+| WebGPU compute shader | Eliminates readback | **6.5ms → <0.5ms** | High | Shader + orchestration written |
+| Worker offload (VideoFrame) | Same total | **6.5ms → ~0.1ms** main | Medium | Architecture documented |
+| `requestVideoFrameCallback` | N/A | Eliminates redundant calls | Low | Documented |
 
-### Priority Implementation Order
+### Remaining Bottleneck
 
-1. **`willReadFrequently: true`** — Add to both `getContext("2d")` calls in `initGl()`. One-line change, immediate 15-25% readback improvement. No downsides.
+The ~5.8ms GPU pipeline flush on the first `getImageData` is an irreducible cost on the main thread. It cannot be reduced by:
+- Smaller canvas (already shown: 160→120 barely affected the first call)
+- `willReadFrequently` (makes it worse)
+- Faster SSIM/PSNR compute (already <0.1ms)
 
-2. **Fused JS SSIM kernel** (Variant C or WASM-ready kernel) — Replace `ssim()` call with the fused kernel. Drops SSIM compute from 0.2ms to 0.03-0.04ms, eliminates 273 array allocations per call. Bit-identical to ssim.js output.
+**Only two approaches can address this**:
+1. **Worker offload** — moves the 6.5ms off main thread, main thread cost ~0.1ms (VideoFrame capture + postMessage)
+2. **WebGPU compute shader** — eliminates GPU→CPU readback entirely, total <0.5ms
 
-3. **`requestVideoFrameCallback`** — Trigger SSIM compute only on new video frames, not every rAF (which fires at 120Hz on ProMotion displays). Eliminates 3× redundant computations for 30fps video on 120Hz display.
+### Priority for Next Steps
 
-4. **Worker offload with VideoFrame transfer** — Move the entire pipeline off main thread. Main-thread cost drops from 5-10ms to ~0.1ms. Total compute unchanged but jank eliminated. Makes adaptive frame-skip unnecessary.
+1. **Worker offload with VideoFrame transfer** — medium effort, eliminates main-thread jank. The `pendingCompute` guard naturally drops frames if the worker falls behind. Makes the adaptive frame-skip unnecessary.
 
-5. **WebGPU compute shader** — Eliminates GPU→CPU readback entirely via `importExternalTexture()`. Total cost <0.5ms. Requires CPU fallback for browsers without WebGPU.
+2. **`requestVideoFrameCallback`** — low effort complement to worker offload. Triggers SSIM only on new video frames, not every rAF. On 120Hz displays with 30fps video, eliminates 3× redundant computations.
+
+3. **WebGPU compute shader** — high effort, maximum performance. Requires CPU fallback path for browsers without WebGPU.
 
 ---
 
@@ -120,6 +178,8 @@ Rather than setting up a full WASM toolchain (which is a separate integration ta
 - **WASM + SIMD vs JS kernel**: 3-8× faster (inner loop's multiply-accumulates map to v128 lanes)
 - **WASM + SIMD vs ssim.js**: **10-30× total speedup**
 
+Note: With the fused kernel already at 0.1ms, WASM would reduce it to ~0.01-0.03ms. This is negligible compared to the 5.8ms GPU sync bottleneck. WASM is only worthwhile if the readback is eliminated (WebGPU) or if targeting higher resolutions.
+
 ### Build Steps (future work)
 
 1. `npm install --save-dev assemblyscript @assemblyscript/loader vite-plugin-assemblyscript-asc`
@@ -171,7 +231,7 @@ Each workgroup = one 11×11 SSIM block (121 threads):
 ```typescript
 // Detect once
 const gpuAvailable = await isWebGPUAvailable();
-let gpuSsim = gpuAvailable ? await initSsimGPU(160, 90) : null;
+let gpuSsim = gpuAvailable ? await initSsimGPU(120, 68) : null;
 
 // In fireMetrics():
 if (gpuSsim && videoA && videoB) {
@@ -196,7 +256,7 @@ if (gpuSsim && videoA && videoB) {
 
 - External texture path: **<0.5ms total** (no readback at all)
 - Texture_2d fallback: **~1-2ms total** (one small copy + GPU compute)
-- vs current: **5-10ms** (10-20× improvement)
+- vs current optimized: **6.5ms** (10-13× improvement)
 
 ---
 
@@ -211,12 +271,12 @@ if (gpuSsim && videoA && videoB) {
 **Approach**: `VideoFrame` (WebCodecs API) is the bridge between main thread and worker:
 1. Main thread: `new VideoFrame(videoElement)` — captures GPU texture handle (~0.05ms)
 2. Main thread: `worker.postMessage({frame}, [frame])` — zero-copy transfer
-3. Worker: draws to `OffscreenCanvas` at 160×90, `getImageData()`, computes SSIM + PSNR
+3. Worker: draws to `OffscreenCanvas` at 120×68, `getImageData()`, computes SSIM + PSNR
 4. Worker: `postMessage(result, [mapBytes.buffer])` — transfers result back
 
-**Main-thread cost**: ~0.1ms (vs 5-10ms current = **50-100× jank reduction**)
+**Main-thread cost**: ~0.1ms (vs 6.5ms current = **65× jank reduction**)
 
-Total compute unchanged (5-10ms), but moved entirely off main thread. The `pendingCompute` guard naturally drops frames if the worker falls behind.
+Total compute unchanged (~6.5ms), but moved entirely off main thread. The `pendingCompute` guard naturally drops frames if the worker falls behind.
 
 **Browser support**: VideoFrame (Chrome 94+, Edge 94+, Firefox 130+, Safari 16.4+), OffscreenCanvas (Chrome 69+, Edge 79+, Firefox 105+, Safari 16.4+)
 
@@ -226,7 +286,7 @@ Total compute unchanged (5-10ms), but moved entirely off main thread. The `pendi
 
 Key findings:
 - `new VideoFrame(video)` is nearly free (~0.01-0.05ms) — just a GPU handle
-- `copyTo()` reads at native resolution only (no resize option) — 40-55× more data for 1080p vs drawImage to 160×90
+- `copyTo()` reads at native resolution only (no resize option) — 40-55× more data for 1080p vs drawImage to 120×68
 - I420/NV12 formats: Y plane IS grayscale (skip RGB→gray), but can't resize during copy
 - `createImageBitmap(video, {resizeWidth, resizeHeight})` is async and may help in worker context
 
@@ -238,37 +298,48 @@ Key findings:
 
 | Resolution | SSIM Map | Cells | Readback | mssim Mean |Δ| mssim Max |Δ| Verdict |
 |-----------|----------|-------|----------|-----------|-----------|---------|
-| 160×90 | 15×9 | 135 | 57,600 B | baseline | baseline | Current |
-| 120×68 | 11×7 | 77 | 32,640 B | <0.05 | <0.40 | **Acceptable** |
+| 160×90 | 15×9 | 135 | 57,600 B | baseline | baseline | Previous |
+| **120×68** | **11×7** | **77** | **32,640 B** | **<0.05** | **<0.40** | **APPLIED** |
 | 80×45 | 8×5 | 40 | 14,400 B | <0.06 | <0.50 | Marginal |
 
-**120×68 is recommended** — negligible accuracy loss for structural distortions (blocking, blur, brightness all <0.01 delta), 1.8× less readback data. The high max delta comes from pathological synthetic cases (Gaussian noise on flat images) where downscale smoothing dramatically changes the metric; real video content would not trigger this.
+**120×68 is applied** — negligible accuracy loss for structural distortions (blocking, blur, brightness all <0.01 delta), 1.8× less readback data. The high max delta comes from pathological synthetic cases (Gaussian noise on flat images) where downscale smoothing dramatically changes the metric; real video content would not trigger this.
 
-**80×45 is marginal** — the 8×5 SSIM map is coarse, though GPU bilinear upscaling smooths it. Acceptable for a rough diagnostic overlay but loses spatial detail.
+**80×45 not recommended** — the 8×5 SSIM map is too coarse, and the measured GPU sync bottleneck (5.8ms fixed flush) means further resolution reduction yields diminishing returns.
 
-### 5.4: Capture Strategies
+### 5.4: Capture Strategies — Real-World Results
 
 **File**: `src/utils/ssimCaptureStrategies.ts`
 
-Four strategies evaluated:
+| Strategy | Theoretical | Measured (Chrome M4) | Verdict |
+|----------|------------|---------------------|---------|
+| `willReadFrequently: true` | 15-25% improvement | **3.6× WORSE** (14→36ms) | **REJECTED** |
+| Resolution 120×68 | 1.8× less readback | **54% improvement** (14→6.5ms) | **APPLIED** |
+| `requestVideoFrameCallback` | Eliminates redundant calls | Not yet measured | Planned |
+| `createImageBitmap(resize)` | 1-2ms async saving | Not yet measured | For worker path |
 
-| Strategy | Main-thread Saving | Complexity | Recommended |
-|----------|-------------------|------------|-------------|
-| `willReadFrequently: true` | ~1-2ms (15-25%) | **Trivial (1 line)** | **YES** |
-| `requestVideoFrameCallback` | Eliminates redundant calls | Low | YES |
-| `createImageBitmap(resize)` | 1-2ms (partial async) | Low | In worker |
-| Two-canvas CSS scaling | None | N/A | No |
+**Critical finding on `willReadFrequently`**: The theoretical analysis assumed `drawImage(video)` cost wouldn't change. In practice, the flag forces software rendering, making `drawImage(video)` perform a synchronous GPU readback at full video resolution + CPU-side downscale, which is far more expensive than the GPU-accelerated path. The getImageData savings (6ms → 0ms) are overwhelmed by the drawImage penalty (0.3ms → 36ms).
 
-**`willReadFrequently: true`** is the single highest-value/lowest-effort change:
-```typescript
-// Current:
-const metricsCtxA = metricsCanvasA.getContext("2d")!;
-// Proposed:
-const metricsCtxA = metricsCanvasA.getContext("2d", { willReadFrequently: true })!;
+---
+
+## GPU Pipeline Flush Discovery
+
+The most important finding from real-world benchmarking is the **GPU pipeline flush pattern**:
+
 ```
-Tells the browser to optimize for frequent `getImageData()`. Keeps canvas data in CPU RAM, eliminating the GPU→CPU copy for `getImageData()` itself. The `drawImage(video)` readback still occurs but `getImageData()` becomes nearly free.
+getImageData(A):  5.8ms  ← pays the GPU sync/flush cost (fixed, ~independent of pixel count)
+getImageData(B):  0.4ms  ← GPU already flushed, just data transfer (scales with pixels)
+```
 
-**`requestVideoFrameCallback`** fires once per new video frame (vs rAF at display refresh rate). On a 120Hz display with 30fps video, this eliminates 3 out of 4 redundant SSIM computations. The GL render loop stays on rAF for smooth overlay display.
+This means:
+- **The first `getImageData` per frame is expensive** (~5.8ms) because it triggers a synchronous GPU pipeline flush. The browser must wait for all pending GPU operations (video decode, compositing, texture uploads) to complete before it can read pixel data.
+- **Subsequent `getImageData` calls are cheap** because the pipeline is already flushed. The cost is proportional to data volume (0.4ms for 32,640 bytes at 120×68).
+- **Resolution reduction primarily helps the second call**, not the first. Going from 160×90 to 120×68: call A went from 6.1ms → 5.8ms (-5%), call B went from 7.6ms → 0.4ms (-95%).
+- **The ~5.8ms flush is the irreducible minimum** for any canvas-based approach on the main thread.
+
+This discovery reframes the optimization strategy:
+- WASM, faster SSIM, smaller resolution — **diminishing returns** (the 5.8ms flush dominates)
+- Worker offload — **eliminates main-thread jank** (the 6.5ms total moves to a background thread)
+- WebGPU — **eliminates the flush entirely** (no CPU readback needed)
 
 ---
 
@@ -303,9 +374,9 @@ All 214 tests pass. Build compiles cleanly.
 
 ---
 
-## Reference: ssim.js Bezkrovny Pipeline
+## Reference: Former ssim.js Pipeline (replaced)
 
-The current call path through ssim.js:
+The ssim.js call path that was replaced by the fused kernel:
 
 ```
 ssim(imageA, imageB, {ssim:"bezkrovny", downsample:false})
@@ -331,18 +402,13 @@ ssim(imageA, imageB, {ssim:"bezkrovny", downsample:false})
 - 2 × `Array(14400)` for grayscale buffers
 - 135 × 2 × `Array(≤121)` for sub-windows = 270 array allocations
 - 1 × `Array(135)` for output SSIM map
-- Total: ~273 array allocations per frame
+- Total: ~273 array allocations per frame (now: 1 Uint8Array allocation)
 
 ## Reference: Source Files
 
 | File | Role |
 |------|------|
-| `src/hooks/useDiffRenderer.ts` | Production SSIM integration |
+| `src/hooks/useDiffRenderer.ts` | Production SSIM integration (fused kernel, 120×68) |
 | `src/utils/ssimBenchmark.test.ts` | Existing accuracy benchmark (75 test cases) |
 | `src/utils/ssimUpscale.test.ts` | Existing upscale quality benchmark |
-| `src/types/ssim.d.ts` | ssim.js type declarations |
-| `node_modules/ssim.js/dist/bezkrovnySsim.js` | Library source — bezkrovny algorithm |
-| `node_modules/ssim.js/dist/math.js` | Library source — average, variance, covariance |
-| `node_modules/ssim.js/dist/matlab/sub.js` | Library source — window extraction |
-| `node_modules/ssim.js/dist/matlab/rgb2gray.js` | Library source — RGBA→gray conversion |
-| `node_modules/ssim.js/dist/index.js` | Library entry — pipeline orchestration |
+| `src/types/ssim.d.ts` | ssim.js type declarations (used by test files) |
