@@ -1337,29 +1337,52 @@ video::-webkit-media-text-track-container {
   pointer-events: none;
 }
 
-.vp-compare-slider {
+.vp-compare-strip {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 2px;
-  background: #fff;
-  z-index: 4;
-  pointer-events: none;
-  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
-  transform: translateX(-1px);
-}
-
-.vp-compare-handle {
-  position: absolute;
-  top: 50%;
-  width: 32px;
-  height: 32px;
-  transform: translate(-50%, -50%);
+  width: 48px;
+  transform: translateX(-50%);
   z-index: 4;
   cursor: col-resize;
   pointer-events: auto;
   user-select: none;
   touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vp-compare-slider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  transition: width 0.15s;
+  pointer-events: none;
+}
+
+.vp-compare-strip:hover .vp-compare-slider,
+.vp-compare-strip:active .vp-compare-slider {
+  width: 4px;
+}
+
+.vp-compare-handle {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+
+.vp-compare-strip:hover .vp-compare-handle,
+.vp-compare-strip:active .vp-compare-handle {
+  opacity: 1;
 }
 
 .vp-compare-toolbar {
