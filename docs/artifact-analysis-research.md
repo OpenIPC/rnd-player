@@ -305,7 +305,12 @@ FilmstripTimeline paint loop (every rAF):
 
 5. **Dual-manifest resolution mismatch** — two CDNs may serve different pixel dimensions at the same selected height (e.g., 1920×1080 vs 1920×1088 due to codec alignment). The WebGL shader handles this implicitly (textures stretch to fill the quad), but PSNR values may be slightly affected by interpolation.
 
-6. **SSIM at 1/4 resolution upscale artifacts** — does bilinear upscaling of a 480×270 SSIM map to 1920×1080 produce distracting interpolation artifacts? Or does the inherent smoothness of SSIM windows make this invisible? Needs prototyping with synthetic test patterns.
+6. ~~**SSIM at 1/4 resolution upscale artifacts**~~ **Benchmarked** (`src/utils/ssimUpscale.test.ts`): 15 patterns (3 image types × 5 spatially varying distortions) comparing full-res (320×180) vs downscale-compute-upscale (80×45 → bilinear upscale) pipeline. Key findings:
+   - **Structural distortions (blocking, blur) are well-preserved**: mean Δmssim=0.041, map RMSE=0.001–0.30. These are the primary video compression artifacts — the 1/4 res path is accurate for them.
+   - **Noise-based distortions are smoothed by downscaling**: mean Δmssim=0.35, because 4× area averaging cancels out per-pixel noise. This is inherent to downscaling, not an upscaling artifact. The spatial quality pattern is still preserved (damaged regions still show lower SSIM than clean regions).
+   - **Bilinear vs nearest-neighbor**: bilinear upscaling produces marginally smoother error gradients. At 1/4 resolution the SSIM map has so few pixels (8×5 for the test size) that both methods produce similar results — the SSIM 11×11 Gaussian window already smooths the map.
+   - **Speed**: ~15× speedup from quarter resolution computation.
+   - **Verdict**: The 1/4 resolution path is viable for a video player diagnostic overlay. Structural quality loss (the kind video compression produces) is accurately represented. The bilinear upscale introduces no visible blockiness. Noise sensitivity is reduced but this is acceptable — video players analyze compression artifacts, not sensor noise.
 
 ---
 
