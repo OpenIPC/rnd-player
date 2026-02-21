@@ -53,7 +53,27 @@ const FRAG_SRC = [
 "      color = mix(vec3(1.0, 1.0, 1.0), vec3(1.0, 0.0, 0.0), t);",
 "    }",
 "  } else if (u_palette == 2) {",
-"    color = val < 0.1 ? vec3(0.0, 0.6, 0.0) : vec3(1.0, 0.0, 0.0);",
+// PSNR heatmap: compute per-pixel PSNR in dB, map to 5-stop gradient
+"    vec3 d = colA - colB;",
+"    float mse = dot(d, d) / 3.0;",
+"    float ampMse = mse / (u_amplify * u_amplify);",
+"    float psnr = clamp(-10.0 * log(ampMse + 1e-10) / log(10.0), 0.0, 60.0);",
+// 5 stops: ≤15 magenta, 20 red, 30 yellow, 40 green, ≥50 dark green
+"    if (psnr >= 50.0) {",
+"      color = vec3(0.0, 0.4, 0.0);",
+"    } else if (psnr >= 40.0) {",
+"      float t = (psnr - 40.0) / 10.0;",
+"      color = mix(vec3(0.0, 0.8, 0.0), vec3(0.0, 0.4, 0.0), t);",
+"    } else if (psnr >= 30.0) {",
+"      float t = (psnr - 30.0) / 10.0;",
+"      color = mix(vec3(1.0, 1.0, 0.0), vec3(0.0, 0.8, 0.0), t);",
+"    } else if (psnr >= 20.0) {",
+"      float t = (psnr - 20.0) / 10.0;",
+"      color = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), t);",
+"    } else {",
+"      float t = clamp((psnr - 15.0) / 5.0, 0.0, 1.0);",
+"      color = mix(vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), t);",
+"    }",
 "  } else {",
 "    color = vec3(val);",
 "  }",
@@ -71,6 +91,7 @@ interface UseDiffRendererParams {
   paused: boolean;
   amplification: DiffAmplification;
   palette: DiffPalette;
+  onPsnr?: (psnr: number | null) => void;
 }
 
 interface GlState {
@@ -84,6 +105,11 @@ interface GlState {
   uPal: WebGLUniformLocation | null;
   uTexA: WebGLUniformLocation | null;
   uTexB: WebGLUniformLocation | null;
+  /** Offscreen canvases for CPU-side PSNR readout (reduced resolution) */
+  psnrCanvasA: OffscreenCanvas;
+  psnrCanvasB: OffscreenCanvas;
+  psnrCtxA: OffscreenCanvasRenderingContext2D;
+  psnrCtxB: OffscreenCanvasRenderingContext2D;
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null {
@@ -160,6 +186,14 @@ function initGl(canvas: HTMLCanvasElement): GlState | null {
     textures.push(tex);
   }
 
+  // Offscreen canvases for CPU-side PSNR readout (160px wide, 16:9 aspect)
+  const PSNR_W = 160;
+  const PSNR_H = 90;
+  const psnrCanvasA = new OffscreenCanvas(PSNR_W, PSNR_H);
+  const psnrCanvasB = new OffscreenCanvas(PSNR_W, PSNR_H);
+  const psnrCtxA = psnrCanvasA.getContext("2d")!;
+  const psnrCtxB = psnrCanvasB.getContext("2d")!;
+
   return {
     gl,
     program,
@@ -171,6 +205,10 @@ function initGl(canvas: HTMLCanvasElement): GlState | null {
     uPal: gl.getUniformLocation(program, "u_palette"),
     uTexA: gl.getUniformLocation(program, "u_texA"),
     uTexB: gl.getUniformLocation(program, "u_texB"),
+    psnrCanvasA,
+    psnrCanvasB,
+    psnrCtxA,
+    psnrCtxB,
   };
 }
 
@@ -190,6 +228,38 @@ function paletteInt(p: DiffPalette): number {
   return 0;
 }
 
+/** Compute overall frame PSNR (dB) from two videos via offscreen canvases */
+function computePsnr(
+  videoA: HTMLVideoElement,
+  videoB: HTMLVideoElement,
+  ctxA: OffscreenCanvasRenderingContext2D,
+  ctxB: OffscreenCanvasRenderingContext2D,
+): number | null {
+  const w = ctxA.canvas.width;
+  const h = ctxA.canvas.height;
+  try {
+    ctxA.drawImage(videoA, 0, 0, w, h);
+    ctxB.drawImage(videoB, 0, 0, w, h);
+  } catch {
+    return null; // cross-origin tainted or video not ready
+  }
+  const dataA = ctxA.getImageData(0, 0, w, h).data;
+  const dataB = ctxB.getImageData(0, 0, w, h).data;
+  let sumSqDiff = 0;
+  let pixelCount = 0;
+  for (let i = 0; i < dataA.length; i += 4) {
+    // RGB channels only (skip alpha)
+    for (let c = 0; c < 3; c++) {
+      const diff = (dataA[i + c] - dataB[i + c]) / 255;
+      sumSqDiff += diff * diff;
+    }
+    pixelCount++;
+  }
+  const mse = sumSqDiff / (pixelCount * 3);
+  if (mse < 1e-10) return 60; // identical frames, cap at 60 dB
+  return -10 * Math.log10(mse);
+}
+
 export function useDiffRenderer({
   canvasRef,
   videoA,
@@ -198,16 +268,19 @@ export function useDiffRenderer({
   paused,
   amplification,
   palette,
+  onPsnr,
 }: UseDiffRendererParams) {
   // Stable refs for rAF render loop access (avoids stale closures)
   const ampRef = useRef(amplification);
   const palRef = useRef(palette);
   const pausedRef = useRef(paused);
   const activeRef = useRef(active);
+  const onPsnrRef = useRef(onPsnr);
   ampRef.current = amplification;
   palRef.current = palette;
   pausedRef.current = paused;
   activeRef.current = active;
+  onPsnrRef.current = onPsnr;
 
   const glStateRef = useRef<GlState | null>(null);
   const contextLostRef = useRef(false);
@@ -289,14 +362,23 @@ export function useDiffRenderer({
       gl.bindVertexArray(null);
     };
 
+    const firePsnr = () => {
+      if (!onPsnrRef.current || !videoA || !videoB) return;
+      if (!state) return;
+      const psnr = computePsnr(videoA, videoB, state.psnrCtxA, state.psnrCtxB);
+      onPsnrRef.current(psnr);
+    };
+
     if (paused) {
       // Render once now, then on each seeked event
       render();
-      const onSeeked = () => render();
+      firePsnr();
+      const onSeeked = () => { render(); firePsnr(); };
       videoB.addEventListener("seeked", onSeeked);
       return () => videoB.removeEventListener("seeked", onSeeked);
     } else {
-      // Continuous rAF loop during playback
+      // Continuous rAF loop during playback (PSNR skipped — too expensive at 60fps)
+      onPsnrRef.current?.(null);
       let rafId: number;
       const loop = () => {
         render();

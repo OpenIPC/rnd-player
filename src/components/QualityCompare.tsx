@@ -302,6 +302,8 @@ export default function QualityCompare({
   const amplificationRef = useRef<DiffAmplification>(initAmp);
   const paletteRef = useRef<DiffPalette>(initPalette);
 
+  const [psnrValue, setPsnrValue] = useState<number | null>(null);
+
   // ── Diff renderer (WebGL2 per-pixel difference map) ──
   useDiffRenderer({
     canvasRef: diffCanvasRef,
@@ -311,6 +313,7 @@ export default function QualityCompare({
     paused,
     amplification,
     palette,
+    onPsnr: setPsnrValue,
   });
 
   const isDualManifest = slaveSrc !== src;
@@ -1498,6 +1501,11 @@ export default function QualityCompare({
               >
                 {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : "PSNR"}
               </button>
+              {palette === "psnr" && (
+                <span className="vp-compare-diff-psnr">
+                  {psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014"}
+                </span>
+              )}
             </>
           )}
         </div>
