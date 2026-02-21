@@ -18,7 +18,6 @@
  * for a valid WebGL2 context), and destroyed when deactivated or on unmount.
  */
 import { useEffect, useRef } from "react";
-import ssim from "ssim.js";
 
 export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim";
 export type DiffAmplification = 1 | 2 | 4 | 8;
@@ -231,9 +230,9 @@ function initGl(canvas: HTMLCanvasElement): GlState | null {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([128]));
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
 
-  // Offscreen canvases for CPU-side metrics (160px wide, 16:9 aspect)
-  const METRICS_W = 160;
-  const METRICS_H = 90;
+  // Offscreen canvases for CPU-side metrics (reduced resolution, ~16:9 aspect)
+  const METRICS_W = 120;
+  const METRICS_H = 68;
   const metricsCanvasA = new OffscreenCanvas(METRICS_W, METRICS_H);
   const metricsCanvasB = new OffscreenCanvas(METRICS_W, METRICS_H);
   const metricsCtxA = metricsCanvasA.getContext("2d")!;
@@ -296,22 +295,64 @@ function computePsnrFromData(dataA: ImageData, dataB: ImageData): number | null 
   return -10 * Math.log10(mse);
 }
 
-/** Compute SSIM map using ssim.js bezkrovny algorithm, return quantized R8 bytes for GPU upload */
+// SSIM constants: k1=0.01, k2=0.03, bitDepth=8, L=255
+const SSIM_C1 = (0.01 * 255) * (0.01 * 255); // 6.5025
+const SSIM_C2 = (0.03 * 255) * (0.03 * 255); // 58.5225
+const SSIM_WINDOW = 11;
+
+/** Compute SSIM map using fused bezkrovny kernel — inline grayscale, in-place stats, zero intermediate allocations */
 function computeSsimMap(
   dataA: ImageData,
   dataB: ImageData,
 ): { meanSsim: number; mapBytes: Uint8Array; mapWidth: number; mapHeight: number } | null {
-  try {
-    const result = ssim(dataA, dataB, { ssim: "bezkrovny", downsample: false });
-    const map = result.ssim_map;
-    const bytes = new Uint8Array(map.data.length);
-    for (let i = 0; i < map.data.length; i++) {
-      bytes[i] = Math.round(Math.max(0, Math.min(1, map.data[i])) * 255);
+  const { width, height } = dataA;
+  const rgbaA = dataA.data;
+  const rgbaB = dataB.data;
+
+  const mapW = Math.ceil(width / SSIM_WINDOW);
+  const mapH = Math.ceil(height / SSIM_WINDOW);
+  const mapSize = mapW * mapH;
+  const mapBytes = new Uint8Array(mapSize);
+
+  let totalSsim = 0;
+  let idx = 0;
+
+  for (let by = 0; by < height; by += SSIM_WINDOW) {
+    for (let bx = 0; bx < width; bx += SSIM_WINDOW) {
+      const ww = Math.min(SSIM_WINDOW, width - bx);
+      const wh = Math.min(SSIM_WINDOW, height - by);
+      const n = ww * wh;
+
+      let s1 = 0, s2 = 0, sq1 = 0, sq2 = 0, cross = 0;
+
+      for (let dy = 0; dy < wh; dy++) {
+        const rowStart = ((by + dy) * width + bx) * 4;
+        for (let dx = 0; dx < ww; dx++) {
+          const px = rowStart + dx * 4;
+          const g1 = (77 * rgbaA[px] + 150 * rgbaA[px + 1] + 29 * rgbaA[px + 2] + 128) >> 8;
+          const g2 = (77 * rgbaB[px] + 150 * rgbaB[px + 1] + 29 * rgbaB[px + 2] + 128) >> 8;
+          s1 += g1; s2 += g2;
+          sq1 += g1 * g1; sq2 += g2 * g2;
+          cross += g1 * g2;
+        }
+      }
+
+      const avg1 = s1 / n;
+      const avg2 = s2 / n;
+      const var1 = sq1 / n - avg1 * avg1;
+      const var2 = sq2 / n - avg2 * avg2;
+      const cov = cross / n - avg1 * avg2;
+
+      const num = (2 * avg1 * avg2 + SSIM_C1) * (2 * cov + SSIM_C2);
+      const den = (avg1 * avg1 + avg2 * avg2 + SSIM_C1) * (var1 + var2 + SSIM_C2);
+      const ssimVal = num / den;
+
+      totalSsim += ssimVal;
+      mapBytes[idx++] = Math.max(0, Math.min(255, Math.round(ssimVal * 255)));
     }
-    return { meanSsim: result.mssim, mapBytes: bytes, mapWidth: map.width, mapHeight: map.height };
-  } catch {
-    return null;
   }
+
+  return { meanSsim: totalSsim / mapSize, mapBytes, mapWidth: mapW, mapHeight: mapH };
 }
 
 export function useDiffRenderer({
@@ -429,6 +470,13 @@ export function useDiffRenderer({
       gl.bindVertexArray(null);
     };
 
+    // Benchmark logging: collect samples and log every Nth call
+    let benchSamples: Array<{
+      drawA: number; drawB: number; getDataA: number; getDataB: number;
+      psnr: number; ssimCompute: number; ssimQuantize: number; texUpload: number; total: number;
+    }> = [];
+    const BENCH_LOG_INTERVAL = 20;
+
     /** Draw both videos to offscreen canvases once, compute PSNR + SSIM, upload SSIM texture */
     const fireMetrics = () => {
       if (!videoA || !videoB || !state) return;
@@ -437,11 +485,26 @@ export function useDiffRenderer({
       const h = metricsCtxA.canvas.height;
       let dataA: ImageData;
       let dataB: ImageData;
+
+      const tTotal = performance.now();
+
+      let tDrawA: number, tDrawB: number, tGetDataA: number, tGetDataB: number;
       try {
+        const t0 = performance.now();
         metricsCtxA.drawImage(videoA, 0, 0, w, h);
+        tDrawA = performance.now() - t0;
+
+        const t1 = performance.now();
         metricsCtxB.drawImage(videoB, 0, 0, w, h);
+        tDrawB = performance.now() - t1;
+
+        const t2 = performance.now();
         dataA = metricsCtxA.getImageData(0, 0, w, h);
+        tGetDataA = performance.now() - t2;
+
+        const t3 = performance.now();
         dataB = metricsCtxB.getImageData(0, 0, w, h);
+        tGetDataB = performance.now() - t3;
       } catch {
         onPsnrRef.current?.(null);
         onSsimRef.current?.(null);
@@ -449,7 +512,9 @@ export function useDiffRenderer({
       }
 
       // PSNR
+      const tPsnr0 = performance.now();
       const psnr = computePsnrFromData(dataA, dataB);
+      const tPsnrElapsed = performance.now() - tPsnr0;
       onPsnrRef.current?.(psnr);
       if (psnr != null) {
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
@@ -457,14 +522,19 @@ export function useDiffRenderer({
       }
 
       // SSIM
+      const tSsim0 = performance.now();
       const ssimResult = computeSsimMap(dataA, dataB);
+      const tSsimCompute = performance.now() - tSsim0;
+
+      let tSsimQuantize = 0;
+      let tTexUpload = 0;
       if (ssimResult) {
         onSsimRef.current?.(ssimResult.meanSsim);
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
         ssimHistory.current.set(roundedTime, ssimResult.meanSsim);
 
         // Upload SSIM map as R8 texture
-        // R8 rows may not be 4-byte aligned — set UNPACK_ALIGNMENT to 1
+        const tUpload0 = performance.now();
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, texSsim);
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -474,8 +544,51 @@ export function useDiffRenderer({
           gl.RED, gl.UNSIGNED_BYTE, ssimResult.mapBytes,
         );
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+        tTexUpload = performance.now() - tUpload0;
       } else {
         onSsimRef.current?.(null);
+      }
+
+      const totalElapsed = performance.now() - tTotal;
+
+      // Collect benchmark sample
+      benchSamples.push({
+        drawA: tDrawA!, drawB: tDrawB!, getDataA: tGetDataA!, getDataB: tGetDataB!,
+        psnr: tPsnrElapsed, ssimCompute: tSsimCompute, ssimQuantize: tSsimQuantize,
+        texUpload: tTexUpload, total: totalElapsed,
+      });
+
+      if (benchSamples.length >= BENCH_LOG_INTERVAL) {
+        const median = (arr: number[]) => {
+          const s = [...arr].sort((a, b) => a - b);
+          return s[Math.floor(s.length / 2)];
+        };
+        const fmt = (v: number) => v.toFixed(3);
+        const n = benchSamples.length;
+        const stats = {
+          drawA: median(benchSamples.map(s => s.drawA)),
+          drawB: median(benchSamples.map(s => s.drawB)),
+          getDataA: median(benchSamples.map(s => s.getDataA)),
+          getDataB: median(benchSamples.map(s => s.getDataB)),
+          psnr: median(benchSamples.map(s => s.psnr)),
+          ssimCompute: median(benchSamples.map(s => s.ssimCompute)),
+          texUpload: median(benchSamples.map(s => s.texUpload)),
+          total: median(benchSamples.map(s => s.total)),
+        };
+        const readback = stats.drawA + stats.drawB + stats.getDataA + stats.getDataB;
+        console.log(
+          `[fireMetrics] ${n} samples, median ms:\n` +
+          `  drawImage A:    ${fmt(stats.drawA)}\n` +
+          `  drawImage B:    ${fmt(stats.drawB)}\n` +
+          `  getImageData A: ${fmt(stats.getDataA)}\n` +
+          `  getImageData B: ${fmt(stats.getDataB)}\n` +
+          `  ── readback:    ${fmt(readback)}\n` +
+          `  PSNR compute:   ${fmt(stats.psnr)}\n` +
+          `  SSIM compute:   ${fmt(stats.ssimCompute)}\n` +
+          `  texImage2D:     ${fmt(stats.texUpload)}\n` +
+          `  ── TOTAL:       ${fmt(stats.total)}`,
+        );
+        benchSamples = [];
       }
     };
 
