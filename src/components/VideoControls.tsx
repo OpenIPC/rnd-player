@@ -31,6 +31,7 @@ import { useMultiSubtitles, type TextTrackInfo } from "../hooks/useMultiSubtitle
 import SubtitleOverlay from "./SubtitleOverlay";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
+import AdaptationToast from "./AdaptationToast";
 import { formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
@@ -1158,6 +1159,13 @@ export default function VideoControls({
       {copiedMsg &&
         createPortal(
           <div className="vp-copied-toast">{copiedMsg}</div>,
+          containerEl
+        )}
+
+      {/* ABR adaptation toast — only in Auto quality mode */}
+      {isAutoQuality &&
+        createPortal(
+          <AdaptationToast player={player} />,
           containerEl
         )}
 
