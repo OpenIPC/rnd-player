@@ -13,6 +13,10 @@ function parseUrlParams(): {
   comparePx: number | null;
   comparePy: number | null;
   compareSplit: number | null;
+  compareHx: number | null;
+  compareHy: number | null;
+  compareHw: number | null;
+  compareHh: number | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
@@ -25,6 +29,10 @@ function parseUrlParams(): {
   const px = params.get("px");
   const py = params.get("py");
   const split = params.get("split");
+  const hx = params.get("hx");
+  const hy = params.get("hy");
+  const hw = params.get("hw");
+  const hh = params.get("hh");
 
   return {
     src: v || null,
@@ -37,6 +45,10 @@ function parseUrlParams(): {
     comparePx: px ? parseFloat(px) : null,
     comparePy: py ? parseFloat(py) : null,
     compareSplit: split ? parseInt(split, 10) : null,
+    compareHx: hx ? parseFloat(hx) : null,
+    compareHy: hy ? parseFloat(hy) : null,
+    compareHw: hw ? parseFloat(hw) : null,
+    compareHh: hh ? parseFloat(hh) : null,
   };
 }
 
@@ -163,6 +175,10 @@ function App() {
         comparePx={initial.comparePx ?? undefined}
         comparePy={initial.comparePy ?? undefined}
         compareSplit={initial.compareSplit ?? undefined}
+        compareHx={initial.compareHx ?? undefined}
+        compareHy={initial.compareHy ?? undefined}
+        compareHw={initial.compareHw ?? undefined}
+        compareHh={initial.compareHh ?? undefined}
       />
     </div>
   );

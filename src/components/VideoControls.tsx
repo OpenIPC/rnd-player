@@ -725,6 +725,12 @@ export default function VideoControls({
       if (Math.round(cv.sliderPct) !== 50) {
         params.set("split", String(Math.round(cv.sliderPct)));
       }
+      if (cv.highlightX != null && cv.highlightY != null && cv.highlightW != null && cv.highlightH != null) {
+        params.set("hx", cv.highlightX.toFixed(4));
+        params.set("hy", cv.highlightY.toFixed(4));
+        params.set("hw", cv.highlightW.toFixed(4));
+        params.set("hh", cv.highlightH.toFixed(4));
+      }
     }
     navigator.clipboard.writeText(`${base}?${params.toString()}`).then(() => {
       showCopiedToast("URL copied");

@@ -1526,6 +1526,42 @@ video::-webkit-media-text-track-container {
   pointer-events: auto;
 }
 
+/* ── Highlight draw layer (crosshair cursor for drawing rectangles) ── */
+.vp-compare-draw {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* ── Rubber-band rectangle during drawing ── */
+.vp-compare-draw-rect {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 2px dashed rgba(255, 255, 255, 0.8);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Spotlight dim overlay with clip-path cutout ── */
+.vp-compare-spotlight {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* ── Highlight border (dashed gold border around the rectangle) ── */
+.vp-compare-highlight-border {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 2px dashed rgba(255, 215, 0, 0.8);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+
 .vp-compare-zoom-label {
   position: absolute;
   bottom: 52px;

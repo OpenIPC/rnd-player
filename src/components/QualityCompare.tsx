@@ -71,6 +71,14 @@ const FRAME_TYPE_COLORS: Record<FrameType, string> = {
   B: "rgb(50, 200, 50)",
 };
 
+/** Highlight rectangle in fractional coordinates (0-1 of container dimensions) */
+interface HighlightRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 interface QualityCompareProps {
   videoEl: HTMLVideoElement;
   player: shaka.Player;
@@ -84,6 +92,10 @@ interface QualityCompareProps {
   initialPanXFrac?: number;
   initialPanYFrac?: number;
   initialSplit?: number;
+  initialHighlightX?: number;
+  initialHighlightY?: number;
+  initialHighlightW?: number;
+  initialHighlightH?: number;
   viewStateRef?: React.RefObject<CompareViewState | null>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
@@ -199,6 +211,10 @@ export default function QualityCompare({
   initialPanXFrac,
   initialPanYFrac,
   initialSplit,
+  initialHighlightX,
+  initialHighlightY,
+  initialHighlightW,
+  initialHighlightH,
   viewStateRef,
   onResolutionChange,
   onClose,
@@ -242,6 +258,15 @@ export default function QualityCompare({
   const errorCloseRef = useRef<HTMLButtonElement>(null);
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
+
+  // ── Highlight (spotlight) state ──
+  const [highlight, setHighlight] = useState<HighlightRect | null>(null);
+  const [drawRect, setDrawRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const drawingRef = useRef(false);
+  const drawStartRef = useRef({ x: 0, y: 0 });
+  const spotlightRef = useRef<HTMLDivElement>(null);
+  const highlightBorderRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HighlightRect | null>(null);
 
   const isDualManifest = slaveSrc !== src;
 
@@ -293,6 +318,68 @@ export default function QualityCompare({
     slaveVideo.style.clipPath = `inset(0 ${rightInset}% 0 0)`;
   }, []);
 
+  /** Update spotlight overlay and highlight border positions from current zoom/pan + highlight */
+  const updateSpotlight = useCallback(() => {
+    const hl = highlightRef.current;
+    const container = containerRef.current;
+    if (!container) return;
+    const cRect = container.getBoundingClientRect();
+    const z = zoomRef.current;
+    const tx = panXRef.current;
+    const ty = panYRef.current;
+
+    // Spotlight dim overlay with clip-path cutout
+    const spot = spotlightRef.current;
+    if (spot) {
+      if (!hl) {
+        spot.style.clipPath = "";
+        spot.style.display = "none";
+        return;
+      }
+      spot.style.display = "";
+      // Highlight rect in container-local pixels
+      const hx = hl.x * cRect.width;
+      const hy = hl.y * cRect.height;
+      const hw = hl.w * cRect.width;
+      const hh = hl.h * cRect.height;
+      // Screen-space position: (local + tx) * z
+      const sx = (hx + tx) * z;
+      const sy = (hy + ty) * z;
+      const sw = hw * z;
+      const sh = hh * z;
+      // Clip-path polygon: outer rect (container) with inner cutout (highlight)
+      // Polygon winds clockwise around outer, then counterclockwise around cutout
+      const cw = cRect.width;
+      const ch = cRect.height;
+      spot.style.clipPath = `polygon(
+        0 0, ${cw}px 0, ${cw}px ${ch}px, 0 ${ch}px, 0 0,
+        ${sx}px ${sy}px, ${sx}px ${sy + sh}px, ${sx + sw}px ${sy + sh}px, ${sx + sw}px ${sy}px, ${sx}px ${sy}px
+      )`;
+    }
+
+    // Highlight border
+    const border = highlightBorderRef.current;
+    if (border) {
+      if (!hl) {
+        border.style.display = "none";
+        return;
+      }
+      border.style.display = "";
+      const hx = hl.x * cRect.width;
+      const hy = hl.y * cRect.height;
+      const hw = hl.w * cRect.width;
+      const hh = hl.h * cRect.height;
+      const sx = (hx + tx) * z;
+      const sy = (hy + ty) * z;
+      const sw = hw * z;
+      const sh = hh * z;
+      border.style.left = `${sx}px`;
+      border.style.top = `${sy}px`;
+      border.style.width = `${sw}px`;
+      border.style.height = `${sh}px`;
+    }
+  }, []);
+
   const applyTransform = useCallback(() => {
     const z = zoomRef.current;
     const tx = panXRef.current;
@@ -311,6 +398,7 @@ export default function QualityCompare({
     masterVideo.style.transformOrigin = origin;
 
     updateClipPath();
+    updateSpotlight();
     setZoomDisplay(z);
 
     // Write normalized view state for URL sharing
@@ -318,11 +406,16 @@ export default function QualityCompare({
       const rect = containerRef.current?.getBoundingClientRect();
       const cw = rect?.width || 1;
       const ch = rect?.height || 1;
+      const hl = highlightRef.current;
       (viewStateRef as React.MutableRefObject<CompareViewState | null>).current = {
         zoom: z,
         panXFrac: tx / cw,
         panYFrac: ty / ch,
         sliderPct: sliderPctRef.current,
+        highlightX: hl?.x,
+        highlightY: hl?.y,
+        highlightW: hl?.w,
+        highlightH: hl?.h,
       };
     }
 
@@ -331,7 +424,7 @@ export default function QualityCompare({
     if (el) {
       el.style.cursor = panningRef.current ? "grabbing" : "grab";
     }
-  }, [masterVideo, updateClipPath, viewStateRef]);
+  }, [masterVideo, updateClipPath, updateSpotlight, viewStateRef]);
 
   const clampPan = useCallback(() => {
     const z = zoomRef.current;
@@ -361,6 +454,53 @@ export default function QualityCompare({
     panYRef.current = 0;
     applyTransform();
   }, [applyTransform]);
+
+  /** Clear highlight + reset zoom */
+  const clearHighlight = useCallback(() => {
+    highlightRef.current = null;
+    setHighlight(null);
+    zoomRef.current = 1;
+    panXRef.current = 0;
+    panYRef.current = 0;
+    applyTransform();
+  }, [applyTransform]);
+
+  /** Apply a highlight rectangle: set state, auto-zoom to fit, update transform */
+  const applyHighlight = useCallback((rect: HighlightRect) => {
+    highlightRef.current = rect;
+    setHighlight(rect);
+
+    const container = containerRef.current;
+    if (!container) return;
+    const cRect = container.getBoundingClientRect();
+    const cw = cRect.width;
+    const ch = cRect.height;
+
+    // Highlight in pixels
+    const rw = rect.w * cw;
+    const rh = rect.h * ch;
+    const rx = rect.x * cw;
+    const ry = rect.y * ch;
+
+    // Zoom to fit with ~10% padding each side
+    const zoomX = cw / (rw * 1.2);
+    const zoomY = ch / (rh * 1.2);
+    const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(zoomX, zoomY)));
+
+    // Center the rectangle
+    // Screen position of video point vx is (vx + tx) * z
+    // We want center of highlight at center of container:
+    //   (rx + rw/2 + tx) * z = cw / 2
+    //   tx = cw / (2*z) - (rx + rw/2)
+    const tx = cw / (2 * z) - (rx + rw / 2);
+    const ty = ch / (2 * z) - (ry + rh / 2);
+
+    zoomRef.current = z;
+    panXRef.current = tx;
+    panYRef.current = ty;
+    clampPan();
+    applyTransform();
+  }, [clampPan, applyTransform]);
 
   // Remember master's original ABR state so we can restore on close
   const masterAbrWasEnabled = useRef(true);
@@ -847,12 +987,12 @@ export default function QualityCompare({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time initialization
   }, []);
 
-  // ── Reset zoom on play ──
+  // ── Reset zoom + clear highlight on play ──
   useEffect(() => {
-    const onPlay = () => resetZoom();
+    const onPlay = () => clearHighlight();
     masterVideo.addEventListener("play", onPlay);
     return () => masterVideo.removeEventListener("play", onPlay);
-  }, [masterVideo, resetZoom]);
+  }, [masterVideo, clearHighlight]);
 
   // ── Pan handlers ──
   const onPanPointerDown = useCallback((e: React.PointerEvent) => {
@@ -896,8 +1036,12 @@ export default function QualityCompare({
   }, [masterVideo]);
 
   const onPanDoubleClick = useCallback(() => {
-    resetZoom();
-  }, [resetZoom]);
+    if (highlightRef.current) {
+      clearHighlight();
+    } else {
+      resetZoom();
+    }
+  }, [resetZoom, clearHighlight]);
 
   // ── Slider drag ──
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -919,6 +1063,111 @@ export default function QualityCompare({
   const onPointerUp = useCallback(() => {
     setDragging(false);
   }, []);
+
+  // ── Draw handlers (for highlight rectangle at zoom=1, paused, no existing highlight) ──
+  const onDrawPointerDown = useCallback((e: React.PointerEvent) => {
+    const container = containerRef.current;
+    if (!container) return;
+    drawingRef.current = true;
+    const rect = container.getBoundingClientRect();
+    drawStartRef.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
+    setDrawRect(null);
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+
+  const onDrawPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!drawingRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const sx = drawStartRef.current.x;
+    const sy = drawStartRef.current.y;
+    const x = Math.min(sx, cx);
+    const y = Math.min(sy, cy);
+    const w = Math.abs(cx - sx);
+    const h = Math.abs(cy - sy);
+    setDrawRect({ x, y, w, h });
+  }, []);
+
+  const onDrawPointerUp = useCallback((e: React.PointerEvent) => {
+    if (!drawingRef.current) return;
+    drawingRef.current = false;
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+
+    const container = containerRef.current;
+    if (!container) { setDrawRect(null); return; }
+    const cRect = container.getBoundingClientRect();
+    const rect = cRect;
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const sx = drawStartRef.current.x;
+    const sy = drawStartRef.current.y;
+    const dx = cx - sx;
+    const dy = cy - sy;
+
+    setDrawRect(null);
+
+    // Minimal movement → click → play (preserves click-to-play)
+    if (dx * dx + dy * dy < 25) {
+      masterVideo.play().catch(() => {});
+      return;
+    }
+
+    // Compute fractional highlight rect
+    const x = Math.max(0, Math.min(sx, cx)) / cRect.width;
+    const y = Math.max(0, Math.min(sy, cy)) / cRect.height;
+    const w = Math.min(Math.abs(dx), cRect.width) / cRect.width;
+    const h = Math.min(Math.abs(dy), cRect.height) / cRect.height;
+
+    if (w < 0.01 || h < 0.01) return; // too small
+
+    applyHighlight({ x, y, w, h });
+  }, [masterVideo, applyHighlight]);
+
+  // ── Escape key to clear highlight ──
+  useEffect(() => {
+    if (!highlight) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        clearHighlight();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [highlight, clearHighlight]);
+
+  // ── Restore highlight from URL params ──
+  const initialHighlightApplied = useRef(false);
+  useEffect(() => {
+    if (initialHighlightApplied.current) return;
+    if (initialHighlightX == null || initialHighlightY == null || initialHighlightW == null || initialHighlightH == null) return;
+    if (!slaveReady) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
+    initialHighlightApplied.current = true;
+    const hl: HighlightRect = {
+      x: initialHighlightX,
+      y: initialHighlightY,
+      w: initialHighlightW,
+      h: initialHighlightH,
+    };
+    highlightRef.current = hl;
+    setHighlight(hl);
+    // If zoom was also provided via URL, it's already applied via initialPanApplied.
+    // Just need to update spotlight for the current transform.
+    updateSpotlight();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time initialization
+  }, [slaveReady]);
 
   // ── Keep sliderPctRef in sync and update clip-path when zoomed ──
   useEffect(() => {
@@ -1120,6 +1369,43 @@ export default function QualityCompare({
             </span>
           </div>
         </div>
+      )}
+
+      {/* Spotlight dim overlay (pointer-events: none) */}
+      <div
+        ref={spotlightRef}
+        className="vp-compare-spotlight"
+        style={{ display: highlight ? "" : "none" }}
+      />
+
+      {/* Highlight border (pointer-events: none) */}
+      <div
+        ref={highlightBorderRef}
+        className="vp-compare-highlight-border"
+        style={{ display: highlight ? "" : "none" }}
+      />
+
+      {/* Draw layer for highlight rectangle (zoom=1, paused, no highlight) */}
+      {zoomDisplay <= 1 && paused && slaveReady && !highlight && (
+        <div
+          className="vp-compare-draw"
+          onPointerDown={onDrawPointerDown}
+          onPointerMove={onDrawPointerMove}
+          onPointerUp={onDrawPointerUp}
+        />
+      )}
+
+      {/* Rubber-band rectangle during drawing */}
+      {drawRect && (
+        <div
+          className="vp-compare-draw-rect"
+          style={{
+            left: drawRect.x,
+            top: drawRect.y,
+            width: drawRect.w,
+            height: drawRect.h,
+          }}
+        />
       )}
 
       {/* Interaction layer for pan + double-click (only when zoomed & paused) */}
