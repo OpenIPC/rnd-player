@@ -267,17 +267,20 @@ export default function VideoControls({
   const updateTracks = useCallback(() => {
     const variantTracks = player.getVariantTracks();
 
-    // Quality – keep all unique (height, bandwidth) pairs so multiple
+    // Quality – keep all unique (height, videoBandwidth) pairs so multiple
     // bitrates at the same resolution each get their own menu item.
+    // Use videoBandwidth (video-only) to avoid duplicates from audio-track
+    // combinations inflating the total variant bandwidth.
     const seen = new Map<string, QualityOption>();
     for (const t of variantTracks) {
       if (t.height == null) continue;
-      const key = `${t.height}_${t.bandwidth}`;
+      const vbw = t.videoBandwidth ?? t.bandwidth;
+      const key = `${t.height}_${vbw}`;
       if (!seen.has(key)) {
         seen.set(key, {
           id: t.id,
           height: t.height,
-          bandwidth: t.bandwidth,
+          bandwidth: vbw,
         });
       }
     }
@@ -1186,13 +1189,14 @@ export default function VideoControls({
                 const seen = new Map<string, ExportRendition>();
                 for (const v of variants) {
                   if (!v.video || v.video.height == null) continue;
-                  const key = `${v.video.height}_${v.bandwidth}`;
+                  const vbw = v.video.bandwidth ?? v.bandwidth;
+                  const key = `${v.video.height}_${vbw}`;
                   if (!seen.has(key)) {
                     seen.set(key, {
                       width: v.video.width ?? 0,
                       height: v.video.height,
                       videoCodec: v.video.codecs ?? "",
-                      bandwidth: v.bandwidth,
+                      bandwidth: vbw,
                     });
                   }
                 }

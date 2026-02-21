@@ -106,9 +106,10 @@ function collectRenditions(tracks: shaka.extern.Track[]): RenditionOption[] {
   const seen = new Map<string, RenditionOption>();
   for (const t of tracks) {
     if (t.height == null) continue;
-    const key = `${t.height}_${t.bandwidth}`;
+    const vbw = t.videoBandwidth ?? t.bandwidth;
+    const key = `${t.height}_${vbw}`;
     if (!seen.has(key)) {
-      seen.set(key, { height: t.height, bandwidth: t.bandwidth, videoCodec: t.videoCodec ?? "" });
+      seen.set(key, { height: t.height, bandwidth: vbw, videoCodec: t.videoCodec ?? "" });
     }
   }
   return Array.from(seen.values()).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
@@ -119,7 +120,7 @@ function selectRendition(player: shaka.Player, height: number, bandwidth?: numbe
   let best: shaka.extern.Track | null = null;
   for (const t of tracks) {
     if (t.height === height) {
-      if (bandwidth != null && t.bandwidth === bandwidth) {
+      if (bandwidth != null && (t.videoBandwidth ?? t.bandwidth) === bandwidth) {
         best = t;
         break;
       }
