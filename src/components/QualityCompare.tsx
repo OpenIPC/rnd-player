@@ -63,6 +63,7 @@ import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
 import { formatBitrate } from "../utils/formatBitrate";
 import { loadSettings } from "../hooks/useSettings";
+import type { CompareViewState } from "./ShakaPlayer";
 
 const FRAME_TYPE_COLORS: Record<FrameType, string> = {
   I: "rgb(255, 50, 50)",
@@ -79,6 +80,11 @@ interface QualityCompareProps {
   kid?: string;
   initialHeightA?: number;
   initialHeightB?: number;
+  initialZoom?: number;
+  initialPanXFrac?: number;
+  initialPanYFrac?: number;
+  initialSplit?: number;
+  viewStateRef?: React.RefObject<CompareViewState | null>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
 }
@@ -189,6 +195,11 @@ export default function QualityCompare({
   kid,
   initialHeightA,
   initialHeightB,
+  initialZoom,
+  initialPanXFrac,
+  initialPanYFrac,
+  initialSplit,
+  viewStateRef,
   onResolutionChange,
   onClose,
 }: QualityCompareProps) {
@@ -198,20 +209,23 @@ export default function QualityCompare({
   const interactRef = useRef<HTMLDivElement>(null);
 
   // ── Zoom/pan refs (no re-renders per wheel tick / pointer move) ──
-  const zoomRef = useRef(1);
-  const panXRef = useRef(0);
+  const initZoom = initialZoom != null ? Math.max(1, Math.min(8, initialZoom)) : 1;
+  const initSplit = initialSplit != null ? Math.max(5, Math.min(95, initialSplit)) : 50;
+  const zoomRef = useRef(initZoom);
+  const panXRef = useRef(0); // converted from fraction after mount
   const panYRef = useRef(0);
   const panningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const masterTransformRef = useRef<string>("");
-  const sliderPctRef = useRef(50);
+  const sliderPctRef = useRef(initSplit);
+  const initialPanApplied = useRef(false);
 
   const MIN_ZOOM = 1;
   const MAX_ZOOM = 8;
   const ZOOM_SPEED = 0.002;
   const ZOOM_STEP = 1.15;
 
-  const [sliderPct, setSliderPct] = useState(50);
+  const [sliderPct, setSliderPct] = useState(initSplit);
   const [dragging, setDragging] = useState(false);
   const [qualitiesA, setQualitiesA] = useState<RenditionOption[]>([]);
   const [qualitiesB, setQualitiesB] = useState<RenditionOption[]>([]);
@@ -299,12 +313,25 @@ export default function QualityCompare({
     updateClipPath();
     setZoomDisplay(z);
 
+    // Write normalized view state for URL sharing
+    if (viewStateRef) {
+      const rect = containerRef.current?.getBoundingClientRect();
+      const cw = rect?.width || 1;
+      const ch = rect?.height || 1;
+      (viewStateRef as React.MutableRefObject<CompareViewState | null>).current = {
+        zoom: z,
+        panXFrac: tx / cw,
+        panYFrac: ty / ch,
+        sliderPct: sliderPctRef.current,
+      };
+    }
+
     // Update cursor on interaction layer
     const el = interactRef.current;
     if (el) {
       el.style.cursor = panningRef.current ? "grabbing" : "grab";
     }
-  }, [masterVideo, updateClipPath]);
+  }, [masterVideo, updateClipPath, viewStateRef]);
 
   const clampPan = useCallback(() => {
     const z = zoomRef.current;
@@ -795,6 +822,33 @@ export default function QualityCompare({
     return () => ro.disconnect();
   }, [clampPan, applyTransform]);
 
+  // ── Apply initial zoom/pan from URL params ──
+  useEffect(() => {
+    if (initialPanApplied.current) return;
+    if (initZoom <= 1 && initialPanXFrac == null && initialPanYFrac == null) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Wait for container to have dimensions (may need a frame)
+    const apply = () => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      initialPanApplied.current = true;
+      if (initialPanXFrac != null) panXRef.current = initialPanXFrac * rect.width;
+      if (initialPanYFrac != null) panYRef.current = initialPanYFrac * rect.height;
+      clampPan();
+      applyTransform();
+    };
+
+    // Try immediately, then on next frame if container isn't sized yet
+    apply();
+    if (!initialPanApplied.current) {
+      const raf = requestAnimationFrame(apply);
+      return () => cancelAnimationFrame(raf);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time initialization
+  }, []);
+
   // ── Reset zoom on play ──
   useEffect(() => {
     const onPlay = () => resetZoom();
@@ -872,7 +926,11 @@ export default function QualityCompare({
   useEffect(() => {
     sliderPctRef.current = sliderPct;
     updateClipPath();
-  }, [sliderPct, updateClipPath]);
+    // Update slider in shared view state ref
+    if (viewStateRef && (viewStateRef as React.MutableRefObject<CompareViewState | null>).current) {
+      (viewStateRef as React.MutableRefObject<CompareViewState | null>).current!.sliderPct = sliderPct;
+    }
+  }, [sliderPct, updateClipPath, viewStateRef]);
 
   // ── Rendition selection ──
   const handleSideAChange = useCallback(
