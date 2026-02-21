@@ -1948,3 +1948,29 @@ video::-webkit-media-text-track-container {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* ── Settings modal ── */
+.vp-settings-modal {
+  max-width: 400px;
+}
+
+.vp-settings-body {
+  padding: 16px 20px 20px;
+}
+
+.vp-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 6px 0;
+}
+
+.vp-settings-row input[type="checkbox"] {
+  accent-color: var(--vp-accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
