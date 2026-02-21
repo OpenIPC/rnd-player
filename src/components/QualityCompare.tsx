@@ -960,6 +960,7 @@ export default function QualityCompare({
     <div
       ref={containerRef}
       className="vp-compare-overlay"
+      style={dragging ? { pointerEvents: "auto" } : undefined}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
     >
