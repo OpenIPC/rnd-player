@@ -50,11 +50,26 @@ interface AdaptationToastProps {
 // Unmounting naturally clears state when the user switches to manual quality.
 export default function AdaptationToast({ player }: AdaptationToastProps) {
   const [toast, setToast] = useState<ToastData | null>(null);
+  const [pinned, setPinned] = useState(false);
+  const [exiting, setExiting] = useState(false);
 
   const prevRef = useRef<VariantSnapshot | null>(null);
+  const pinnedRef = useRef(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const dismissRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
+  const exitRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const keyRef = useRef(0);
+
+  const startExit = useCallback(() => {
+    setExiting(true);
+    clearTimeout(exitRef.current);
+    exitRef.current = setTimeout(() => {
+      setToast(null);
+      setExiting(false);
+      setPinned(false);
+      pinnedRef.current = false;
+    }, 300);
+  }, []);
 
   const getActiveVariant = useCallback((): VariantSnapshot | null => {
     const tracks = player.getVariantTracks();
@@ -108,9 +123,18 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
 
         if (changed) {
           keyRef.current += 1;
+          pinnedRef.current = false;
+          setPinned(false);
+          setExiting(false);
           setToast({ from: prev, to: now, key: keyRef.current });
+
           clearTimeout(dismissRef.current);
-          dismissRef.current = setTimeout(() => setToast(null), 4300);
+          clearTimeout(exitRef.current);
+          dismissRef.current = setTimeout(() => {
+            if (!pinnedRef.current) {
+              startExit();
+            }
+          }, 4000);
         }
         prevRef.current = now;
       }, 500);
@@ -121,8 +145,21 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
       player.removeEventListener("adaptation", onAdaptation);
       clearTimeout(debounceRef.current);
       clearTimeout(dismissRef.current);
+      clearTimeout(exitRef.current);
     };
-  }, [player, getActiveVariant]);
+  }, [player, getActiveVariant, startExit]);
+
+  const handleMouseEnter = useCallback(() => {
+    pinnedRef.current = true;
+    setPinned(true);
+    clearTimeout(dismissRef.current);
+  }, []);
+
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    clearTimeout(dismissRef.current);
+    startExit();
+  }, [startExit]);
 
   if (!toast) return null;
 
@@ -154,8 +191,19 @@ export default function AdaptationToast({ player }: AdaptationToastProps) {
     return parts.join(" ");
   };
 
+  const cls = [
+    "vp-adaptation-toast",
+    pinned ? "vp-adaptation-pinned" : "",
+    exiting ? "vp-adaptation-exiting" : "",
+  ].filter(Boolean).join(" ");
+
   return (
-    <div className="vp-adaptation-toast" key={toast.key}>
+    <div
+      className={cls}
+      key={toast.key}
+      onMouseEnter={handleMouseEnter}
+      onClick={handleClick}
+    >
       <div className="vp-adaptation-line">
         <span className="vp-adaptation-from">{fmtVideo(from)}</span>
         <span className={`vp-adaptation-arrow ${isUpgrade ? "vp-up" : "vp-down"}`}>
