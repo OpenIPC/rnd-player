@@ -17,6 +17,8 @@ export interface CompareViewState {
   highlightY?: number;
   highlightW?: number;
   highlightH?: number;
+  cmode?: string;
+  flickerInterval?: number;
 }
 
 interface ShakaPlayerProps {
@@ -35,6 +37,8 @@ interface ShakaPlayerProps {
   compareHy?: number;
   compareHw?: number;
   compareHh?: number;
+  compareCmode?: string;
+  compareCfi?: number;
 }
 
 let polyfillsInstalled = false;
@@ -57,7 +61,7 @@ function describeLoadError(e: shaka.util.Error): string {
   return `Failed to load video (code ${e.code}).`;
 }
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
@@ -465,6 +469,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
                 initialHighlightY={compareHy}
                 initialHighlightW={compareHw}
                 initialHighlightH={compareHh}
+                initialCmode={compareCmode}
+                initialFlickerInterval={compareCfi}
                 viewStateRef={compareViewRef}
                 onResolutionChange={(a, b) => {
                   setCompareHeightA(a);

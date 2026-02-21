@@ -731,6 +731,12 @@ export default function VideoControls({
         params.set("hw", cv.highlightW.toFixed(4));
         params.set("hh", cv.highlightH.toFixed(4));
       }
+      if (cv.cmode && cv.cmode !== "split") {
+        params.set("cmode", cv.cmode);
+      }
+      if (cv.cmode === "toggle" && cv.flickerInterval && cv.flickerInterval !== 500) {
+        params.set("cfi", String(cv.flickerInterval));
+      }
     }
     navigator.clipboard.writeText(`${base}?${params.toString()}`).then(() => {
       showCopiedToast("URL copied");

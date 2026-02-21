@@ -71,6 +71,10 @@ const FRAME_TYPE_COLORS: Record<FrameType, string> = {
   B: "rgb(50, 200, 50)",
 };
 
+type AnalysisMode = "split" | "toggle";
+
+const FLICKER_SPEEDS = [250, 500, 1000] as const;
+
 /** Highlight rectangle in fractional coordinates (0-1 of container dimensions) */
 interface HighlightRect {
   x: number;
@@ -96,6 +100,8 @@ interface QualityCompareProps {
   initialHighlightY?: number;
   initialHighlightW?: number;
   initialHighlightH?: number;
+  initialCmode?: string;
+  initialFlickerInterval?: number;
   viewStateRef?: React.RefObject<CompareViewState | null>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
@@ -215,6 +221,8 @@ export default function QualityCompare({
   initialHighlightY,
   initialHighlightW,
   initialHighlightH,
+  initialCmode,
+  initialFlickerInterval,
   viewStateRef,
   onResolutionChange,
   onClose,
@@ -268,6 +276,17 @@ export default function QualityCompare({
   const highlightBorderRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HighlightRect | null>(null);
 
+  // ── Analysis mode (toggle/flicker) state ──
+  const initMode: AnalysisMode = initialCmode === "toggle" ? "toggle" : "split";
+  const initFlicker = initialFlickerInterval && FLICKER_SPEEDS.includes(initialFlickerInterval as 250 | 500 | 1000)
+    ? initialFlickerInterval
+    : 500;
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
+  const [flickerInterval, setFlickerInterval] = useState(initFlicker);
+  const analysisModeRef = useRef<AnalysisMode>(initMode);
+  const flickerIntervalRef = useRef(initFlicker);
+  const flickerLabelRef = useRef<HTMLSpanElement>(null);
+
   const isDualManifest = slaveSrc !== src;
 
   const copyUrl = useCallback((url: string) => {
@@ -306,6 +325,11 @@ export default function QualityCompare({
   const updateClipPath = useCallback(() => {
     const slaveVideo = slaveVideoRef.current;
     if (!slaveVideo) return;
+    // In toggle mode, slave shows full width (no clipping)
+    if (analysisModeRef.current === "toggle") {
+      slaveVideo.style.clipPath = "none";
+      return;
+    }
     const z = zoomRef.current;
     if (z === 1) {
       slaveVideo.style.clipPath = `inset(0 ${100 - sliderPctRef.current}% 0 0)`;
@@ -407,6 +431,7 @@ export default function QualityCompare({
       const cw = rect?.width || 1;
       const ch = rect?.height || 1;
       const hl = highlightRef.current;
+      const mode = analysisModeRef.current;
       (viewStateRef as React.MutableRefObject<CompareViewState | null>).current = {
         zoom: z,
         panXFrac: tx / cw,
@@ -416,6 +441,8 @@ export default function QualityCompare({
         highlightY: hl?.y,
         highlightW: hl?.w,
         highlightH: hl?.h,
+        cmode: mode !== "split" ? mode : undefined,
+        flickerInterval: mode === "toggle" ? flickerIntervalRef.current : undefined,
       };
     }
 
@@ -994,6 +1021,60 @@ export default function QualityCompare({
     return () => masterVideo.removeEventListener("play", onPlay);
   }, [masterVideo, clearHighlight]);
 
+  // ── Keep analysis mode refs in sync ──
+  useEffect(() => {
+    analysisModeRef.current = analysisMode;
+    flickerIntervalRef.current = flickerInterval;
+    // Update clip-path when mode changes
+    updateClipPath();
+    // Update viewStateRef when mode/interval changes
+    if (viewStateRef && (viewStateRef as React.MutableRefObject<CompareViewState | null>).current) {
+      const vs = (viewStateRef as React.MutableRefObject<CompareViewState | null>).current!;
+      vs.cmode = analysisMode !== "split" ? analysisMode : undefined;
+      vs.flickerInterval = analysisMode === "toggle" ? flickerInterval : undefined;
+    }
+  }, [analysisMode, flickerInterval, updateClipPath, viewStateRef]);
+
+  // ── Toggle/Flicker mode: alternate slave visibility ──
+  useEffect(() => {
+    if (analysisMode !== "toggle") return;
+    const slaveVideo = slaveVideoRef.current;
+    if (!slaveVideo || !slaveReady) return;
+
+    let showA = true;
+    slaveVideo.style.visibility = "visible";
+    if (flickerLabelRef.current) flickerLabelRef.current.textContent = "A";
+
+    const timer = setInterval(() => {
+      showA = !showA;
+      slaveVideo.style.visibility = showA ? "visible" : "hidden";
+      if (flickerLabelRef.current) {
+        flickerLabelRef.current.textContent = showA ? "A" : "B";
+      }
+    }, flickerInterval);
+
+    return () => {
+      clearInterval(timer);
+      slaveVideo.style.visibility = "visible";
+    };
+  }, [analysisMode, flickerInterval, slaveReady]);
+
+  // ── T key: toggle analysis mode ──
+  useEffect(() => {
+    if (!slaveReady) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger on inputs/selects
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (e.key === "t" || e.key === "T") {
+        e.preventDefault();
+        setAnalysisMode((m) => m === "split" ? "toggle" : "split");
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [slaveReady]);
+
   // ── Pan handlers ──
   const onPanPointerDown = useCallback((e: React.PointerEvent) => {
     // Don't start pan if target is handle or toolbar
@@ -1317,10 +1398,34 @@ export default function QualityCompare({
             ✕
           </button>
         </div>
+        <div className="vp-compare-toolbar-center">
+          <button
+            className="vp-compare-mode-btn"
+            onClick={() => setAnalysisMode((m) => m === "split" ? "toggle" : "split")}
+            title="Toggle analysis mode (T)"
+          >
+            {analysisMode === "split" ? "Split" : "Toggle"}
+          </button>
+          {analysisMode === "toggle" && (
+            <>
+              <span ref={flickerLabelRef} className="vp-compare-flicker-indicator">A</span>
+              <button
+                className="vp-compare-flicker-speed"
+                onClick={() => setFlickerInterval((i) => {
+                  const idx = FLICKER_SPEEDS.indexOf(i as 250 | 500 | 1000);
+                  return FLICKER_SPEEDS[(idx + 1) % FLICKER_SPEEDS.length];
+                })}
+                title="Cycle flicker speed"
+              >
+                {flickerInterval < 1000 ? `${flickerInterval}ms` : "1s"}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Frame type borders (visible when paused) */}
-      {frameInfoA && (
+      {/* Frame type borders (visible when paused, hidden in toggle mode) */}
+      {analysisMode === "split" && frameInfoA && (
         <div
           className="vp-compare-frame-border vp-compare-frame-border-left"
           style={{
@@ -1345,7 +1450,7 @@ export default function QualityCompare({
           </div>
         </div>
       )}
-      {frameInfoB && (
+      {analysisMode === "split" && frameInfoB && (
         <div
           className="vp-compare-frame-border vp-compare-frame-border-right"
           style={{
@@ -1385,8 +1490,8 @@ export default function QualityCompare({
         style={{ display: highlight ? "" : "none" }}
       />
 
-      {/* Draw layer for highlight rectangle (zoom=1, paused, no highlight) */}
-      {zoomDisplay <= 1 && paused && slaveReady && !highlight && (
+      {/* Draw layer for highlight rectangle (zoom=1, paused, split mode, no highlight) */}
+      {analysisMode === "split" && zoomDisplay <= 1 && paused && slaveReady && !highlight && (
         <div
           className="vp-compare-draw"
           onPointerDown={onDrawPointerDown}
@@ -1426,24 +1531,26 @@ export default function QualityCompare({
         <div className="vp-compare-zoom-label">{zoomDisplay.toFixed(1)}&times;</div>
       )}
 
-      {/* Slider strip: full-height interactive zone with line + handle */}
-      <div
-        className="vp-compare-strip"
-        style={{ left: `${sliderPct}%` }}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          onPointerDown(e);
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="vp-compare-slider" />
-        <div className="vp-compare-handle">
-          <svg width="32" height="32" viewBox="0 0 32 32">
-            <circle cx="16" cy="16" r="14" fill="rgba(0,0,0,0.5)" stroke="#fff" strokeWidth="2" />
-            <path d="M12 12l-4 4 4 4M20 12l4 4-4 4" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+      {/* Slider strip: full-height interactive zone with line + handle (hidden in toggle mode) */}
+      {analysisMode === "split" && (
+        <div
+          className="vp-compare-strip"
+          style={{ left: `${sliderPct}%` }}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onPointerDown(e);
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="vp-compare-slider" />
+          <div className="vp-compare-handle">
+            <svg width="32" height="32" viewBox="0 0 32 32">
+              <circle cx="16" cy="16" r="14" fill="rgba(0,0,0,0.5)" stroke="#fff" strokeWidth="2" />
+              <path d="M12 12l-4 4 4 4M20 12l4 4-4 4" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Copied toast */}
       {copiedMsg && <div className="vp-copied-toast">{copiedMsg}</div>}

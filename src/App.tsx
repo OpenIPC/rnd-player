@@ -17,6 +17,8 @@ function parseUrlParams(): {
   compareHy: number | null;
   compareHw: number | null;
   compareHh: number | null;
+  compareCmode: string | null;
+  compareCfi: number | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
@@ -33,6 +35,8 @@ function parseUrlParams(): {
   const hy = params.get("hy");
   const hw = params.get("hw");
   const hh = params.get("hh");
+  const cmode = params.get("cmode");
+  const cfi = params.get("cfi");
 
   return {
     src: v || null,
@@ -49,6 +53,8 @@ function parseUrlParams(): {
     compareHy: hy ? parseFloat(hy) : null,
     compareHw: hw ? parseFloat(hw) : null,
     compareHh: hh ? parseFloat(hh) : null,
+    compareCmode: cmode || null,
+    compareCfi: cfi ? parseInt(cfi, 10) || null : null,
   };
 }
 
@@ -179,6 +185,8 @@ function App() {
         compareHy={initial.compareHy ?? undefined}
         compareHw={initial.compareHw ?? undefined}
         compareHh={initial.compareHh ?? undefined}
+        compareCmode={initial.compareCmode ?? undefined}
+        compareCfi={initial.compareCfi ?? undefined}
       />
     </div>
   );

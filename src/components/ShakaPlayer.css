@@ -1407,6 +1407,56 @@ video::-webkit-media-text-track-container {
   gap: 6px;
 }
 
+.vp-compare-toolbar-center {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vp-compare-mode-btn {
+  background: rgba(20, 20, 20, 0.85);
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  line-height: normal;
+}
+
+.vp-compare-mode-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.vp-compare-flicker-indicator {
+  font-weight: 700;
+  font-size: 11px;
+  min-width: 14px;
+  text-align: center;
+  color: rgba(255, 215, 0, 0.9);
+}
+
+.vp-compare-flicker-speed {
+  background: rgba(20, 20, 20, 0.85);
+  color: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  line-height: normal;
+}
+
+.vp-compare-flicker-speed:hover {
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
 .vp-compare-select {
   background: rgba(20, 20, 20, 0.85);
   color: #fff;
