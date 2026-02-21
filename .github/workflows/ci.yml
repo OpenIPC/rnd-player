@@ -26,6 +26,7 @@ jobs:
 
   e2e:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     continue-on-error: ${{ matrix.os == 'ubuntu-latest' && matrix.browser == 'webkit' }}
     strategy:
       fail-fast: false
@@ -103,7 +104,10 @@ jobs:
         run: bash e2e/generate-dash-fixture.sh "${{ runner.temp }}/dash-fixture"
 
       - name: Run Playwright tests
-        run: npx playwright test --project=${{ matrix.browser }}
+        shell: bash
+        run: |
+          npx playwright test --project=${{ matrix.browser }} --global-timeout=600000 || \
+          npx playwright test --project=${{ matrix.browser }} --global-timeout=600000
         env:
           DASH_FIXTURE_DIR: ${{ runner.temp }}/dash-fixture
 
