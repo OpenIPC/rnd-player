@@ -63,6 +63,8 @@ import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
 import { formatBitrate } from "../utils/formatBitrate";
 import { loadSettings } from "../hooks/useSettings";
+import { useDiffRenderer } from "../hooks/useDiffRenderer";
+import type { DiffPalette, DiffAmplification } from "../hooks/useDiffRenderer";
 import type { CompareViewState } from "./ShakaPlayer";
 
 const FRAME_TYPE_COLORS: Record<FrameType, string> = {
@@ -71,7 +73,7 @@ const FRAME_TYPE_COLORS: Record<FrameType, string> = {
   B: "rgb(50, 200, 50)",
 };
 
-type AnalysisMode = "split" | "toggle";
+type AnalysisMode = "split" | "toggle" | "diff";
 
 const FLICKER_SPEEDS = [250, 500, 1000] as const;
 
@@ -102,6 +104,8 @@ interface QualityCompareProps {
   initialHighlightH?: number;
   initialCmode?: string;
   initialFlickerInterval?: number;
+  initialAmp?: number;
+  initialPalette?: string;
   viewStateRef?: React.RefObject<CompareViewState | null>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
@@ -223,6 +227,8 @@ export default function QualityCompare({
   initialHighlightH,
   initialCmode,
   initialFlickerInterval,
+  initialAmp,
+  initialPalette,
   viewStateRef,
   onResolutionChange,
   onClose,
@@ -276,16 +282,36 @@ export default function QualityCompare({
   const highlightBorderRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HighlightRect | null>(null);
 
-  // ── Analysis mode (toggle/flicker) state ──
-  const initMode: AnalysisMode = initialCmode === "toggle" ? "toggle" : "split";
+  // ── Analysis mode (toggle/flicker/diff) state ──
+  const initMode: AnalysisMode = initialCmode === "toggle" ? "toggle" : initialCmode === "diff" ? "diff" : "split";
   const initFlicker = initialFlickerInterval && FLICKER_SPEEDS.includes(initialFlickerInterval as 250 | 500 | 1000)
     ? initialFlickerInterval
     : 500;
+  const VALID_AMPS: DiffAmplification[] = [1, 2, 4, 8];
+  const initAmp: DiffAmplification = initialAmp && VALID_AMPS.includes(initialAmp as DiffAmplification) ? initialAmp as DiffAmplification : 1;
+  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr"];
+  const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "grayscale";
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
   const [flickerInterval, setFlickerInterval] = useState(initFlicker);
+  const [amplification, setAmplification] = useState<DiffAmplification>(initAmp);
+  const [palette, setPalette] = useState<DiffPalette>(initPalette);
   const analysisModeRef = useRef<AnalysisMode>(initMode);
   const flickerIntervalRef = useRef(initFlicker);
   const flickerLabelRef = useRef<HTMLSpanElement>(null);
+  const diffCanvasRef = useRef<HTMLCanvasElement>(null);
+  const amplificationRef = useRef<DiffAmplification>(initAmp);
+  const paletteRef = useRef<DiffPalette>(initPalette);
+
+  // ── Diff renderer (WebGL2 per-pixel difference map) ──
+  useDiffRenderer({
+    canvasRef: diffCanvasRef,
+    videoA: slaveVideoRef.current,
+    videoB: masterVideo,
+    active: analysisMode === "diff" && slaveReady,
+    paused,
+    amplification,
+    palette,
+  });
 
   const isDualManifest = slaveSrc !== src;
 
@@ -325,8 +351,8 @@ export default function QualityCompare({
   const updateClipPath = useCallback(() => {
     const slaveVideo = slaveVideoRef.current;
     if (!slaveVideo) return;
-    // In toggle mode, slave shows full width (no clipping)
-    if (analysisModeRef.current === "toggle") {
+    // In toggle/diff mode, slave shows full width (no clipping)
+    if (analysisModeRef.current !== "split") {
       slaveVideo.style.clipPath = "none";
       return;
     }
@@ -421,6 +447,13 @@ export default function QualityCompare({
     masterVideo.style.transform = transform;
     masterVideo.style.transformOrigin = origin;
 
+    // Apply same transform to diff canvas
+    const diffCanvas = diffCanvasRef.current;
+    if (diffCanvas) {
+      diffCanvas.style.transform = transform;
+      diffCanvas.style.transformOrigin = origin;
+    }
+
     updateClipPath();
     updateSpotlight();
     setZoomDisplay(z);
@@ -443,6 +476,8 @@ export default function QualityCompare({
         highlightH: hl?.h,
         cmode: mode !== "split" ? mode : undefined,
         flickerInterval: mode === "toggle" ? flickerIntervalRef.current : undefined,
+        amplification: mode === "diff" && amplificationRef.current !== 1 ? amplificationRef.current : undefined,
+        palette: mode === "diff" && paletteRef.current !== "grayscale" ? paletteRef.current : undefined,
       };
     }
 
@@ -1025,15 +1060,24 @@ export default function QualityCompare({
   useEffect(() => {
     analysisModeRef.current = analysisMode;
     flickerIntervalRef.current = flickerInterval;
+    amplificationRef.current = amplification;
+    paletteRef.current = palette;
     // Update clip-path when mode changes
     updateClipPath();
-    // Update viewStateRef when mode/interval changes
+    // Hide slave in diff mode (diff canvas replaces it)
+    const slaveVideo = slaveVideoRef.current;
+    if (slaveVideo) {
+      slaveVideo.style.visibility = analysisMode === "diff" ? "hidden" : "visible";
+    }
+    // Update viewStateRef when mode/interval/amp/palette changes
     if (viewStateRef && (viewStateRef as React.MutableRefObject<CompareViewState | null>).current) {
       const vs = (viewStateRef as React.MutableRefObject<CompareViewState | null>).current!;
       vs.cmode = analysisMode !== "split" ? analysisMode : undefined;
       vs.flickerInterval = analysisMode === "toggle" ? flickerInterval : undefined;
+      vs.amplification = analysisMode === "diff" && amplification !== 1 ? amplification : undefined;
+      vs.palette = analysisMode === "diff" && palette !== "grayscale" ? palette : undefined;
     }
-  }, [analysisMode, flickerInterval, updateClipPath, viewStateRef]);
+  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef]);
 
   // ── Toggle/Flicker mode: alternate slave visibility ──
   useEffect(() => {
@@ -1059,7 +1103,7 @@ export default function QualityCompare({
     };
   }, [analysisMode, flickerInterval, slaveReady]);
 
-  // ── T key: toggle analysis mode ──
+  // ── T key: cycle analysis mode; D key: toggle diff ──
   useEffect(() => {
     if (!slaveReady) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1068,7 +1112,11 @@ export default function QualityCompare({
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (e.key === "t" || e.key === "T") {
         e.preventDefault();
-        setAnalysisMode((m) => m === "split" ? "toggle" : "split");
+        setAnalysisMode((m) => m === "split" ? "toggle" : m === "toggle" ? "diff" : "split");
+      }
+      if (e.key === "d" || e.key === "D") {
+        e.preventDefault();
+        setAnalysisMode((m) => m === "diff" ? "split" : "diff");
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -1303,6 +1351,13 @@ export default function QualityCompare({
         }}
       />
 
+      {/* Diff canvas (WebGL2 per-pixel difference map) */}
+      <canvas
+        ref={diffCanvasRef}
+        className="vp-compare-diff-canvas"
+        style={{ display: analysisMode === "diff" ? "block" : "none" }}
+      />
+
       {/* Slave key prompt for dual-manifest with different KID */}
       {needsSlaveKey && (
         <div className="vp-key-overlay" onClick={(e) => e.stopPropagation()}>
@@ -1401,10 +1456,10 @@ export default function QualityCompare({
         <div className="vp-compare-toolbar-center">
           <button
             className="vp-compare-mode-btn"
-            onClick={() => setAnalysisMode((m) => m === "split" ? "toggle" : "split")}
-            title="Toggle analysis mode (T)"
+            onClick={() => setAnalysisMode((m) => m === "split" ? "toggle" : m === "toggle" ? "diff" : "split")}
+            title="Cycle analysis mode (T)"
           >
-            {analysisMode === "split" ? "Split" : "Toggle"}
+            {analysisMode === "split" ? "Split" : analysisMode === "toggle" ? "Toggle" : "Diff"}
           </button>
           {analysisMode === "toggle" && (
             <>
@@ -1421,16 +1476,40 @@ export default function QualityCompare({
               </button>
             </>
           )}
+          {analysisMode === "diff" && (
+            <>
+              <button
+                className="vp-compare-diff-amp"
+                onClick={() => setAmplification((a) => {
+                  const idx = VALID_AMPS.indexOf(a);
+                  return VALID_AMPS[(idx + 1) % VALID_AMPS.length];
+                })}
+                title="Cycle amplification"
+              >
+                {amplification}x
+              </button>
+              <button
+                className="vp-compare-diff-palette"
+                onClick={() => setPalette((p) => {
+                  const idx = VALID_PALETTES.indexOf(p);
+                  return VALID_PALETTES[(idx + 1) % VALID_PALETTES.length];
+                })}
+                title="Cycle palette"
+              >
+                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : "PSNR"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Frame type borders (visible when paused, hidden in toggle mode) */}
-      {analysisMode === "split" && frameInfoA && (
+      {analysisMode !== "toggle" && frameInfoA && (
         <div
           className="vp-compare-frame-border vp-compare-frame-border-left"
           style={{
             left: 0,
-            right: `${100 - sliderPct}%`,
+            right: analysisMode === "split" ? `${100 - sliderPct}%` : undefined,
             borderColor: FRAME_TYPE_COLORS[frameInfoA.type],
           }}
         >
@@ -1450,11 +1529,11 @@ export default function QualityCompare({
           </div>
         </div>
       )}
-      {analysisMode === "split" && frameInfoB && (
+      {analysisMode !== "toggle" && frameInfoB && (
         <div
           className="vp-compare-frame-border vp-compare-frame-border-right"
           style={{
-            left: `${sliderPct}%`,
+            left: analysisMode === "split" ? `${sliderPct}%` : undefined,
             right: 0,
             borderColor: FRAME_TYPE_COLORS[frameInfoB.type],
           }}
@@ -1490,8 +1569,8 @@ export default function QualityCompare({
         style={{ display: highlight ? "" : "none" }}
       />
 
-      {/* Draw layer for highlight rectangle (zoom=1, paused, split mode, no highlight) */}
-      {analysisMode === "split" && zoomDisplay <= 1 && paused && slaveReady && !highlight && (
+      {/* Draw layer for highlight rectangle (zoom=1, paused, split/diff mode, no highlight) */}
+      {analysisMode !== "toggle" && zoomDisplay <= 1 && paused && slaveReady && !highlight && (
         <div
           className="vp-compare-draw"
           onPointerDown={onDrawPointerDown}

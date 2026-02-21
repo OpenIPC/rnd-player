@@ -1457,6 +1457,36 @@ video::-webkit-media-text-track-container {
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+/* ── Diff mode canvas + toolbar buttons ── */
+
+.vp-compare-diff-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.vp-compare-diff-amp,
+.vp-compare-diff-palette {
+  background: rgba(20, 20, 20, 0.85);
+  color: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+}
+
+.vp-compare-diff-amp:hover,
+.vp-compare-diff-palette:hover {
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
 .vp-compare-select {
   background: rgba(20, 20, 20, 0.85);
   color: #fff;
