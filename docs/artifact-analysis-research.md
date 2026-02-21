@@ -1,71 +1,187 @@
-# Compression Artifact Analysis Modes — Feasibility & UX Research Report
+# Compression Artifact Analysis Modes — Research & Implementation
 
 ## Executive Summary
 
-**Feasible now (Easy-Medium effort):**
-- **Toggle/Flicker mode** — swap A/B visibility on a timer. Zero pixel processing. Maximum impact, minimum effort.
-- **Per-pixel difference map (WebGL)** — two textures + fragment shader. Sub-millisecond GPU compute. No readback needed for display.
-- **PSNR heatmap** — trivial extension of the difference shader (`diff^2`, color-mapped). No windowed computation.
-- **Per-frame PSNR readout** — compute on `seeked` event, display in compare toolbar next to frame type badge.
+**Implemented:**
+- **Toggle/Flicker mode** — swap A/B visibility on a timer. Zero pixel processing.
+- **Per-pixel difference map (WebGL2)** — two textures + fragment shader. Sub-millisecond GPU compute. No readback needed for display.
+- **PSNR heatmap** — per-pixel dB computation in the same fragment shader, mapped to a 5-stop color gradient.
+- **Per-frame PSNR readout** — CPU-side PSNR computed on `seeked` event at 160×90 resolution, displayed in the compare toolbar. Shown in all diff palettes, not just PSNR mode.
+- **PSNR filmstrip strip** — accumulated PSNR values rendered as color-coded bars in the filmstrip timeline graph area.
+- **Amplification & palette controls** — 4 amplification levels (1×/2×/4×/8×), 3 palettes (grayscale/temperature/PSNR).
+- **Mode switching UI + URL params** — toolbar button + keyboard shortcuts (T to cycle, D to toggle diff), all state persisted in shareable URL.
 
-**Feasible with significant effort (Medium-Hard):**
-- **SSIM heatmap** — 11x11 Gaussian window per pixel. CPU at 1080p is 500ms-2s. Downscaled (540p) with upscaled overlay is the pragmatic starting path. WebGL multi-pass FBO approach is feasible but ~200 lines of shader code.
+**Feasible with significant effort (not yet implemented):**
+- **SSIM heatmap** — 11×11 Gaussian window per pixel. CPU at 1080p is 500ms–2s. Downscaled (540p) with upscaled overlay is the pragmatic path. WebGL multi-pass FBO approach is feasible but ~200 lines of shader code.
 
 **Not feasible (skip):**
 - **Block boundary overlay** — mp4box.js is container-level only, no macroblock/CTU parsing. Would require porting a full H.264/HEVC NAL parser to WASM (~10k+ lines per codec). Heuristic edge detection is unreliable due to deblocking filters.
 
-**Key constraint:** `canvas.drawImage()` on EME-protected video returns black pixels (canvas taint). For encrypted content, analysis modes would need the WebCodecs decode path from the thumbnail worker, limiting them to paused-only.
+**Key constraint:** `canvas.drawImage()` on EME-protected video returns black pixels (canvas taint). The diff renderer uses `texImage2D` which has the same origin-clean restriction. For encrypted content, analysis modes are limited to unencrypted compare sources.
 
 ---
 
-## Per-Area Findings
+## Implementation Details
 
-### 1. Frame Pixel Access — Easy (unencrypted) / Hard (encrypted)
+### 1. Toggle/Flicker Mode
 
-The codebase already has all the infrastructure:
-- `canvas.drawImage(videoEl)` + `getImageData()` — used in `FilmstripTimeline.tsx:170-190` with DRM taint detection
-- `OffscreenCanvas` in workers — used throughout `thumbnailWorker.ts:68-69, 356, 499`
-- `VideoFrame` from `VideoDecoder` — `thumbnailWorker.ts:567-573`
+**File:** `QualityCompare.tsx` (lines 1086–1107)
 
-| Path | Perf (1080p) | Cross-browser | DRM-safe |
-|------|-------------|---------------|----------|
-| `canvas.drawImage(video)` + `getImageData()` | 25-50ms | All | No (tainted) |
-| `VideoFrame.copyTo({format: "RGBA"})` | 15-20ms | Since Sep 2024 | N/A (WebCodecs only) |
-| WebGL `texImage2D(video)` → shader | <1ms (no readback) | All (WebGL2) | Likely no (same origin-clean flag) |
+Toggles CSS `visibility` of the slave video on a `setInterval` timer. Zero pixel processing, works with DRM.
 
-The <16ms target for pixel extraction is only achievable by keeping frames on the GPU via WebGL (no readback for display).
+- **Speeds:** 250ms, 500ms, 1000ms — cycled via toolbar button
+- **Visual indicator:** `A` / `B` label in toolbar updates on each tick via `flickerLabelRef`
+- **Keyboard:** `T` cycles split → toggle → diff → split
+- **Cleanup:** `clearInterval` on mode change or unmount; resets `visibility` to "visible"
 
-### 2. Difference Map Modes — Easy-Medium
-
-**Toggle/flicker mode** (~15 lines of code): toggle CSS `visibility` of the slave video at configurable interval (250/500/1000ms). Works with DRM. Zero pixel processing.
-
-**WebGL difference map**: the project currently has zero WebGL code. Adding a WebGL2 canvas at z-index 2 inside `.vp-compare-overlay`:
-1. Upload both video elements as textures via `texImage2D` (~0.1ms each, GPU-to-GPU)
-2. Fragment shader computes `abs(A - B) * amplify` with palette
-3. Total: <1ms per frame, feasible at 60fps during playback
-
-Standard amplification factors: 1x (raw), 4x (enhanced), 8x (maximum). Palette options:
-
-```glsl
-// Grayscale: direct amplitude
-gl_FragColor = vec4(vec3(diff * amplify), 1.0);
-
-// Temperature: blue → white → red
-float t = clamp(diff * amplify, 0.0, 1.0);
-gl_FragColor = vec4(t, 1.0 - abs(2.0*t - 1.0), 1.0 - t, 1.0);
-
-// PSNR-clip: green below threshold, red above
-float mse = diff * diff;
-gl_FragColor = mse > threshold ? vec4(1,0,0,1) : vec4(0,1,0,0.3);
+```typescript
+const timer = setInterval(() => {
+  showA = !showA;
+  slaveVideo.style.visibility = showA ? "visible" : "hidden";
+  flickerLabelRef.current.textContent = showA ? "A" : "B";
+}, flickerInterval);
 ```
 
-### 3. SSIM Heatmap — Medium-Hard
+### 2. Per-Pixel Difference Map (WebGL2)
 
-CPU at 1080p: 500ms-2s (11x11 Gaussian window × 2M pixels). Not real-time, but acceptable paused-only with spinner.
+**File:** `useDiffRenderer.ts` (~400 lines)
 
-**Pragmatic path**: compute at 1/4 resolution (480x270), ~30-120ms on CPU, upscale the heatmap overlay. SSIM is designed to be multi-scale so downscaling preserves structural information well.
+WebGL2 fullscreen-quad shader that uploads both video elements as textures and computes per-pixel difference in a single draw call.
 
-**Simpler alternative first**: PSNR heatmap is per-pixel `10 * log10(255²/MSE)` — no windowed computation, runs in the same fragment shader as the difference map. Start here.
+**Architecture:**
+- Canvas element `.vp-compare-diff-canvas` in the compare overlay, same CSS transforms (zoom/pan) as the video elements
+- GL resources created lazily when `active` becomes true (canvas must be visible for valid context)
+- `webglcontextlost` / `webglcontextrestored` handlers for robustness
+- Resources destroyed on deactivation or unmount
+
+**Rendering schedule:**
+- **Paused:** render once + on each `seeked` event
+- **Playing:** `requestAnimationFrame` loop (PSNR readout skipped during playback — too expensive at 60fps)
+
+**Fragment shader — difference normalization:**
+```glsl
+float diff = length(colA - colB) / 1.732;  // sqrt(3) normalizes RGB to 0..1
+float val = clamp(diff * u_amplify, 0.0, 1.0);
+```
+
+**Three palette modes (uniform `u_palette`):**
+
+| Palette | `u_palette` | Mapping |
+|---------|------------|---------|
+| Grayscale | 0 | `color = vec3(val)` |
+| Temperature | 1 | Blue → white → red (val < 0.5: blue→white, else white→red) |
+| PSNR | 2 | Per-pixel dB heatmap with 5-stop gradient (see below) |
+
+**Amplification values:** 1×, 2×, 4×, 8× — directly scales difference visibility and inversely affects PSNR calculation (`ampMse = mse / (amplify²)`).
+
+### 3. PSNR Heatmap (GPU Shader)
+
+**File:** `useDiffRenderer.ts` (fragment shader, lines 55–76)
+
+Per-pixel PSNR computed directly in the fragment shader:
+
+```glsl
+vec3 d = colA - colB;
+float mse = dot(d, d) / 3.0;
+float ampMse = mse / (u_amplify * u_amplify);
+float psnr = clamp(-10.0 * log(ampMse + 1e-10) / log(10.0), 0.0, 60.0);
+```
+
+**5-stop color gradient:**
+
+| dB range | Color | RGB |
+|----------|-------|-----|
+| ≥ 50 | Dark green | `(0, 0.4, 0)` |
+| 40–50 | Green blend | `(0, 0.8→0.4, 0)` |
+| 30–40 | Yellow → green | `(1→0, 1→0.8, 0)` |
+| 20–30 | Red → yellow | `(1, 0→1, 0)` |
+| ≤ 15–20 | Magenta → red | `(1, 0, 1→0)` |
+
+The PSNR is capped at 60 dB (identical pixels) and floored at 0 dB. The epsilon `1e-10` prevents `log(0)`.
+
+### 4. Per-Frame PSNR Readout
+
+**File:** `useDiffRenderer.ts` (lines 231–261, 365–374)
+
+CPU-side PSNR for the overall frame, computed at reduced resolution to avoid blocking the main thread.
+
+**Computation:**
+- Two `OffscreenCanvas` instances at 160×90 pixels (16:9 aspect)
+- `drawImage(video, 0, 0, 160, 90)` for each video element
+- Per-pixel RGB difference normalized by 255, summed as squared differences
+- `MSE = sumSqDiff / (pixelCount × 3)`
+- `PSNR = -10 × log₁₀(MSE)`, capped at 60 dB for identical frames
+
+**Trigger:** fired on `seeked` event when paused. Skipped during playback (the `onPsnr` callback receives `null`).
+
+**Display:** `QualityCompare.tsx` toolbar shows `{psnr.toFixed(1)} dB` or em-dash when null. Visible in all diff palettes (not gated on PSNR palette selection).
+
+### 5. PSNR History Accumulation & Filmstrip Strip
+
+**Files:** `useDiffRenderer.ts`, `QualityCompare.tsx`, `ShakaPlayer.tsx`, `FilmstripTimeline.tsx`
+
+**Data flow:**
+1. `useDiffRenderer` maintains a `psnrHistory` ref: `Map<number, number>` keyed by time rounded to 3 decimal places
+2. Each `firePsnr()` call stores `psnrHistory.set(roundedTime, value)` using `videoB.currentTime`
+3. Map is cleared when `active` becomes false (diff mode deactivated)
+4. `QualityCompare` forwards the ref to the parent via `psnrHistoryRef` prop
+5. `ShakaPlayer` creates the shared ref and passes it to both `QualityCompare` and `FilmstripTimeline`
+6. `FilmstripTimeline` reads the map in its paint loop
+
+**Filmstrip rendering** (`FilmstripTimeline.tsx`):
+- Strip height: 8px, positioned at the bottom of the bitrate graph area
+- Each entry draws a 2px-wide colored rectangle at `x = time × pxPerSec - scrollLeft`
+- Color uses the same 5-stop gradient as the GPU shader via `psnrColor(dB)`:
+
+```typescript
+function psnrColor(dB: number): string {
+  if (dB >= 50) return "rgb(0, 102, 0)";       // dark green
+  if (dB >= 40) return "rgb(0, ...)";            // green blend
+  if (dB >= 30) return "rgb(...)";               // yellow → green
+  if (dB >= 20) return "rgb(255, ...)";          // red → yellow
+  return "rgb(255, 0, ...)";                     // magenta → red
+}
+```
+
+- "PSNR" label drawn at bottom-right of strip area (40% opacity)
+- Entries outside viewport are skipped for performance
+- The ref-based approach avoids re-renders on every seek
+
+### 6. Mode Switching & URL Persistence
+
+**Three analysis modes** (`AnalysisMode = "split" | "toggle" | "diff"`):
+
+| Mode | Key | Controls | Frame borders |
+|------|-----|----------|---------------|
+| Split | — (default) | Slider position | Yes |
+| Toggle | `T` (cycle) | Flicker speed (250/500/1000ms) | No |
+| Diff | `D` (toggle), `T` (cycle) | Amp (1×–8×), Palette, PSNR readout | Yes |
+
+**Keyboard shortcuts:**
+- **T**: cycle split → toggle → diff → split
+- **D**: toggle diff ↔ split
+- Both ignored when focus is in INPUT/SELECT/TEXTAREA
+
+**URL parameters** persisted via `CompareViewState`:
+
+| Field | URL param | Values | Condition |
+|-------|-----------|--------|-----------|
+| `cmode` | `compareCmode` | `"toggle"`, `"diff"` | Omitted if `"split"` |
+| `flickerInterval` | `compareCfi` | 250, 500, 1000 | Only when `cmode=toggle` |
+| `amplification` | `compareAmp` | 2, 4, 8 | Only when `cmode=diff`, omit if 1 |
+| `palette` | `comparePal` | `"temperature"`, `"psnr"` | Only when `cmode=diff`, omit if `"grayscale"` |
+
+State is written to `viewStateRef` on every transform update and mode/settings change, enabling shareable URLs that restore the exact analysis configuration.
+
+---
+
+## Research: Remaining Features
+
+### SSIM Heatmap — Medium-Hard (not implemented)
+
+CPU at 1080p: 500ms–2s (11×11 Gaussian window × 2M pixels). Not real-time, but acceptable paused-only with spinner.
+
+**Pragmatic path**: compute at 1/4 resolution (480×270), ~30–120ms on CPU, upscale the heatmap overlay. SSIM is designed to be multi-scale so downscaling preserves structural information well.
 
 Existing JS libraries:
 - **ssim.js** (https://github.com/obartra/ssim) — pure JS, supports `weber` (fastest), `bezkrovny`, `fast`, `original` algorithms. Returns mssim (mean) + ssim_map (per-pixel).
@@ -75,130 +191,50 @@ Existing JS libraries:
 
 | Approach | Feasibility | Performance | Notes |
 |----------|-------------|-------------|-------|
-| WebGL multi-pass FBOs | Medium | ~2-5ms | Separable Gaussian blur (2 passes for mean), then variance/covariance textures, then SSIM formula. 4-6 render passes total |
-| WebGPU compute shader | Medium-Hard | ~1-2ms | More natural for neighborhood operations but browser support gaps |
+| WebGL multi-pass FBOs | Medium | ~2–5ms | Separable Gaussian blur (2 passes for mean), then variance/covariance textures, then SSIM formula. 4–6 render passes total |
+| WebGPU compute shader | Medium-Hard | ~1–2ms | More natural for neighborhood operations but browser support gaps |
 
-### 4. Block Boundary Overlay — Infeasible
+### Block Boundary Overlay — Infeasible (skip)
 
-mp4box.js parses container-level boxes only (moov, moof, mdat, tenc, senc). It does not parse codec-level NAL units, macroblock syntax, or CTU quad-tree structures. No JavaScript/WASM library provides this. Elecard StreamEye achieves this with ~5,000-20,000 lines of native C++ per codec, including CABAC/CAVLC entropy decoding.
+mp4box.js parses container-level boxes only (moov, moof, mdat, tenc, senc). It does not parse codec-level NAL units, macroblock syntax, or CTU quad-tree structures. No JavaScript/WASM library provides this. Elecard StreamEye achieves this with ~5,000–20,000 lines of native C++ per codec, including CABAC/CAVLC entropy decoding.
 
 Heuristic detection from pixel discontinuities fails because modern codecs apply deblocking filters specifically to smooth block edges.
 
-**Skip this feature entirely.**
-
-### 5. Per-Frame Quality Metric Graph — Medium
-
-Follow the `useBitrateGraph` pattern (`src/hooks/useBitrateGraph.ts`):
-- Data structure: `FrameQualityInfo { time, psnr, ssim?, computed }`
-- Trigger: compute on `seeked` event (same event used for frame type detection, `QualityCompare.tsx:850`)
-- Cache by `(heightA, heightB, segStartTime, frameIdx)`
-- Display: inline in toolbar next to frame badge (`I 42.3 KB | PSNR 38.2 dB`), or sparkline on filmstrip below bitrate graph
-- "Bad frame" detection: flag frames where PSNR < 30 dB, highlight with red markers
-
-### 6. UX Integration — Easy-Medium
-
-**Analysis canvas placement**: z-index 2 (same level as spotlight), `position: absolute; inset: 0`. Split slider (z-index 4) and toolbar (z-index 5) remain above.
-
-**Mode switching**: keyboard shortcut cycle + toolbar dropdown:
-
-| Mode | Key | Visual |
-|------|-----|--------|
-| Split (existing) | — | Default A/B split slider |
-| Difference | `D` | Per-pixel difference overlay |
-| PSNR Heatmap | `H` | Color-mapped quality heatmap |
-| Toggle/Flicker | `T` | Rapid A/B swap |
-
-URL param: `&cmode=diff` alongside existing zoom/pan/split params.
-
-**Spotlight interaction**: highlight draw + auto-zoom work on top of the analysis canvas in Difference/Heatmap modes. The same CSS transforms (zoom/pan) apply to the analysis canvas. Suppressed in Toggle mode.
-
-**How commercial tools handle mode switching:**
-- Elecard StreamEye: toolbar buttons + ALT+1-6 hotkeys for overlay toggles; CTRL+1-6 for panel switches (decoded/predicted/unfiltered/residual/reference/difference)
-- MSU VQMT: tabbed panels with Results Plot, Frames View, and Visualization modes
-- VQ Probe: dropdown selector for visualization mode in a floating toolbar
-
-### 7. Performance & Architecture — Medium
-
-**Separate `analysisWorker.ts`** (not reusing the already-complex thumbnailWorker at ~1,094 lines). Receives RGBA `ArrayBuffer` via `Transferable`, returns metrics.
-
-**SharedArrayBuffer is not viable** — requires COEP `require-corp` headers which would break all cross-origin segment fetches from arbitrary CDNs.
-
-**WebGPU**: not yet universal enough (Firefox Linux, some mobile gaps). Use WebGL2 as primary path.
-
-**WebGPU browser support matrix (as of Feb 2026):**
-
-| Platform | Chrome/Edge | Firefox | Safari |
-|----------|------------|---------|--------|
-| Windows | Stable (since 113) | Stable (since 141) | N/A |
-| macOS | Stable (since 113) | Stable (145, ARM only) | Stable (Safari 26) |
-| Linux | Beta (144+, Intel Gen12+) | In progress | N/A |
-| iOS/Android | Chrome Android 121+ | In progress | iOS 26 |
-
-**Memory budget**: ~25 MB per analysis state (two 1080p source frames + one output). Cache eviction via LRU keyed by `(heightA, heightB, segStartTime)`, following the same pattern as `useThumbnailGenerator` 3x-viewport eviction.
-
-**Worker strategy:**
-
-| Computation | Where | Rationale |
-|-------------|-------|-----------|
-| Pixel extraction (`getImageData`) | Main thread | Must access `<video>` element |
-| Difference map (WebGL) | Main thread | WebGL context on visible canvas |
-| Difference map (CPU fallback) | Worker | Offload 8MB pixel loop |
-| SSIM computation | Worker | Heavy CPU work, 500ms-2s |
-| Quality metric cache | Worker | Avoid blocking UI during precomputation |
-
 ---
 
-## Recommended Implementation Order
-
-| # | Feature | Effort | Impact |
-|---|---------|--------|--------|
-| 1 | Toggle/Flicker mode | Easy | High — simplest A/B comparison |
-| 2 | Per-pixel difference map (WebGL) | Medium | High — visual artifact detection |
-| 3 | Amplification & palette controls | Easy | Medium — makes diff map usable |
-| 4 | PSNR heatmap (same shader) | Easy | Medium — quality visualization |
-| 5 | Per-frame PSNR readout in toolbar | Easy | Medium — instant quality number |
-| 6 | Mode switching UI + URL params | Easy | Medium — discoverability |
-| 7 | Quality sparkline on filmstrip | Medium | Medium — quality-over-time |
-| 8 | SSIM heatmap (downscaled CPU) | Hard | Low-Medium — niche metric |
-
----
-
-## Architecture Sketch
+## Architecture
 
 ```
 QualityCompare.tsx
   |
-  +-- [existing] masterVideo (HTMLVideoElement, right/B side)
-  +-- [existing] slaveVideo (HTMLVideoElement, left/A side, clipped)
-  +-- [new] analysisCanvas (HTMLCanvasElement, WebGL2 context, z-index 2)
+  +-- masterVideo (HTMLVideoElement, right/B side)
+  +-- slaveVideo (HTMLVideoElement, left/A side, clipped)
+  +-- diffCanvas (.vp-compare-diff-canvas, WebGL2 context)
   |     |
-  |     +-- WebGL program: loads masterVideo + slaveVideo as textures
-  |     +-- Fragment shader: computes diff/PSNR per mode + amplification + palette
-  |     +-- Renders to analysisCanvas on seeked event (or rAF during playback)
+  |     +-- useDiffRenderer hook manages GL lifecycle
+  |     +-- Two textures: masterVideo + slaveVideo via texImage2D
+  |     +-- Fragment shader: diff/temperature/PSNR per u_palette + u_amplify
+  |     +-- Renders on seeked (paused) or rAF loop (playing)
   |     +-- Hidden when mode === "split" or "toggle"
+  |     +-- Returns psnrHistory ref (Map<time, dB>)
   |
-  +-- [new] analysisMode state: "split" | "diff" | "heatmap" | "toggle"
-  +-- [new] amplification state: 1 | 2 | 4 | 8
-  +-- [new] palette state: "grayscale" | "temperature" | "psnr-clip"
-  +-- [new] flickerInterval: 250 | 500 | 1000 ms (for toggle mode)
-  +-- [existing] viewStateRef: add cmode, amplify, palette fields
-  |
-  +-- [new] useAnalysisMetrics hook
-        |
-        +-- Spawns analysisWorker (separate from thumbnailWorker)
-        +-- On seeked: extract RGBA from both videos via canvas.drawImage + getImageData
-        +-- Transfer ArrayBuffers to worker
-        +-- Worker computes: mean PSNR, mean SSIM (downscaled), per-frame values
-        +-- Cache results keyed by (heightA, heightB, segStart, frameIdx)
-        +-- Returns: { psnr: number, ssim?: number }
-        +-- Displayed in compare toolbar next to frame type badge
+  +-- analysisMode state: "split" | "toggle" | "diff"
+  +-- amplification state: 1 | 2 | 4 | 8
+  +-- palette state: "grayscale" | "temperature" | "psnr"
+  +-- flickerInterval: 250 | 500 | 1000 ms
+  +-- psnrValue state: number | null (CPU-side readout)
+  +-- viewStateRef: zoom, pan, slider, cmode, amp, palette
 
-analysisWorker.ts (new Web Worker)
+ShakaPlayer.tsx
   |
-  +-- Receives: { type: "computeMetrics", frameA: ArrayBuffer, frameB: ArrayBuffer, width, height }
-  +-- Computes: PSNR (per-pixel MSE -> 10*log10(255^2/MSE))
-  +-- Computes: SSIM at 1/4 resolution (downsample, 11x11 window, return mean + map)
-  +-- Returns: { psnr: number, ssim: number, ssimMap?: ArrayBuffer }
+  +-- psnrHistoryRef: shared ref between QualityCompare and FilmstripTimeline
+  +-- Passes psnrHistoryRef to QualityCompare (writes) and FilmstripTimeline (reads)
+
+FilmstripTimeline.tsx
+  |
+  +-- Reads psnrHistory ref in paint loop
+  +-- Draws 2px colored bars at bottom of bitrate graph area (8px strip)
+  +-- psnrColor(dB) maps to 5-stop gradient matching shader
 ```
 
 **Data flow for difference map (WebGL, during playback):**
@@ -207,37 +243,64 @@ analysisWorker.ts (new Web Worker)
 rAF loop:
   1. gl.texImage2D(TEXTURE0, masterVideo)  -- GPU upload, ~0.1ms
   2. gl.texImage2D(TEXTURE1, slaveVideo)   -- GPU upload, ~0.1ms
-  3. gl.drawArrays(TRIANGLE_STRIP, 0, 4)   -- fragment shader, <0.5ms
-  4. Browser composites analysisCanvas      -- standard compositing
+  3. gl.drawArrays(TRIANGLES, 0, 6)        -- fragment shader, <0.5ms
+  4. Browser composites diffCanvas          -- standard compositing
 ```
 
 No pixel readback needed. Total: <1ms per frame. Feasible at 60fps.
 
-**Integration with existing components:**
+**Data flow for PSNR readout (CPU, on seeked):**
 
-- `QualityCompare.tsx`: Add mode state + analysis canvas + toolbar dropdown. ~100 lines of additions.
-- `ShakaPlayer.css`: Add `.vp-compare-analysis-canvas` at z-index 2, `position: absolute; inset: 0;`.
-- `ShakaPlayer.tsx`: Extend `CompareViewState` with `cmode` field, serialize to URL params.
-- `App.tsx`: Parse `cmode` from URL.
-- `FilmstripTimeline.tsx`: Optionally display quality sparkline below bitrate graph using same canvas rendering approach.
+```
+seeked event:
+  1. drawImage(videoA, 0, 0, 160, 90)      -- offscreen canvas A
+  2. drawImage(videoB, 0, 0, 160, 90)      -- offscreen canvas B
+  3. getImageData() for both                -- ~0.1ms at 160×90
+  4. Per-pixel RGB MSE → PSNR dB            -- ~0.05ms (14,400 pixels)
+  5. Store in psnrHistory map               -- keyed by rounded time
+  6. Fire onPsnr callback                   -- updates toolbar display
+```
+
+**Data flow for PSNR filmstrip strip:**
+
+```
+FilmstripTimeline paint loop (every rAF):
+  1. Read psnrHistory.current (Map<time, dB>)
+  2. For each entry: x = time × pxPerSec - scrollLeft
+  3. Skip if outside viewport
+  4. ctx.fillRect(x, stripY, 2, 8) with psnrColor(dB)
+```
 
 ---
 
-## Open Questions (Need Prototyping)
+## Implementation Order (with status)
 
-1. **WebGL `texImage2D` from EME video** — does it also taint/fail like `canvas.drawImage()`? Needs browser testing.
+| # | Feature | Status | Effort | Impact |
+|---|---------|--------|--------|--------|
+| 1 | Toggle/Flicker mode | Done | Easy | High — simplest A/B comparison |
+| 2 | Per-pixel difference map (WebGL) | Done | Medium | High — visual artifact detection |
+| 3 | Amplification & palette controls | Done | Easy | Medium — makes diff map usable |
+| 4 | PSNR heatmap (same shader) | Done | Easy | Medium — quality visualization |
+| 5 | Per-frame PSNR readout in toolbar | Done | Easy | Medium — instant quality number |
+| 6 | Mode switching UI + URL params | Done | Easy | Medium — discoverability |
+| 7 | PSNR strip on filmstrip | Done | Easy | Medium — quality-over-time |
+| 8 | SSIM heatmap (downscaled CPU) | — | Hard | Low-Medium — niche metric |
 
-2. **`willReadFrequently` performance delta** — the save-frame code (`FilmstripTimeline.tsx:172`) creates a canvas without this flag. Setting it could halve readback time (50ms → 25ms) for the CPU analysis path but disables GPU acceleration for draws. Needs benchmarking.
+---
 
-3. **ssim.js `weber` algorithm accuracy** — fastest mode doesn't match Wang et al. exactly. Is the approximation sufficient for a video player? Prototype with the DASH fixture to measure speed/accuracy delta.
+## Open Questions
 
-4. **WebGL context limits** — typically 8-16 per page. The player doesn't currently use WebGL, but embedded deployments might. Need `webglcontextlost` event handling with fallback to CPU path.
+1. ~~**WebGL `texImage2D` from EME video** — does it also taint/fail like `canvas.drawImage()`?~~ **Confirmed:** same origin-clean restriction applies. Diff mode works with unencrypted content; encrypted streams would need the WebCodecs decode path.
 
-5. **Dual-manifest resolution mismatch** — two CDNs may serve different pixel dimensions at the same selected height (e.g., 1920x1080 vs 1920x1088 due to codec alignment). Analysis canvas must normalize to the smaller resolution.
+2. ~~**WebGL context limits**~~ **Handled:** `webglcontextlost`/`webglcontextrestored` event handlers implemented in `useDiffRenderer`. Context lost sets a flag that skips rendering; restored nulls the GL state so it re-initializes on next activation.
 
-6. **Frame sync for analysis** — the rAF drift correction (`QualityCompare.tsx:777-799`) keeps videos within 16ms during playback, but pixel-accurate difference maps need exact frame alignment. Analysis should probably be paused-only except for WebGL difference (which tolerates slight desync).
+3. ~~**Frame sync for analysis**~~ **Confirmed acceptable:** rAF drift correction keeps videos within 16ms during playback. The diff map tolerates slight desync visually. PSNR readout is only computed when paused (exact frame alignment via `seeked` event).
 
-7. **SSIM at 1/4 resolution upscale artifacts** — does bilinear upscaling of a 480x270 SSIM map to 1920x1080 produce distracting interpolation artifacts? Or does the inherent smoothness of SSIM windows make this invisible? Needs prototyping with synthetic test patterns.
+4. **ssim.js `weber` algorithm accuracy** — fastest mode doesn't match Wang et al. exactly. Is the approximation sufficient for a video player? Prototype with the DASH fixture to measure speed/accuracy delta.
+
+5. **Dual-manifest resolution mismatch** — two CDNs may serve different pixel dimensions at the same selected height (e.g., 1920×1080 vs 1920×1088 due to codec alignment). The WebGL shader handles this implicitly (textures stretch to fill the quad), but PSNR values may be slightly affected by interpolation.
+
+6. **SSIM at 1/4 resolution upscale artifacts** — does bilinear upscaling of a 480×270 SSIM map to 1920×1080 produce distracting interpolation artifacts? Or does the inherent smoothness of SSIM windows make this invisible? Needs prototyping with synthetic test patterns.
 
 ---
 
