@@ -9,6 +9,10 @@ function parseUrlParams(): {
   compare: string | null;
   compareQa: number | null;
   compareQb: number | null;
+  compareZoom: number | null;
+  comparePx: number | null;
+  comparePy: number | null;
+  compareSplit: number | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
@@ -17,6 +21,10 @@ function parseUrlParams(): {
   const compare = params.get("compare");
   const qa = params.get("qa");
   const qb = params.get("qb");
+  const zoom = params.get("zoom");
+  const px = params.get("px");
+  const py = params.get("py");
+  const split = params.get("split");
 
   return {
     src: v || null,
@@ -25,6 +33,10 @@ function parseUrlParams(): {
     compare: compare || null,
     compareQa: qa ? parseInt(qa, 10) || null : null,
     compareQb: qb ? parseInt(qb, 10) || null : null,
+    compareZoom: zoom ? parseFloat(zoom) || null : null,
+    comparePx: px ? parseFloat(px) : null,
+    comparePy: py ? parseFloat(py) : null,
+    compareSplit: split ? parseInt(split, 10) : null,
   };
 }
 
@@ -147,6 +159,10 @@ function App() {
         compareSrc={compareSrc ?? undefined}
         compareQa={initial.compareQa ?? undefined}
         compareQb={initial.compareQb ?? undefined}
+        compareZoom={initial.compareZoom ?? undefined}
+        comparePx={initial.comparePx ?? undefined}
+        comparePy={initial.comparePy ?? undefined}
+        compareSplit={initial.compareSplit ?? undefined}
       />
     </div>
   );

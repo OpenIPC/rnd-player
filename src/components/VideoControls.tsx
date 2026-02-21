@@ -38,6 +38,7 @@ import { formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { loadSettings } from "../hooks/useSettings";
+import type { CompareViewState } from "./ShakaPlayer";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -52,6 +53,7 @@ interface VideoControlsProps {
   compareSrc?: string;
   compareHeightA?: number | null;
   compareHeightB?: number | null;
+  compareViewRef?: React.RefObject<CompareViewState | null>;
   inPoint: number | null;
   outPoint: number | null;
   onInPointChange: (time: number | null) => void;
@@ -104,6 +106,7 @@ export default function VideoControls({
   compareSrc,
   compareHeightA,
   compareHeightB,
+  compareViewRef,
   inPoint,
   outPoint,
   onInPointChange,
@@ -710,6 +713,17 @@ export default function VideoControls({
     if (compareSrc) params.set("compare", compareSrc);
     if (compareHeightA) params.set("qa", String(compareHeightA));
     if (compareHeightB) params.set("qb", String(compareHeightB));
+    const cv = compareViewRef?.current;
+    if (cv) {
+      if (cv.zoom > 1) {
+        params.set("zoom", cv.zoom.toFixed(2));
+        params.set("px", cv.panXFrac.toFixed(4));
+        params.set("py", cv.panYFrac.toFixed(4));
+      }
+      if (Math.round(cv.sliderPct) !== 50) {
+        params.set("split", String(Math.round(cv.sliderPct)));
+      }
+    }
     navigator.clipboard.writeText(`${base}?${params.toString()}`).then(() => {
       showCopiedToast("URL copied");
     });

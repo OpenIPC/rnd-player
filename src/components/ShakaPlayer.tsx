@@ -8,6 +8,13 @@ const QualityCompare = lazy(() => import("./QualityCompare"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
 import "./ShakaPlayer.css";
 
+export interface CompareViewState {
+  zoom: number;
+  panXFrac: number;
+  panYFrac: number;
+  sliderPct: number;
+}
+
 interface ShakaPlayerProps {
   src: string;
   autoPlay?: boolean;
@@ -16,15 +23,20 @@ interface ShakaPlayerProps {
   compareSrc?: string;
   compareQa?: number;
   compareQb?: number;
+  compareZoom?: number;
+  comparePx?: number;
+  comparePy?: number;
+  compareSplit?: number;
 }
 
 let polyfillsInstalled = false;
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
   const kidRef = useRef<string | null>(null);
+  const compareViewRef = useRef<CompareViewState | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
@@ -396,6 +408,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               compareSrc={compareMode && slaveSrc !== src ? slaveSrc : undefined}
               compareHeightA={compareMode ? compareHeightA : undefined}
               compareHeightB={compareMode ? compareHeightB : undefined}
+              compareViewRef={compareViewRef}
               inPoint={inPoint}
               outPoint={outPoint}
               onInPointChange={setInPoint}
@@ -418,6 +431,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
                 kid={kidRef.current ?? undefined}
                 initialHeightA={compareQa}
                 initialHeightB={compareQb}
+                initialZoom={compareZoom}
+                initialPanXFrac={comparePx}
+                initialPanYFrac={comparePy}
+                initialSplit={compareSplit}
+                viewStateRef={compareViewRef}
                 onResolutionChange={(a, b) => {
                   setCompareHeightA(a);
                   setCompareHeightB(b);
