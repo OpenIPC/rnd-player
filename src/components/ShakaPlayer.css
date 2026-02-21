@@ -1897,6 +1897,11 @@ video::-webkit-media-text-track-container {
   pointer-events: none;
 }
 
+.vp-adaptation-toast.vp-adaptation-pending .vp-adaptation-to,
+.vp-adaptation-toast.vp-adaptation-pending .vp-adaptation-arrow {
+  animation: vp-adaptation-pulse 1.5s ease-in-out infinite;
+}
+
 .vp-adaptation-line {
   display: flex;
   align-items: center;
@@ -1937,4 +1942,9 @@ video::-webkit-media-text-track-container {
 @keyframes vp-adaptation-exit {
   from { opacity: 1; }
   to { opacity: 0; }
+}
+
+@keyframes vp-adaptation-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
