@@ -97,6 +97,18 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
             const blockedHost = getCorsBlockedOrigin(src);
             if (blockedHost) {
               setError(`${blockedHost} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+            } else if (detail.code === 1001 && detail.data?.[1]) {
+              // BAD_HTTP_STATUS: data[0]=uri, data[1]=httpStatus
+              const httpStatus = detail.data[1] as number;
+              if (httpStatus === 410) {
+                setError("The video stream has expired (HTTP 410 Gone). Try obtaining a fresh CDN link.");
+              } else if (httpStatus === 403) {
+                setError("Access denied (HTTP 403). The stream URL may have expired or require authentication.");
+              } else if (httpStatus === 404) {
+                setError("Video not found (HTTP 404). The stream may have been removed.");
+              } else {
+                setError(`Failed to load video (HTTP ${httpStatus}). Check the stream URL.`);
+              }
             } else {
               setError("Network error: could not load the video. Check your connection.");
             }
