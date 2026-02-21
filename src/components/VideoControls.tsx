@@ -710,7 +710,7 @@ export default function VideoControls({
     const base = `${window.location.origin}${window.location.pathname}`;
     const params = new URLSearchParams();
     params.set("v", src);
-    params.set("t", `${Math.floor(videoEl.currentTime)}s`);
+    params.set("t", `${parseFloat(videoEl.currentTime.toFixed(3))}s`);
     if (clearKey) params.set("key", clearKey);
     if (compareSrc) params.set("compare", compareSrc);
     if (compareHeightA) params.set("qa", String(compareHeightA));
