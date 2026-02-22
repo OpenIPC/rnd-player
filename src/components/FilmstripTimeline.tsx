@@ -23,6 +23,7 @@ interface FilmstripTimelineProps {
   psnrHistory?: React.RefObject<Map<number, number>>;
   ssimHistory?: React.RefObject<Map<number, number>>;
   msSsimHistory?: React.RefObject<Map<number, number>>;
+  vmafHistory?: React.RefObject<Map<number, number>>;
 }
 
 const RULER_HEIGHT = 22;
@@ -42,6 +43,7 @@ const GRAPH_AVG_COLOR = "rgba(74, 158, 237, 0.5)";
 const PSNR_STRIP_HEIGHT = 8;
 const SSIM_STRIP_HEIGHT = 8;
 const MSSSIM_STRIP_HEIGHT = 8;
+const VMAF_STRIP_HEIGHT = 8;
 
 /** Map PSNR dB value to a color string using 5-stop gradient matching the shader */
 function psnrColor(dB: number): string {
@@ -61,6 +63,15 @@ function ssimColor(s: number): string {
   { const t = Math.max(0, Math.min(1, (s - 0.50) / 0.20)); return `rgb(255, 0, ${Math.round(255 - t * 255)})`; }
 }
 
+/** Map VMAF score (0-100) to a color string using 5-stop gradient */
+function vmafColor(v: number): string {
+  if (v >= 95) return "rgb(0, 102, 0)";
+  if (v >= 80) { const t = (v - 80) / 15; return `rgb(0, ${Math.round(204 - t * 102)}, 0)`; }
+  if (v >= 60) { const t = (v - 60) / 20; return `rgb(${Math.round(255 - t * 255)}, ${Math.round(255 * (1 - t) + 204 * t)}, 0)`; }
+  if (v >= 40) { const t = (v - 40) / 20; return `rgb(255, ${Math.round(t * 255)}, 0)`; }
+  { const t = Math.max(0, Math.min(1, (v - 20) / 20)); return `rgb(255, 0, ${Math.round(255 - t * 255)})`; }
+}
+
 export default function FilmstripTimeline({
   videoEl,
   player,
@@ -74,6 +85,7 @@ export default function FilmstripTimeline({
   psnrHistory,
   ssimHistory,
   msSsimHistory,
+  vmafHistory,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -157,6 +169,8 @@ export default function FilmstripTimeline({
   ssimHistoryRef.current = ssimHistory;
   const msSsimHistoryRef = useRef(msSsimHistory);
   msSsimHistoryRef.current = msSsimHistory;
+  const vmafHistoryRef = useRef(vmafHistory);
+  vmafHistoryRef.current = vmafHistory;
 
 
   const saveFrame = useCallback(async () => {
@@ -768,6 +782,36 @@ export default function FilmstripTimeline({
         ctx.textBaseline = "bottom";
         ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
         ctx.fillText("MS-SSIM", w - 4, msSsimStripY + MSSSIM_STRIP_HEIGHT - 1);
+        ctx.font = FONT;
+        ctx.textAlign = "center";
+      }
+
+      // ── VMAF strip ──
+      const vmafMap = vmafHistoryRef.current?.current;
+      if (vmafMap && vmafMap.size > 0) {
+        const psnrMap2 = psnrHistoryRef.current?.current;
+        const hasPsnr2 = psnrMap2 && psnrMap2.size > 0;
+        const ssimMap2 = ssimHistoryRef.current?.current;
+        const hasSsim2 = ssimMap2 && ssimMap2.size > 0;
+        const msSsimMap2 = msSsimHistoryRef.current?.current;
+        const hasMsSsim = msSsimMap2 && msSsimMap2.size > 0;
+        const stripGraphTop = THUMB_ROW_TOP + thumbH;
+        const vmafStripY = graphOn
+          ? stripGraphTop + GRAPH_HEIGHT - VMAF_STRIP_HEIGHT - (hasPsnr2 ? PSNR_STRIP_HEIGHT : 0) - (hasSsim2 ? SSIM_STRIP_HEIGHT : 0) - (hasMsSsim ? MSSSIM_STRIP_HEIGHT : 0)
+          : stripGraphTop + (hasPsnr2 ? PSNR_STRIP_HEIGHT : 0) + (hasSsim2 ? SSIM_STRIP_HEIGHT : 0) + (hasMsSsim ? MSSSIM_STRIP_HEIGHT : 0);
+
+        for (const [t, v] of vmafMap) {
+          const x = t * pxPerSec - sl;
+          if (x < -2 || x > w + 2) continue;
+          ctx.fillStyle = vmafColor(v);
+          ctx.fillRect(x, vmafStripY, 2, VMAF_STRIP_HEIGHT);
+        }
+
+        ctx.font = "9px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+        ctx.fillText("VMAF", w - 4, vmafStripY + VMAF_STRIP_HEIGHT - 1);
         ctx.font = FONT;
         ctx.textAlign = "center";
       }

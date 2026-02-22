@@ -110,6 +110,7 @@ interface QualityCompareProps {
   psnrHistoryRef?: React.MutableRefObject<Map<number, number>>;
   ssimHistoryRef?: React.MutableRefObject<Map<number, number>>;
   msSsimHistoryRef?: React.MutableRefObject<Map<number, number>>;
+  vmafHistoryRef?: React.MutableRefObject<Map<number, number>>;
   onResolutionChange?: (heightA: number | null, heightB: number | null) => void;
   onClose: () => void;
 }
@@ -236,6 +237,7 @@ export default function QualityCompare({
   psnrHistoryRef,
   ssimHistoryRef,
   msSsimHistoryRef,
+  vmafHistoryRef,
   onResolutionChange,
   onClose,
 }: QualityCompareProps) {
@@ -295,7 +297,7 @@ export default function QualityCompare({
     : 500;
   const VALID_AMPS: DiffAmplification[] = [1, 2, 4, 8];
   const initAmp: DiffAmplification = initialAmp && VALID_AMPS.includes(initialAmp as DiffAmplification) ? initialAmp as DiffAmplification : 1;
-  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr", "ssim", "msssim"];
+  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr", "ssim", "msssim", "vmaf"];
   const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "grayscale";
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
   const [flickerInterval, setFlickerInterval] = useState(initFlicker);
@@ -311,9 +313,10 @@ export default function QualityCompare({
   const [psnrValue, setPsnrValue] = useState<number | null>(null);
   const [ssimValue, setSsimValue] = useState<number | null>(null);
   const [msSsimValue, setMsSsimValue] = useState<number | null>(null);
+  const [vmafValue, setVmafValue] = useState<number | null>(null);
 
   // ── Diff renderer (WebGL2 per-pixel difference map) ──
-  const { psnrHistory, ssimHistory, msSsimHistory } = useDiffRenderer({
+  const { psnrHistory, ssimHistory, msSsimHistory, vmafHistory } = useDiffRenderer({
     canvasRef: diffCanvasRef,
     videoA: slaveVideoRef.current,
     videoB: masterVideo,
@@ -324,6 +327,7 @@ export default function QualityCompare({
     onPsnr: setPsnrValue,
     onSsim: setSsimValue,
     onMsSsim: setMsSsimValue,
+    onVmaf: setVmafValue,
   });
 
   const isDualManifest = slaveSrc !== src;
@@ -1104,6 +1108,13 @@ export default function QualityCompare({
         msSsimHistoryRef.current = new Map();
       }
     }
+    if (vmafHistoryRef) {
+      if (analysisMode === "diff") {
+        vmafHistoryRef.current = vmafHistory.current;
+      } else {
+        vmafHistoryRef.current = new Map();
+      }
+    }
     // Update viewStateRef when mode/interval/amp/palette changes
     if (viewStateRef && (viewStateRef as React.MutableRefObject<CompareViewState | null>).current) {
       const vs = (viewStateRef as React.MutableRefObject<CompareViewState | null>).current!;
@@ -1112,7 +1123,7 @@ export default function QualityCompare({
       vs.amplification = analysisMode === "diff" && amplification !== 1 ? amplification : undefined;
       vs.palette = analysisMode === "diff" && palette !== "grayscale" ? palette : undefined;
     }
-  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory, ssimHistoryRef, ssimHistory, msSsimHistoryRef, msSsimHistory]);
+  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory, ssimHistoryRef, ssimHistory, msSsimHistoryRef, msSsimHistory, vmafHistoryRef, vmafHistory]);
 
   // ── Toggle/Flicker mode: alternate slave visibility ──
   useEffect(() => {
@@ -1531,14 +1542,16 @@ export default function QualityCompare({
                 })}
                 title="Cycle palette"
               >
-                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : palette === "ssim" ? "SSIM" : "MS-SSIM"}
+                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : palette === "ssim" ? "SSIM" : palette === "msssim" ? "MS-SSIM" : "VMAF"}
               </button>
               <span className="vp-compare-diff-psnr">
-                {palette === "msssim"
-                  ? (msSsimValue != null ? msSsimValue.toFixed(4) : "\u2014")
-                  : palette === "ssim"
-                    ? (ssimValue != null ? ssimValue.toFixed(4) : "\u2014")
-                    : (psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014")}
+                {palette === "vmaf"
+                  ? (vmafValue != null ? vmafValue.toFixed(1) : "\u2014")
+                  : palette === "msssim"
+                    ? (msSsimValue != null ? msSsimValue.toFixed(4) : "\u2014")
+                    : palette === "ssim"
+                      ? (ssimValue != null ? ssimValue.toFixed(4) : "\u2014")
+                      : (psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014")}
               </span>
             </>
           )}

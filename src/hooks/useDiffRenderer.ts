@@ -20,8 +20,10 @@
  * for a valid WebGL2 context), and destroyed when deactivated or on unmount.
  */
 import { useEffect, useRef } from "react";
+import { computeVmafFromImageData, createVmafState } from "../utils/vmafCore";
+import type { VmafState } from "../utils/vmafCore";
 
-export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim" | "msssim";
+export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim" | "msssim" | "vmaf";
 export type DiffAmplification = 1 | 2 | 4 | 8;
 
 /* eslint-disable @stylistic/indent */
@@ -128,6 +130,7 @@ interface UseDiffRendererParams {
   onPsnr?: (psnr: number | null) => void;
   onSsim?: (ssim: number | null) => void;
   onMsSsim?: (msSsim: number | null) => void;
+  onVmaf?: (vmaf: number | null) => void;
 }
 
 interface GlState {
@@ -282,6 +285,7 @@ function paletteInt(p: DiffPalette): number {
   if (p === "psnr") return 2;
   if (p === "ssim") return 3;
   if (p === "msssim") return 3; // same shader branch as SSIM
+  if (p === "vmaf") return 3; // same heatmap-over-video blend
   return 0;
 }
 
@@ -512,6 +516,7 @@ export function useDiffRenderer({
   onPsnr,
   onSsim,
   onMsSsim,
+  onVmaf,
 }: UseDiffRendererParams) {
   // Stable refs for rAF render loop access (avoids stale closures)
   const ampRef = useRef(amplification);
@@ -521,6 +526,7 @@ export function useDiffRenderer({
   const onPsnrRef = useRef(onPsnr);
   const onSsimRef = useRef(onSsim);
   const onMsSsimRef = useRef(onMsSsim);
+  const onVmafRef = useRef(onVmaf);
   ampRef.current = amplification;
   palRef.current = palette;
   pausedRef.current = paused;
@@ -528,6 +534,7 @@ export function useDiffRenderer({
   onPsnrRef.current = onPsnr;
   onSsimRef.current = onSsim;
   onMsSsimRef.current = onMsSsim;
+  onVmafRef.current = onVmaf;
 
   const glStateRef = useRef<GlState | null>(null);
   const contextLostRef = useRef(false);
@@ -538,6 +545,10 @@ export function useDiffRenderer({
   const ssimHistory = useRef<Map<number, number>>(new Map());
   /** Accumulated MS-SSIM values keyed by time (rounded to 3dp to deduplicate) */
   const msSsimHistory = useRef<Map<number, number>>(new Map());
+  /** Accumulated VMAF values keyed by time (rounded to 3dp to deduplicate) */
+  const vmafHistory = useRef<Map<number, number>>(new Map());
+  /** VMAF temporal state for motion feature (must persist across frames) */
+  const vmafStateRef = useRef<VmafState>(createVmafState());
 
   // Single effect: create GL when active, render, clean up when inactive/unmount.
   // Dependencies include active, paused, videoA, amplification, palette so the
@@ -675,6 +686,17 @@ export function useDiffRenderer({
         onMsSsimRef.current?.(null);
       }
 
+      // VMAF (only when palette is active — ~3.5ms extra cost)
+      if (palRef.current === "vmaf") {
+        const vmafResult = computeVmafFromImageData(dataA, dataB, vmafStateRef.current);
+        onVmafRef.current?.(vmafResult.score);
+        const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
+        vmafHistory.current.set(roundedTime, vmafResult.score);
+        // VMAF is a frame-level score (no per-pixel map); use SSIM map as spatial heatmap
+      } else {
+        onVmafRef.current?.(null);
+      }
+
       // Upload heatmap as R8 texture (MS-SSIM map when active, SSIM otherwise)
       if (uploadMap) {
         gl.activeTexture(gl.TEXTURE2);
@@ -741,6 +763,8 @@ export function useDiffRenderer({
       psnrHistory.current = new Map();
       ssimHistory.current = new Map();
       msSsimHistory.current = new Map();
+      vmafHistory.current = new Map();
+      vmafStateRef.current = createVmafState();
     }
   }, [active]);
 
@@ -754,5 +778,5 @@ export function useDiffRenderer({
     };
   }, []);
 
-  return { psnrHistory, ssimHistory, msSsimHistory };
+  return { psnrHistory, ssimHistory, msSsimHistory, vmafHistory };
 }
