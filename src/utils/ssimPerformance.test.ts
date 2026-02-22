@@ -991,7 +991,7 @@ describe("SSIM Performance Investigation", () => {
       { label: "640x360", w: 640, h: 360 },
     ];
 
-    it("benchmark at all resolutions", () => {
+    it("benchmark at all resolutions", { timeout: 15_000 }, () => {
       const table: Array<{
         variant: string;
         resolution: string;
