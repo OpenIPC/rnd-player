@@ -139,9 +139,12 @@ interface GlState {
   program: WebGLProgram;
   texA: WebGLTexture;
   texB: WebGLTexture;
-  /** Back-buffer textures for double-buffering during RVFC playback */
+  /** Back-buffer textures for triple-buffering during RVFC playback */
   texABack: WebGLTexture;
   texBBack: WebGLTexture;
+  /** Previous-back textures: keep one RVFC generation of history per video */
+  texAPrev: WebGLTexture;
+  texBPrev: WebGLTexture;
   texSsim: WebGLTexture;
   vao: WebGLVertexArrayObject;
   vbo: WebGLBuffer;
@@ -219,9 +222,9 @@ function initGl(canvas: HTMLCanvasElement): GlState | null {
   gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
   gl.bindVertexArray(null);
 
-  // Create four textures for video A and B (front + back for double-buffering)
+  // Create six textures for video A and B (front + back + prev for triple-buffering)
   const textures: WebGLTexture[] = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) {
     const tex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -260,6 +263,8 @@ function initGl(canvas: HTMLCanvasElement): GlState | null {
     texB: textures[1],
     texABack: textures[2],
     texBBack: textures[3],
+    texAPrev: textures[4],
+    texBPrev: textures[5],
     texSsim,
     vao,
     vbo,
@@ -276,11 +281,13 @@ function initGl(canvas: HTMLCanvasElement): GlState | null {
 }
 
 function destroyGl(state: GlState) {
-  const { gl, program, texA, texB, texABack, texBBack, texSsim, vao, vbo } = state;
+  const { gl, program, texA, texB, texABack, texBBack, texAPrev, texBPrev, texSsim, vao, vbo } = state;
   gl.deleteTexture(texA);
   gl.deleteTexture(texB);
   gl.deleteTexture(texABack);
   gl.deleteTexture(texBBack);
+  gl.deleteTexture(texAPrev);
+  gl.deleteTexture(texBPrev);
   gl.deleteTexture(texSsim);
   gl.deleteVertexArray(vao);
   gl.deleteBuffer(vbo);
@@ -591,7 +598,7 @@ export function useDiffRenderer({
       canvas.addEventListener("webglcontextrestored", onRestored);
     }
 
-    const { gl, program, texA, texB, texABack, texBBack, texSsim, vao, uAmp, uPal, uTexA, uTexB, uTexSsim } = state;
+    const { gl, program, texA, texB, texABack, texBBack, texAPrev, texBPrev, texSsim, vao, uAmp, uPal, uTexA, uTexB, uTexSsim } = state;
 
     // Track whether we've ever uploaded valid (synced) textures.
     // Prevents drawing uninitialized textures before the first sync.
@@ -758,34 +765,59 @@ export function useDiffRenderer({
         videoA.removeEventListener("seeked", onSeeked);
       };
     } else if (hasRVFC && videoA) {
-      // ── Playing + RVFC: double-buffered capture at composition time ──
+      // ── Playing + RVFC: triple-buffered capture with prev-frame matching ──
       //
-      // Two independent compositors present frames at different wall-clock
-      // times. RVFC callbacks upload to "back" textures. When tryMatch
-      // confirms both videos have the same PTS, front↔back are swapped
-      // atomically. The rAF drawLoop always binds front textures —
-      // guaranteed to be a PTS-matched pair. Between matches, the last
-      // matched pair is repeated (no freeze, no artifacts).
+      // Two independent compositors present frames at different vsync phases.
+      // When they're 1 frame apart, RVFC-B fires PTS=N+1 then RVFC-A fires
+      // PTS=N — the current pair always mismatches. But the PREVIOUS B
+      // capture (from 2 callbacks ago) had PTS=N, which matches current A.
+      //
+      // Three textures per video (front/back/prev): RVFC rotates back→prev
+      // and uploads to the new back. tryMatch checks 3 combinations:
+      //   1. currentA vs currentB  (in-phase compositors)
+      //   2. currentA vs prevB     (B ahead of A)
+      //   3. prevA vs currentB     (A ahead of B)
+      //
+      // On match, the matched textures become front. The rAF drawLoop always
+      // binds front textures — guaranteed PTS-matched pair.
       const { metricsCtxA, metricsCtxB } = state;
       const mw = metricsCtxA.canvas.width;
       const mh = metricsCtxA.canvas.height;
 
-      // Per-video capture state (set in RVFC callbacks)
+      // Per-video capture state: current + previous ImageData and PTS
       let capturedDataA: ImageData | null = null;
       let capturedPtsA = -Infinity;
+      let prevDataA: ImageData | null = null;
+      let prevPtsA = -Infinity;
+
       let capturedDataB: ImageData | null = null;
       let capturedPtsB = -Infinity;
+      let prevDataB: ImageData | null = null;
+      let prevPtsB = -Infinity;
 
-      // Double-buffer: RVFC writes to back, drawLoop reads from front.
-      // On tryMatch success, swap front↔back (JS reference swap, zero-cost).
+      // Triple-buffer: 3 textures per video rotating through front/back/prev.
+      // RVFC writes to back, prev keeps the previous RVFC upload, front is
+      // stable for the drawLoop. On match, matched texture swaps to front.
       let frontA = texA;
-      let frontB = texB;
       let backA = texABack;
+      let prevTexA = texAPrev;
+
+      let frontB = texB;
       let backB = texBBack;
+      let prevTexB = texBPrev;
+
       let frontReady = false;
+
+      // Guard against double-match within the same frame period (Bug 7).
+      // When compositors are in phase, both RVFC callbacks fire for the same PTS.
+      // The first match is correct (currentA+currentB). The second would match
+      // currentB+prevA — but prevA is stale, causing frame oscillation.
+      // Track the last matched PTS to skip redundant matches for the same frame.
+      let lastMatchedPts = -Infinity;
 
       // ── Diagnostic counters (temporary — remove after debugging) ──
       let diagMatchCount = 0;
+      let diagMatchPrev = 0; // matches via prev capture (desync recovery)
       let diagMissNoData = 0;
       let diagMissPts = 0;
       let diagCallbackA = 0;
@@ -798,36 +830,88 @@ export function useDiffRenderer({
       let diagLastPtsA = -Infinity;
       let diagLastPtsB = -Infinity;
 
-      /** Called after each RVFC capture. If both videos have matching PTS,
-       *  compute metrics and swap front↔back textures atomically. */
+      /** Try matching current and previous captures from both videos.
+       *  On PTS match, compute metrics and swap matched textures to front. */
       const tryMatch = () => {
-        if (!capturedDataA || !capturedDataB) {
-          diagMissNoData++;
+        const PTS_THRESH = 0.010;
+        let matchDataA: ImageData | null = null;
+        let matchDataB: ImageData | null = null;
+        let matchTexA: WebGLTexture | null = null;
+        let matchTexB: WebGLTexture | null = null;
+        let matchPts = -Infinity;
+        let usedPrev = false;
+
+        // 1. Current A vs Current B (compositors in phase)
+        if (capturedDataA && capturedDataB &&
+            Math.abs(capturedPtsA - capturedPtsB) < PTS_THRESH) {
+          matchDataA = capturedDataA;
+          matchDataB = capturedDataB;
+          matchTexA = backA;
+          matchTexB = backB;
+          matchPts = capturedPtsA;
+        }
+        // 2. Current A vs Previous B (B was ahead, prev B matches current A)
+        else if (capturedDataA && prevDataB &&
+                 Math.abs(capturedPtsA - prevPtsB) < PTS_THRESH) {
+          matchDataA = capturedDataA;
+          matchDataB = prevDataB;
+          matchTexA = backA;
+          matchTexB = prevTexB;
+          matchPts = capturedPtsA;
+          usedPrev = true;
+        }
+        // 3. Previous A vs Current B (A was ahead, prev A matches current B)
+        else if (prevDataA && capturedDataB &&
+                 Math.abs(prevPtsA - capturedPtsB) < PTS_THRESH) {
+          matchDataA = prevDataA;
+          matchDataB = capturedDataB;
+          matchTexA = prevTexA;
+          matchTexB = backB;
+          matchPts = capturedPtsB;
+          usedPrev = true;
+        }
+
+        if (!matchDataA || !matchDataB || !matchTexA || !matchTexB) {
+          // Count diagnostic: noData if we have nothing, pts if we have data but no match
+          if (!capturedDataA && !prevDataA || !capturedDataB && !prevDataB) {
+            diagMissNoData++;
+          } else {
+            diagMissPts++;
+          }
           return;
         }
-        if (Math.abs(capturedPtsA - capturedPtsB) >= 0.010) {
-          diagMissPts++;
+
+        // Bug 7 guard: skip if we already matched this PTS. When compositors
+        // are in phase, both RVFC callbacks fire for the same frame. The first
+        // match (currentA+currentB) is correct. Without this guard, the second
+        // callback would match currentB+prevA — swapping a stale prev texture
+        // to front, causing visible frame oscillation.
+        if (Math.abs(matchPts - lastMatchedPts) < PTS_THRESH) {
           return;
         }
+        lastMatchedPts = matchPts;
 
         const t0 = performance.now();
-        computeMetrics(capturedDataA, capturedDataB);
+        computeMetrics(matchDataA, matchDataB);
         diagMetricsMs += performance.now() - t0;
         diagMatchCount++;
+        if (usedPrev) diagMatchPrev++;
 
-        // Swap front↔back: the back textures now hold a matched pair.
-        // The old front textures become the new back (overwritten next RVFC).
-        const tmpA = frontA;
-        const tmpB = frontB;
-        frontA = backA;
-        frontB = backB;
-        backA = tmpA;
-        backB = tmpB;
+        // Swap matched textures to front, recycle old front.
+        // matchTexA could be backA or prevTexA; matchTexB could be backB or prevTexB.
+        if (matchTexA === backA) {
+          const tmp = frontA; frontA = backA; backA = tmp;
+        } else {
+          const tmp = frontA; frontA = prevTexA; prevTexA = tmp;
+        }
+        if (matchTexB === backB) {
+          const tmp = frontB; frontB = backB; backB = tmp;
+        } else {
+          const tmp = frontB; frontB = prevTexB; prevTexB = tmp;
+        }
+
         frontReady = true;
         texturesUploaded = true;
-
-        capturedDataA = null;
-        capturedDataB = null;
       };
 
       let rvfcIdA = -1;
@@ -839,36 +923,60 @@ export function useDiffRenderer({
         diagCallbackA++;
         diagLastPtsA = meta.mediaTime;
         if (meta.presentedFrames != null) diagPresentedA = meta.presentedFrames;
-        // Capture at exact composition time (this frame is guaranteed visible)
+
+        // Shift current → prev (ImageData)
+        prevDataA = capturedDataA;
+        prevPtsA = capturedPtsA;
+
+        // Capture at exact composition time
         try {
           metricsCtxA.drawImage(videoA!, 0, 0, mw, mh);
           capturedDataA = metricsCtxA.getImageData(0, 0, mw, mh);
           capturedPtsA = meta.mediaTime;
         } catch { /* ignore */ }
-        // Upload to BACK texture (front is untouched)
+
+        // Rotate GPU textures: back→prev, reuse old prev for new back
+        const tmp = prevTexA;
+        prevTexA = backA;
+        backA = tmp;
+        // Upload to new back texture
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, backA);
         try {
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoA!);
         } catch { /* ignore */ }
+
         tryMatch();
         rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
       };
+
       const onFrameB = (_: DOMHighResTimeStamp, meta: RVFCMetaExt) => {
         diagCallbackB++;
         diagLastPtsB = meta.mediaTime;
         if (meta.presentedFrames != null) diagPresentedB = meta.presentedFrames;
+
+        // Shift current → prev (ImageData)
+        prevDataB = capturedDataB;
+        prevPtsB = capturedPtsB;
+
+        // Capture at exact composition time
         try {
           metricsCtxB.drawImage(videoB, 0, 0, mw, mh);
           capturedDataB = metricsCtxB.getImageData(0, 0, mw, mh);
           capturedPtsB = meta.mediaTime;
         } catch { /* ignore */ }
-        // Upload to BACK texture (front is untouched)
+
+        // Rotate GPU textures: back→prev, reuse old prev for new back
+        const tmp = prevTexB;
+        prevTexB = backB;
+        backB = tmp;
+        // Upload to new back texture
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, backB);
         try {
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoB);
         } catch { /* ignore */ }
+
         tryMatch();
         rvfcIdB = (videoB as any).requestVideoFrameCallback(onFrameB);
       };
@@ -897,10 +1005,10 @@ export function useDiffRenderer({
           const elapsed = (now - diagLastLogTime) / 1000;
           const avgMs = diagMatchCount > 0 ? (diagMetricsMs / diagMatchCount).toFixed(1) : "0";
           console.log(
-            `[DiffSync] ${elapsed.toFixed(1)}s: rvfcA=${diagCallbackA}(${(diagCallbackA / elapsed).toFixed(0)}/s) rvfcB=${diagCallbackB}(${(diagCallbackB / elapsed).toFixed(0)}/s) match=${diagMatchCount} miss(noData=${diagMissNoData} pts=${diagMissPts}) draw=${diagDrawCount} metricsAvg=${avgMs}ms presentedA=${diagPresentedA} presentedB=${diagPresentedB} lastPtsA=${diagLastPtsA.toFixed(3)} lastPtsB=${diagLastPtsB.toFixed(3)}`,
+            `[DiffSync] ${elapsed.toFixed(1)}s: rvfcA=${diagCallbackA}(${(diagCallbackA / elapsed).toFixed(0)}/s) rvfcB=${diagCallbackB}(${(diagCallbackB / elapsed).toFixed(0)}/s) match=${diagMatchCount}(prev=${diagMatchPrev}) miss(noData=${diagMissNoData} pts=${diagMissPts}) draw=${diagDrawCount} metricsAvg=${avgMs}ms presentedA=${diagPresentedA} presentedB=${diagPresentedB} lastPtsA=${diagLastPtsA.toFixed(3)} lastPtsB=${diagLastPtsB.toFixed(3)}`,
           );
           diagCallbackA = diagCallbackB = 0;
-          diagMatchCount = diagMissNoData = diagMissPts = 0;
+          diagMatchCount = diagMatchPrev = diagMissNoData = diagMissPts = 0;
           diagDrawCount = 0;
           diagMetricsMs = 0;
           diagLastLogTime = now;
