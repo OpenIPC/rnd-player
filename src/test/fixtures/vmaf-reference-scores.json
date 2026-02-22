@@ -1,0 +1,277 @@
+{
+  "generator": "generate-vmaf-reference.sh",
+  "tool": "vmaf",
+  "tool_version": "3.0.0",
+  "resolution": {
+    "width": 120,
+    "height": 68
+  },
+  "hd": {
+    "identity": {
+      "frames": [
+        {
+          "vmaf": 97.428111,
+          "vif_scale0": 1,
+          "vif_scale1": 1,
+          "vif_scale2": 1,
+          "vif_scale3": 1,
+          "adm2": 1,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "brightness": {
+      "frames": [
+        {
+          "vmaf": 100,
+          "vif_scale0": 0.874835,
+          "vif_scale1": 0.882199,
+          "vif_scale2": 0.890175,
+          "vif_scale3": 0.910516,
+          "adm2": 1.203317,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "blur_box": {
+      "frames": [
+        {
+          "vmaf": 96.992692,
+          "vif_scale0": 0.990317,
+          "vif_scale1": 0.994258,
+          "vif_scale2": 0.995884,
+          "vif_scale3": 0.996987,
+          "adm2": 1.000117,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "posterize": {
+      "frames": [
+        {
+          "vmaf": 100,
+          "vif_scale0": 0.064843,
+          "vif_scale1": 0.141386,
+          "vif_scale2": 0.195225,
+          "vif_scale3": 0.256422,
+          "adm2": 1.401094,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "checkerboard": {
+      "frames": [
+        {
+          "vmaf": 32.373508,
+          "vif_scale0": 0.101044,
+          "vif_scale1": 0.265065,
+          "vif_scale2": 0.305405,
+          "vif_scale3": 0.42614,
+          "adm2": 0.837828,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "contrast": {
+      "frames": [
+        {
+          "vmaf": 47.627386,
+          "vif_scale0": 0.960393,
+          "vif_scale1": 0.949717,
+          "vif_scale2": 0.942621,
+          "vif_scale3": 0.939781,
+          "adm2": 0.798275,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "edges_blur": {
+      "frames": [
+        {
+          "vmaf": 0,
+          "vif_scale0": 0.493759,
+          "vif_scale1": 0.399057,
+          "vif_scale2": 0.184427,
+          "vif_scale3": 0.979342,
+          "adm2": 0.277104,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "motion": {
+      "frames": [
+        {
+          "vmaf": 97.428111,
+          "vif_scale0": 1,
+          "vif_scale1": 1,
+          "vif_scale2": 1,
+          "vif_scale3": 1,
+          "adm2": 1,
+          "motion2": 0,
+          "motion": 0
+        },
+        {
+          "vmaf": 48.652629,
+          "vif_scale0": 0.836236,
+          "vif_scale1": 0.833169,
+          "vif_scale2": 0.815146,
+          "vif_scale3": 0.794072,
+          "adm2": 0.876702,
+          "motion2": 0,
+          "motion": 0
+        },
+        {
+          "vmaf": 29.412198,
+          "vif_scale0": 0.8465,
+          "vif_scale1": 0.821406,
+          "vif_scale2": 0.789026,
+          "vif_scale3": 0.733076,
+          "adm2": 0.802263,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    }
+  },
+  "fourk": {
+    "identity": {
+      "frames": [
+        {
+          "vmaf": 100,
+          "vif_scale0": 1,
+          "vif_scale1": 1,
+          "vif_scale2": 1,
+          "vif_scale3": 1,
+          "adm2": 1,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "brightness": {
+      "frames": [
+        {
+          "vmaf": 100,
+          "vif_scale0": 0.874835,
+          "vif_scale1": 0.882199,
+          "vif_scale2": 0.890175,
+          "vif_scale3": 0.910516,
+          "adm2": 1.203317,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "blur_box": {
+      "frames": [
+        {
+          "vmaf": 100,
+          "vif_scale0": 0.990317,
+          "vif_scale1": 0.994258,
+          "vif_scale2": 0.995884,
+          "vif_scale3": 0.996987,
+          "adm2": 1.000117,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "posterize": {
+      "frames": [
+        {
+          "vmaf": 100,
+          "vif_scale0": 0.064843,
+          "vif_scale1": 0.141386,
+          "vif_scale2": 0.195225,
+          "vif_scale3": 0.256422,
+          "adm2": 1.401094,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "checkerboard": {
+      "frames": [
+        {
+          "vmaf": 56.360227,
+          "vif_scale0": 0.101044,
+          "vif_scale1": 0.265065,
+          "vif_scale2": 0.305405,
+          "vif_scale3": 0.42614,
+          "adm2": 0.837828,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "contrast": {
+      "frames": [
+        {
+          "vmaf": 60.702747,
+          "vif_scale0": 0.960393,
+          "vif_scale1": 0.949717,
+          "vif_scale2": 0.942621,
+          "vif_scale3": 0.939781,
+          "adm2": 0.798275,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "edges_blur": {
+      "frames": [
+        {
+          "vmaf": 2.64906,
+          "vif_scale0": 0.493759,
+          "vif_scale1": 0.399057,
+          "vif_scale2": 0.184427,
+          "vif_scale3": 0.979342,
+          "adm2": 0.277104,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    },
+    "motion": {
+      "frames": [
+        {
+          "vmaf": 100,
+          "vif_scale0": 1,
+          "vif_scale1": 1,
+          "vif_scale2": 1,
+          "vif_scale3": 1,
+          "adm2": 1,
+          "motion2": 0,
+          "motion": 0
+        },
+        {
+          "vmaf": 62.672575,
+          "vif_scale0": 0.836236,
+          "vif_scale1": 0.833169,
+          "vif_scale2": 0.815146,
+          "vif_scale3": 0.794072,
+          "adm2": 0.876702,
+          "motion2": 0,
+          "motion": 0
+        },
+        {
+          "vmaf": 46.977171,
+          "vif_scale0": 0.8465,
+          "vif_scale1": 0.821406,
+          "vif_scale2": 0.789026,
+          "vif_scale3": 0.733076,
+          "adm2": 0.802263,
+          "motion2": 0,
+          "motion": 0
+        }
+      ]
+    }
+  }
+}
