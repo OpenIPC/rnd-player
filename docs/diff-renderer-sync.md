@@ -64,7 +64,7 @@ The quality comparison mode (`QualityCompare.tsx`) plays two video elements side
 
 **Status**: Fixed, but residual race still exists (see below).
 
-### Race 5: Residual playback race (CURRENT — intermittent)
+### Race 5: Residual playback race (OPEN — intermittent)
 
 **Symptom**: mostly correct, but occasional mismatches still appear during playback.
 
@@ -79,6 +79,31 @@ The quality comparison mode (`QualityCompare.tsx`) plays two video elements side
 4. **RVFC callback ordering**: the spec doesn't guarantee RVFC callbacks fire before rAF callbacks within the same frame. If rAF fires between two RVFC callbacks, it might draw with one texture updated and the other stale. The `gpuPtsA == gpuPtsB` check should prevent this, but timing edge cases are possible.
 
 5. **drawImage capturing wrong frame despite RVFC timing**: `requestVideoFrameCallback` fires when a frame is "presented for compositing", but `drawImage(video)` captures the video element's "current frame for rendering". These might not be exactly the same thing in all browser implementations. There could be a one-tick lag between RVFC notification and the frame being available via `drawImage`.
+
+### Bug 6: Double frame-step in quality compare mode (FIXED)
+
+**Problem**: frame-by-frame stepping (ArrowRight/ArrowLeft) in quality compare mode sometimes jumped by 2 frames instead of 1 (e.g. 1043→1045→1047→1049). The issue was intermittent and did not reproduce in single-player mode.
+
+**Root cause**: `useKeyboardShortcuts.ts` registered the same `onKeyDown` handler on **both** `containerEl` and `document`:
+
+```javascript
+containerEl.addEventListener("keydown", onKeyDown);
+document.addEventListener("keydown", onKeyDown);
+```
+
+When focus was on any element **inside** `containerEl` (buttons, video element, etc.), a single keypress event bubbled through `containerEl` first (triggering the first listener), then continued to `document` (triggering the second listener). Since `video.currentTime` updates synchronously per HTML spec (the seek algorithm sets the official playback position immediately), the second invocation read the already-stepped position and advanced again:
+
+1. First call: `curFrame = 1043` → sets `currentTime = 1044/30 + ε`
+2. Second call: reads updated `currentTime` → `curFrame = 1044` → sets `currentTime = 1045/30 + ε`
+3. Net result: 1043 → 1045 (skipped frame 1044)
+
+**Why intermittent**: depended on which element had DOM focus. After clicking a `<button>` (play, volume, fullscreen), focus stayed on the button (inside `containerEl`) → both listeners fired → double-step. After using keyboard-only workflow (Space/K to pause), focus stayed on `document.body` (outside `containerEl`'s subtree) → only the `document` listener fired → correct single-step.
+
+**Why quality-compare-specific**: in QualityCompare mode, users interact more with UI controls (compare toolbar, quality selects, buttons), moving focus inside `containerEl`. In single-player mode, keyboard-only workflow is more common.
+
+**Fix** (commit `20858d4`): removed the redundant `containerEl` listener. The `document` listener alone catches all keyboard events regardless of focus state. Also removed `containerEl` from the hook's interface and dependency array.
+
+**Lesson learned**: never register the same event handler on both a container element and `document` — the event will fire twice when focus is inside the container due to DOM event bubbling.
 
 ## Current Implementation
 
@@ -138,6 +163,7 @@ Use `HTMLVideoElement.requestVideoFrameCallback` combined with the experimental 
 - `src/components/QualityCompare.tsx:833-895` — master↔slave sync (seeked events, rAF drift correction)
 - `src/utils/vmafCore.ts` — VMAF computation engine
 - `src/components/QualityCompare.tsx:326-339` — where `useDiffRenderer` is called
+- `src/hooks/useKeyboardShortcuts.ts` — keyboard shortcuts including frame-step (ArrowRight/Left)
 
 ## Test Fixture
 
@@ -146,4 +172,5 @@ The DASH test fixture (`e2e/generate-dash-fixture.sh`) has a 4-digit frame count
 ## Commits
 
 - `3660d98` — Fix diff renderer race: skip metrics when videos are on different frames (paused fix)
-- Next commit — RVFC-based playback capture + tryMatch fix (removes uploadVideoTextures re-read)
+- `8d8f0b6` — RVFC-based playback capture + tryMatch fix (removes uploadVideoTextures re-read)
+- `20858d4` — Fix double frame-step in quality compare mode (remove duplicate containerEl keyboard listener)
