@@ -75,6 +75,9 @@ const FILTER_SUM = 65536;
 // in Q16 fixed-point. In floating-point at [0,255] range this is 2.0.
 const VIF_SIGMA_NSQ = 2.0;
 
+// VIF sigma_max_inv: 4.0 / (255.0 * 255.0) — used in flat-region numerator
+const VIF_SIGMA_MAX_INV = 4.0 / (255.0 * 255.0);
+
 // VIF enhancement gain limit (default; NEG model uses 1.0)
 const VIF_ENHN_GAIN_LIMIT_DEFAULT = 100.0;
 
@@ -142,7 +145,7 @@ function convolve1D(
           let sx = x + k - kHalf;
           // Mirror padding
           if (sx < 0) sx = -sx;
-          else if (sx >= width) sx = 2 * width - 2 - sx;
+          else if (sx >= width) sx = 2 * width - sx - 1;
           sum += input[rowOff + sx] * kernel[k];
         }
         output[rowOff + x] = sum / FILTER_SUM;
@@ -155,7 +158,7 @@ function convolve1D(
         for (let k = 0; k < kLen; k++) {
           let sy = y + k - kHalf;
           if (sy < 0) sy = -sy;
-          else if (sy >= height) sy = 2 * height - 2 - sy;
+          else if (sy >= height) sy = 2 * height - sy - 1;
           sum += input[sy * width + x] * kernel[k];
         }
         output[y * width + x] = sum / FILTER_SUM;
@@ -247,21 +250,38 @@ function computeVifScale(
 
     if (sigma1Sq >= VIF_SIGMA_NSQ) {
       // Sufficient reference signal — log-domain VIF
+      const eps = 1e-10;
       denAccum += Math.log2(1.0 + sigma1Sq / VIF_SIGMA_NSQ);
 
-      if (sigma12 > 0 && sigma2Sq > 0) {
-        let g = sigma12 / sigma1Sq;
-        const svSq = Math.max(sigma2Sq - g * sigma12, 0);
-        g = Math.min(g, enhGainLimit);
+      let g: number;
+      let svSq: number;
+      if (sigma1Sq < eps) {
+        g = 0;
+        svSq = sigma2Sq;
+      } else if (sigma2Sq < eps) {
+        g = 0;
+        svSq = 0;
+      } else {
+        g = sigma12 / (sigma1Sq + eps);
+        svSq = sigma2Sq - g * sigma12;
+        if (g < 0) {
+          g = 0;
+          svSq = sigma2Sq;
+        }
+        svSq = Math.max(svSq, 0);
+      }
+      g = Math.min(g, enhGainLimit);
+
+      if (sigma12 >= 0) {
         numAccum += Math.log2(1.0 + g * g * sigma1Sq / (svSq + VIF_SIGMA_NSQ));
       }
-      // else: numAccum += 0 (no contribution)
+      // else: sigma12 < 0 → numAccum += 0 (no contribution)
     } else {
       // Noise-dominated region: flat reference
       // den contribution = 1 bit (minimal information)
       // num contribution = 1 - sigma2_sq / sigma_nsq (penalize distorted variance)
       denAccum += 1.0;
-      numAccum += 1.0 - sigma2Sq / VIF_SIGMA_NSQ;
+      numAccum += 1.0 - sigma2Sq * VIF_SIGMA_MAX_INV;
     }
   }
 
@@ -353,7 +373,7 @@ function dwt2(
       for (let k = 0; k < 4; k++) {
         let sy = y + k;
         // Mirror padding
-        if (sy >= height) sy = 2 * height - 2 - sy;
+        if (sy >= height) sy = 2 * height - sy - 1;
         if (sy < 0) sy = -sy;
         const val = input[sy * width + x];
         loSum += val * DWT_LO[k];
@@ -378,7 +398,7 @@ function dwt2(
       let aSum = 0, hSum = 0, vSum = 0, dSum = 0;
       for (let k = 0; k < 4; k++) {
         let sx = x + k;
-        if (sx >= width) sx = 2 * width - 2 - sx;
+        if (sx >= width) sx = 2 * width - sx - 1;
         if (sx < 0) sx = -sx;
         const loVal = loVert[loRow + sx];
         const hiVal = hiVert[hiRow + sx];
