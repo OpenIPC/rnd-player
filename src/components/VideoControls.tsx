@@ -739,10 +739,10 @@ export default function VideoControls({
       if (cv.cmode === "diff" && cv.amplification && cv.amplification !== 1) {
         params.set("amp", String(cv.amplification));
       }
-      if (cv.cmode === "diff" && cv.palette && cv.palette !== "grayscale") {
+      if (cv.cmode === "diff" && cv.palette && cv.palette !== "ssim") {
         params.set("pal", cv.palette);
       }
-      if (cv.cmode === "diff" && cv.palette === "vmaf" && cv.vmafModel && cv.vmafModel !== "phone") {
+      if (cv.cmode === "diff" && cv.palette === "vmaf" && cv.vmafModel && cv.vmafModel !== "hd") {
         params.set("vmodel", cv.vmafModel);
       }
     }
