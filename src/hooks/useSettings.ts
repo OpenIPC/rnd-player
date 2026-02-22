@@ -1,11 +1,15 @@
+import type { PlayerModuleConfig } from "../types/moduleConfig";
+
 const STORAGE_KEY = "vp_settings";
 
 export interface PlayerSettings {
   alwaysShowBitrate: boolean;
+  moduleOverrides: Partial<PlayerModuleConfig>;
 }
 
 const DEFAULTS: PlayerSettings = {
   alwaysShowBitrate: false,
+  moduleOverrides: {},
 };
 
 export function loadSettings(): PlayerSettings {
@@ -23,4 +27,8 @@ export function saveSettings(settings: PlayerSettings): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch { /* localStorage unavailable */ }
+}
+
+export function loadModuleOverrides(): Partial<PlayerModuleConfig> {
+  return loadSettings().moduleOverrides;
 }

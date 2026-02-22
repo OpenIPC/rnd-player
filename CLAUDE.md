@@ -125,3 +125,4 @@ E2E tests: Playwright across Chromium, Firefox, WebKit, Edge. Files in `e2e/`. U
 - `docs/adaptation-toast.md` — ABR adaptation toast component
 - `docs/artifact-analysis-research.md` — Video artifact analysis research
 - `docs/stats-for-nerds.md` — Stats panel implementation
+- `docs/module-config.md` — Modular architecture: config-based feature toggling, build presets, capability detection

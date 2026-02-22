@@ -1,5 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import ShakaPlayer from "./components/ShakaPlayer";
+import type { PlayerModuleConfig } from "./types/moduleConfig";
+import type { DeviceProfile } from "./utils/detectCapabilities";
+import { detectCapabilities } from "./utils/detectCapabilities";
+import { autoConfig } from "./utils/autoConfig";
+import { loadModuleOverrides, loadSettings, saveSettings } from "./hooks/useSettings";
 import "./App.css";
 
 function parseUrlParams(): {
@@ -108,6 +113,32 @@ function App() {
   const [startTime] = useState<number | null>(initial.startTime);
   const [compareSrc] = useState<string | null>(initial.compare);
   const [showDemo, setShowDemo] = useState(false);
+  const [deviceProfile, setDeviceProfile] = useState<DeviceProfile | null>(null);
+  const [moduleConfig, setModuleConfig] = useState<PlayerModuleConfig | null>(null);
+
+  useEffect(() => {
+    detectCapabilities().then((profile) => {
+      setDeviceProfile(profile);
+      const overrides = loadModuleOverrides();
+      const preset = typeof __MODULE_PRESET__ !== "undefined" ? __MODULE_PRESET__ : undefined;
+      const config = autoConfig(profile, preset);
+      // Apply user overrides on top (only for features not hard-gated)
+      const merged = { ...config, ...overrides };
+      // Re-apply hard gates to ensure user overrides can't enable unsupported features
+      if (!profile.webCodecs || !profile.offscreenCanvas) merged.filmstrip = false;
+      if (!profile.webCodecs || !profile.webGL2) merged.qualityCompare = false;
+      if (!profile.webAudio) merged.audioLevels = false;
+      if (!profile.workers) merged.segmentExport = false;
+      setModuleConfig(merged);
+    });
+  }, []);
+
+  const handleModuleConfigChange = useCallback((next: PlayerModuleConfig) => {
+    setModuleConfig(next);
+    const settings = loadSettings();
+    settings.moduleOverrides = next;
+    saveSettings(settings);
+  }, []);
 
   if (!src) {
     return (
@@ -176,6 +207,10 @@ function App() {
     );
   }
 
+  if (!moduleConfig || !deviceProfile) {
+    return <div className="player-container" />;
+  }
+
   return (
     <div className="player-container">
       <ShakaPlayer
@@ -199,6 +234,9 @@ function App() {
         compareAmp={initial.compareAmp ?? undefined}
         comparePal={initial.comparePal ?? undefined}
         compareVmodel={initial.compareVmodel ?? undefined}
+        moduleConfig={moduleConfig}
+        deviceProfile={deviceProfile}
+        onModuleConfigChange={handleModuleConfigChange}
       />
     </div>
   );
