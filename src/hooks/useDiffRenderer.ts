@@ -815,21 +815,6 @@ export function useDiffRenderer({
       // Track the last matched PTS to skip redundant matches for the same frame.
       let lastMatchedPts = -Infinity;
 
-      // ── Diagnostic counters (temporary — remove after debugging) ──
-      let diagMatchCount = 0;
-      let diagMatchPrev = 0; // matches via prev capture (desync recovery)
-      let diagMissNoData = 0;
-      let diagMissPts = 0;
-      let diagCallbackA = 0;
-      let diagCallbackB = 0;
-      let diagDrawCount = 0;
-      let diagMetricsMs = 0;
-      let diagLastLogTime = performance.now();
-      let diagPresentedA = 0;
-      let diagPresentedB = 0;
-      let diagLastPtsA = -Infinity;
-      let diagLastPtsB = -Infinity;
-
       /** Try matching current and previous captures from both videos.
        *  On PTS match, compute metrics and swap matched textures to front. */
       const tryMatch = () => {
@@ -839,7 +824,6 @@ export function useDiffRenderer({
         let matchTexA: WebGLTexture | null = null;
         let matchTexB: WebGLTexture | null = null;
         let matchPts = -Infinity;
-        let usedPrev = false;
 
         // 1. Current A vs Current B (compositors in phase)
         if (capturedDataA && capturedDataB &&
@@ -858,7 +842,6 @@ export function useDiffRenderer({
           matchTexA = backA;
           matchTexB = prevTexB;
           matchPts = capturedPtsA;
-          usedPrev = true;
         }
         // 3. Previous A vs Current B (A was ahead, prev A matches current B)
         else if (prevDataA && capturedDataB &&
@@ -868,34 +851,19 @@ export function useDiffRenderer({
           matchTexA = prevTexA;
           matchTexB = backB;
           matchPts = capturedPtsB;
-          usedPrev = true;
         }
 
-        if (!matchDataA || !matchDataB || !matchTexA || !matchTexB) {
-          // Count diagnostic: noData if we have nothing, pts if we have data but no match
-          if (!capturedDataA && !prevDataA || !capturedDataB && !prevDataB) {
-            diagMissNoData++;
-          } else {
-            diagMissPts++;
-          }
-          return;
-        }
+        if (!matchDataA || !matchDataB || !matchTexA || !matchTexB) return;
 
         // Bug 7 guard: skip if we already matched this PTS. When compositors
         // are in phase, both RVFC callbacks fire for the same frame. The first
         // match (currentA+currentB) is correct. Without this guard, the second
         // callback would match currentB+prevA — swapping a stale prev texture
         // to front, causing visible frame oscillation.
-        if (Math.abs(matchPts - lastMatchedPts) < PTS_THRESH) {
-          return;
-        }
+        if (Math.abs(matchPts - lastMatchedPts) < PTS_THRESH) return;
         lastMatchedPts = matchPts;
 
-        const t0 = performance.now();
         computeMetrics(matchDataA, matchDataB);
-        diagMetricsMs += performance.now() - t0;
-        diagMatchCount++;
-        if (usedPrev) diagMatchPrev++;
 
         // Swap matched textures to front, recycle old front.
         // matchTexA could be backA or prevTexA; matchTexB could be backB or prevTexB.
@@ -917,13 +885,7 @@ export function useDiffRenderer({
       let rvfcIdA = -1;
       let rvfcIdB = -1;
 
-      type RVFCMetaExt = RVFCMeta & { presentedFrames?: number };
-
-      const onFrameA = (_: DOMHighResTimeStamp, meta: RVFCMetaExt) => {
-        diagCallbackA++;
-        diagLastPtsA = meta.mediaTime;
-        if (meta.presentedFrames != null) diagPresentedA = meta.presentedFrames;
-
+      const onFrameA = (_: DOMHighResTimeStamp, meta: RVFCMeta) => {
         // Shift current → prev (ImageData)
         prevDataA = capturedDataA;
         prevPtsA = capturedPtsA;
@@ -950,11 +912,7 @@ export function useDiffRenderer({
         rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
       };
 
-      const onFrameB = (_: DOMHighResTimeStamp, meta: RVFCMetaExt) => {
-        diagCallbackB++;
-        diagLastPtsB = meta.mediaTime;
-        if (meta.presentedFrames != null) diagPresentedB = meta.presentedFrames;
-
+      const onFrameB = (_: DOMHighResTimeStamp, meta: RVFCMeta) => {
         // Shift current → prev (ImageData)
         prevDataB = capturedDataB;
         prevPtsB = capturedPtsB;
@@ -996,24 +954,7 @@ export function useDiffRenderer({
           gl.activeTexture(gl.TEXTURE1);
           gl.bindTexture(gl.TEXTURE_2D, frontB);
           drawQuad();
-          diagDrawCount++;
         }
-
-        // ── Diagnostic log every 2s ──
-        const now = performance.now();
-        if (now - diagLastLogTime >= 2000) {
-          const elapsed = (now - diagLastLogTime) / 1000;
-          const avgMs = diagMatchCount > 0 ? (diagMetricsMs / diagMatchCount).toFixed(1) : "0";
-          console.log(
-            `[DiffSync] ${elapsed.toFixed(1)}s: rvfcA=${diagCallbackA}(${(diagCallbackA / elapsed).toFixed(0)}/s) rvfcB=${diagCallbackB}(${(diagCallbackB / elapsed).toFixed(0)}/s) match=${diagMatchCount}(prev=${diagMatchPrev}) miss(noData=${diagMissNoData} pts=${diagMissPts}) draw=${diagDrawCount} metricsAvg=${avgMs}ms presentedA=${diagPresentedA} presentedB=${diagPresentedB} lastPtsA=${diagLastPtsA.toFixed(3)} lastPtsB=${diagLastPtsB.toFixed(3)}`,
-          );
-          diagCallbackA = diagCallbackB = 0;
-          diagMatchCount = diagMatchPrev = diagMissNoData = diagMissPts = 0;
-          diagDrawCount = 0;
-          diagMetricsMs = 0;
-          diagLastLogTime = now;
-        }
-
         if (activeRef.current && !pausedRef.current) {
           rafId = requestAnimationFrame(drawLoop);
         }
