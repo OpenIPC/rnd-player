@@ -428,6 +428,22 @@ Budget target       ≤20ms     ✓
 
 **VIF dominates** at ~80% of total VMAF compute. ADM2 increased from 0.25ms to 0.61ms after the accuracy rework (more computation: separate decouple → CSF-weight artifact → cross-orientation masking threshold → masked restored signal). Total VMAF at 3.45ms is well within the 20ms budget. No optimization needed for paused-frame use case.
 
+### Browser Performance (Apple MacBook Air M4, Chrome, 120×68)
+
+Measured in-browser via `computeVmafFromImageData()` during live DASH playback (includes RGBA→grayscale conversion). Average over 30-frame windows:
+
+```
+Model       Avg/frame   Max throughput
+────────────────────────────────────────
+HD          6.96ms      144 fps
+Phone       6.64ms      151 fps
+4K          6.64ms      151 fps
+NEG         6.93ms      144 fps
+────────────────────────────────────────
+```
+
+All 4 models perform identically within measurement noise (~6.6–7.0ms). The 4K model's extra 51 support vectors (262 vs 211) add negligible cost — VIF's 4-scale convolutions dominate. Browser overhead (getImageData GPU→CPU readback, RGBA→gray conversion) adds ~3ms vs the pure-TS Vitest benchmark (3.45ms median).
+
 ### Correctness vs libvmaf
 
 Compared against `vmaf` CLI v0.6.1 on 120×68 gradient + Gaussian noise (σ=5,15,30,60).
