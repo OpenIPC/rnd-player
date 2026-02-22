@@ -9,7 +9,9 @@ R&D Player — a custom web video player built with React 19, TypeScript, and Sh
 ## Commands
 
 - `npm run dev` — Start Vite dev server with HMR
-- `npm run build` — TypeScript check + Vite production build
+- `npm run build` — TypeScript check + Vite production build (full preset)
+- `npm run build:production` — Build with analysis modules stripped (filmstrip, compare, audio levels, export)
+- `npm run build:minimal` — Build with all optional modules disabled
 - `npm run lint` — ESLint (flat config, ESLint 9+)
 - `npm run test` — Vitest in watch mode
 - `npm run test:run` — Vitest single run (CI mode)
@@ -22,7 +24,7 @@ R&D Player — a custom web video player built with React 19, TypeScript, and Sh
 
 Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 
-**App.tsx** — Root component. Renders a URL input form; on submit passes the manifest URL to ShakaPlayer.
+**App.tsx** — Root component. Renders a URL input form; on submit passes the manifest URL to ShakaPlayer. On mount, runs device capability detection (`detectCapabilities`), computes the module config via `autoConfig` merged with user overrides from localStorage, and passes `moduleConfig`/`deviceProfile`/`onModuleConfigChange` down to ShakaPlayer. Waits for capability detection before rendering the player.
 
 **ShakaPlayer** (`src/components/ShakaPlayer.tsx`) — Bridge between React and the native Shaka Player library. Handles:
 - One-time polyfill installation at module level
@@ -31,13 +33,18 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - Playback state persistence via sessionStorage
 - Error handling with severity categorization
 - Clean destruction on unmount via a `destroyed` safety flag
+- Module config gating: FilmstripTimeline render gated on `moduleConfig.filmstrip`, QualityCompare on `moduleConfig.qualityCompare`
 
-**VideoControls** (`src/components/VideoControls.tsx`) — The largest component (~715 lines). Custom overlay UI with 20+ state variables managing:
+**VideoControls** (`src/components/VideoControls.tsx`) — Custom overlay UI with 20+ state variables managing:
 - Play/pause, seek bar, volume slider, quality/speed/audio/subtitle popups
 - Auto-hide (3s inactivity timer)
-- Sleep/wake recovery (visibilitychange + timer-gap detection with 5s guard window)
-- Right-click context menu (Stats toggle) rendered via React portal
 - Fullscreen API integration
+- Module config gating: each optional feature (stats, audio levels, adaptation toast, subtitles, segment export, keyboard shortcuts, sleep/wake) is conditionally rendered or enabled based on `moduleConfig` props
+- Delegates right-click menu to `ContextMenu`, export picker to `ExportPicker`, sleep/wake to `useSleepWakeRecovery`
+
+**ContextMenu** (`src/components/ContextMenu.tsx`) — Right-click context menu extracted from VideoControls. Renders via `createPortal` into the container element. Accepts `moduleConfig` and conditionally shows menu items: stats (`statsPanel`), audio levels (`audioLevels`), quality compare (`qualityCompare`), filmstrip (`filmstrip`), save MP4 (`segmentExport`). Always shows copy URL, in/out point controls, and subtitle-related items.
+
+**ExportPicker** (`src/components/ExportPicker.tsx`) — Export rendition selection portal extracted from VideoControls. Reads the manifest's variant list from the Shaka player instance and renders a card with one row per rendition (height, codec, bitrate). Calls `onSelect` with the chosen `ExportRendition`.
 
 **StatsPanel** (`src/components/StatsPanel.tsx`) — Real-time diagnostics overlay (13 stat rows, 1s update interval). Accessed via right-click context menu. Uses browser PlaybackQuality API with Shaka stats fallback.
 
@@ -99,6 +106,16 @@ When activated, `configureSoftwareDecryption()` registers an async Shaka respons
 - Reuses utilities from `cencDecrypt.ts` (`importClearKey`, `extractTenc`, `parseSencFromSegment`, `decryptSample`, `findBoxData`) and `stripEncryptionBoxes.ts` (`stripInitEncryption`)
 - Only supports `cenc` scheme (AES-CTR)
 
+**useSleepWakeRecovery** (`src/hooks/useSleepWakeRecovery.ts`) — Hook extracted from VideoControls that detects system sleep via two complementary strategies: `visibilitychange` events and a timer-gap detector (1s interval that triggers when elapsed time exceeds 4s). On wake, starts a 5s guard window that intercepts unwanted play/seek events from Shaka's internal recovery. Accepts `videoEl` and `enabled` (gated on `moduleConfig.sleepWakeRecovery`). Returns `{ lastTimeRef, wasPausedRef, guardUntilRef }` so VideoControls' play/pause handlers can read them.
+
+**useKeyboardShortcuts** (`src/hooks/useKeyboardShortcuts.ts`) — Hook for JKL shuttle, frame step, volume, fullscreen, in/out points, subtitle toggles, and help modal hotkeys. Accepts an `enabled` option (default `true`, gated on `moduleConfig.keyboardShortcuts`) — when `false`, the `useEffect` returns early without registering any key listeners.
+
+**PlayerModuleConfig** (`src/types/moduleConfig.ts`) — Interface with 9 boolean fields controlling which optional modules are active: `filmstrip`, `qualityCompare`, `statsPanel`, `audioLevels`, `segmentExport`, `subtitles`, `adaptationToast`, `keyboardShortcuts`, `sleepWakeRecovery`. `MODULE_DEFAULTS` has all fields `true`.
+
+**detectCapabilities** (`src/utils/detectCapabilities.ts`) — Async function that probes browser APIs (`VideoDecoder`, `WebGL2`, `AudioContext`, `Worker`, `OffscreenCanvas`) and hardware (`hardwareConcurrency`, `deviceMemory`) to produce a `DeviceProfile`. Result is cached at module level. Classifies a `performanceTier` of `'low'`/`'mid'`/`'high'` used for soft-gating heavy modules.
+
+**autoConfig** (`src/utils/autoConfig.ts`) — Maps a `DeviceProfile` + optional build preset to a `PlayerModuleConfig`. Applies hard gates (missing APIs disable dependent modules) and soft gates (low-tier devices disable filmstrip + qualityCompare). See `docs/module-config.md` for the full three-layer config system.
+
 **Utilities** in `src/utils/`: `formatTime`, `formatTrackRes`, `safeNum`, `formatBitrate` — small pure functions.
 
 ## Testing
@@ -126,3 +143,4 @@ E2E tests: Playwright across Chromium, Firefox, WebKit, Edge. Files in `e2e/`. U
 - `docs/artifact-analysis-research.md` — Video artifact analysis research
 - `docs/stats-for-nerds.md` — Stats panel implementation
 - `docs/module-config.md` — Modular architecture: config-based feature toggling, build presets, capability detection
+- `docs/manifest-validator-spec.md` — Manifest & stream validation: industry landscape, validation rules, implementation phases
