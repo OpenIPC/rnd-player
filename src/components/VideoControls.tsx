@@ -743,6 +743,9 @@ export default function VideoControls({
       if (cv.cmode === "diff" && cv.palette && cv.palette !== "grayscale") {
         params.set("pal", cv.palette);
       }
+      if (cv.cmode === "diff" && cv.palette === "vmaf" && cv.vmafModel && cv.vmafModel !== "phone") {
+        params.set("vmodel", cv.vmafModel);
+      }
     }
     navigator.clipboard.writeText(`${base}?${params.toString()}`).then(() => {
       showCopiedToast("URL copied");

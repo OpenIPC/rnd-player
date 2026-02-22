@@ -359,22 +359,21 @@ describe("VMAF performance benchmark", () => {
 
 ---
 
-## Key Questions to Resolve
+## Key Questions — Resolved
 
-1. **VIF filter kernel**: libvmaf uses a specific 9-tap filter. Is this the standard VIF or Netflix's modified version? Does the filter choice significantly affect scores at 120×68?
+1. **VIF filter kernel**: libvmaf uses a specific 9-tap filter for scale 0→1, 5-tap for 1→2, and 3-tap for 2→3. Using the correct per-scale filters (not the same filter for all scales) was critical — fixed in Phase 1b. VIF is now within 1-2% of libvmaf.
 
-2. **Numerical precision**: VIF involves log operations and division by small values. Does f32 (WASM SIMD, WebGPU) introduce meaningful error vs. f64 (JS, libvmaf C)? Run the correctness test suite at both precisions.
+2. **Numerical precision**: f64 (JS Float64Array) proved sufficient. No precision issues observed. WASM/WebGPU not needed — pure TS meets performance targets.
 
-3. **Resolution adequacy**: At 120×68, VIF's 4th scale operates on ~15×8 pixels. Is this too small for stable statistics? If so, should we use 3 scales instead of 4? Or increase resolution to 160×90 for VMAF only?
+3. **Resolution adequacy**: 120×68 works. VIF's 4th scale at ~15×8 produces stable statistics. All 4 scales contribute meaningfully to scores.
 
-4. **Motion buffering**: During playback, does the Motion feature add enough value to justify the complexity of previous-frame buffering? For the primary use case (paused A/B comparison), Motion is zero.
+4. **Motion buffering**: Implemented via `VmafState` with previous-frame blurred grayscale. Motion2 = min(current, previous) per the VMAF spec. State cleared on palette deactivation or model change.
 
-5. **Model loading**: The VMAF model file (`vmaf_v0.6.1.json`) is ~250KB. Should it be:
-   - Bundled statically (simplest, ~80KB gzipped)
-   - Lazy-loaded when VMAF palette is first activated (reduces initial bundle)
-   - Hardcoded as TypeScript constants (eliminates JSON parse cost, slightly larger bundle but tree-shakeable)
+5. **Model loading**: Hardcoded as TypeScript constants — eliminates JSON parse cost, tree-shakeable, no async loading. Both v0.6.1 (211 SVs) and 4K (262 SVs) are statically bundled. The QualityCompare chunk is already lazy-loaded via `React.lazy()`.
 
-6. **WebGPU vs WASM priority**: The WebGPU SSIM pipeline exists but isn't integrated yet. Should VMAF WebGPU development wait until the SSIM WebGPU integration proves the pattern? Or develop both in parallel?
+6. **WebGPU vs WASM priority**: Neither pursued. Pure TS at 3.5ms total is well within the 20ms budget. The adaptive frame-skip mechanism handles the additional cost transparently during playback.
+
+7. **Model selection (new)**: Four models implemented (HD/Phone/4K/NEG). HD and Phone share the same SVM — the phone model's `score_transform` is the only difference. NEG uses the same SVM with `enhGainLimit=1.0`. 4K uses a completely different SVM (262 SVs). See Phase 4 Results.
 
 ---
 
@@ -388,17 +387,21 @@ describe("VMAF performance benchmark", () => {
 
 ---
 
-## File Structure (expected)
+## File Structure
 
 ```
-src/utils/vmafCore.ts           — Pure TS VMAF implementation (VIF, ADM, Motion, SVM)
-src/utils/vmafCore.test.ts      — Correctness tests with libvmaf reference scores
-src/utils/vmafModel.ts          — VMAF v0.6.1 SVM model weights (hardcoded constants)
-src/utils/vmafBenchmark.test.ts — Performance benchmarks (per-feature, total, multi-resolution)
-src/utils/vmafWebGPU.ts         — WebGPU compute pipeline for VIF (if Strategy D pursued)
-src/utils/vmafVif.wgsl.ts       — WGSL compute shaders for VIF (if Strategy D pursued)
-assembly/vmaf.ts                — AssemblyScript VMAF kernel (if Strategy C pursued)
-docs/vmaf-investigation-spec.md — This document
+src/utils/vmafCore.ts              — Pure TS VMAF implementation (VIF, ADM, Motion, SVM, model selection)
+src/utils/vmafCore.test.ts         — 117 tests: correctness, monotonicity, 75-case matrix, benchmarks, model selection
+src/utils/vmafModel.ts             — SVM model weights: v0.6.1 (211 SVs) + 4K (262 SVs) + normalization constants
+src/utils/vmafValidation.test.ts   — 14 tests: comparison against libvmaf CLI reference scores
+docs/vmaf-investigation-spec.md    — This document
+```
+
+Not pursued (performance targets met with pure TS):
+```
+src/utils/vmafWebGPU.ts         — WebGPU compute pipeline for VIF (Strategy D)
+src/utils/vmafVif.wgsl.ts       — WGSL compute shaders for VIF (Strategy D)
+assembly/vmaf.ts                — AssemblyScript VMAF kernel (Strategy C)
 ```
 
 ---
@@ -527,9 +530,9 @@ VMAF scores no longer collapse. Correct monotonicity (98.4 > 82.6 > 56.6 > 50.6)
 
 ### Files Created
 
-- `src/utils/vmafModel.ts` — 211 SVM support vectors + normalization constants (hardcoded from vmaf_v0.6.1.json)
-- `src/utils/vmafCore.ts` — VIF (4-scale), ADM2 (4-level DWT), Motion, SVM prediction (~500 lines)
-- `src/utils/vmafCore.test.ts` — 104 tests: sanity, monotonicity, range, 75-case distortion matrix, benchmarks
+- `src/utils/vmafModel.ts` — v0.6.1 SVM (211 support vectors) + 4K SVM (262 support vectors) + normalization constants (hardcoded from vmaf_v0.6.1.json and vmaf_4k_v0.6.1.json)
+- `src/utils/vmafCore.ts` — VIF (4-scale), ADM2 (4-level DWT), Motion, SVM prediction, model selection (~800 lines)
+- `src/utils/vmafCore.test.ts` — 117 tests: sanity, monotonicity, range, 75-case distortion matrix, benchmarks, model selection
 - `src/utils/vmafValidation.test.ts` — 14 tests: comparison against libvmaf CLI reference scores
 
 ---
@@ -573,8 +576,105 @@ The VMAF palette is persisted in the URL via the existing `comparePal` parameter
 ### Verification
 
 - **Build**: `npm run build` passes (TypeScript check + Vite production build)
-- **Tests**: All 669 unit tests pass (including 104 vmafCore tests + 14 vmafValidation tests)
+- **Tests**: All 682 unit tests pass (including 117 vmafCore tests + 14 vmafValidation tests)
 - **No regressions**: Existing PSNR/SSIM/MS-SSIM metrics unaffected — VMAF computation is gated behind the palette check
+
+---
+
+## Phase 4 Results — Model Selection (HD / Phone / 4K / NEG)
+
+### Motivation
+
+The initial implementation used only the Phone model (v0.6.1 with score_transform). Different viewing conditions and analysis needs call for different models:
+
+- **HD** — Standard living-room viewing. The baseline VMAF model without phone-screen calibration.
+- **Phone** — Mobile viewing (smaller screen, closer distance). Scores are higher than HD for the same content because compression artifacts are less visible on small screens.
+- **4K** — Ultra-HD content evaluation. Different SVM trained on 4K subjective data.
+- **NEG** — No Enhancement Gain. Detects artificial sharpening/enhancement that inflates standard VMAF scores. Used to audit encoder post-processing.
+
+### Key Discovery: HD and Phone Share the Same SVM
+
+Investigation of the VMAF model JSON files revealed that the `score_transform` section in `vmaf_v0.6.1.json` (quadratic polynomial p0/p1/p2 + `out_gte_in` rectification) IS the phone calibration. The raw SVM output before this transform is the standard HD score. This means HD and Phone can be computed from the same SVM prediction at zero extra cost — the only difference is whether the polynomial transform is applied to the denormalized score.
+
+### Four Models, Three Compute Paths
+
+| Model | SVM | Enhancement gain limit | Score transform | Extra cost vs Phone |
+|-------|-----|----------------------|-----------------|---------------------|
+| **HD** | v0.6.1 (211 SVs) | 100.0 (default) | Skip | None — same SVM, skip transform |
+| **Phone** | v0.6.1 (211 SVs) | 100.0 (default) | Apply (p0/p1/p2 + out_gte_in) | Baseline |
+| **4K** | 4K (262 SVs) | 100.0 (default) | Skip (none in model) | ~0.2ms more SVs |
+| **NEG** | v0.6.1 (211 SVs) | 1.0 (clamped) | Skip | None — same SVM, different VIF/ADM |
+
+The NEG model (`vmaf_v0.6.1neg.json`) has an **identical SVM** to v0.6.1. The only difference is `vif_enhn_gain_limit=1.0` and `adm_enhn_gain_limit=1.0` (vs 100.0 in all other models). This clamps the enhancement gain in VIF's `g = Math.min(g, enhGainLimit)` and ADM2's directional gain checks, preventing artificial sharpening from inflating scores.
+
+The 4K model (`vmaf_4k_v0.6.1.json`) has a completely different SVM (262 support vectors vs 211), different feature normalization slopes/intercepts, and different score denormalization constants. It has no `score_transform` section.
+
+### Implementation
+
+#### vmafCore.ts — Parameterized compute pipeline
+
+- `VmafModelId` type: `"hd" | "phone" | "4k" | "neg"`
+- `computeVif()` and `computeAdm2()` accept an `enhGainLimit` parameter (1.0 for NEG, 100.0 for all others)
+- `normalizeFeatures()` and `svmPredict()` accept model-specific constants (slopes, intercepts, support vectors, rho)
+- `denormalizeScore()` selects denormalization constants by model (4K uses its own slope/intercept) and applies the polynomial score_transform only for Phone
+- `computeVmaf()` and `computeVmafFromImageData()` accept `model?: VmafModelId` (default `"phone"` for backward compatibility)
+
+#### vmafModel.ts — 4K model constants
+
+Added 262 support vectors, per-feature normalization slopes/intercepts, score denormalization constants, and rho for the 4K model. Sourced from `vmaf_4k_v0.6.1.json` on the Netflix/vmaf GitHub repository.
+
+#### useDiffRenderer.ts — Model-aware rendering
+
+- Added `vmafModel?: VmafModelId` to `UseDiffRendererParams`
+- Stable `vmafModelRef` follows the same pattern as `ampRef`, `palRef`
+- Model is forwarded to `computeVmafFromImageData()` in `fireMetrics()`
+- VMAF history and temporal state are cleared when model changes (scores from different models are not comparable)
+
+#### QualityCompare.tsx — Model selector UI
+
+- Cycling button visible only when VMAF palette is active, placed between the palette button and the score readout
+- Cycles: HD → Phone → 4K → NEG
+- Labels: "HD" / "Phone" / "4K" / "NEG"
+- Default: Phone (backward compatible)
+- `initialVmafModel` prop for URL restoration
+
+#### URL persistence
+
+- New `vmodel` URL parameter (omitted when default "phone")
+- Parsed in `App.tsx`, forwarded through `ShakaPlayer.tsx` → `QualityCompare.tsx`
+- Share URL includes `vmodel` when non-default: `?pal=vmaf&vmodel=neg`
+- `CompareViewState.vmafModel` carries the value through the viewstate ref
+
+### Score Characteristics
+
+- **Phone ≥ HD**: Guaranteed by `out_gte_in` rectification — the phone transform's output is `max(transformed, untransformed)`. Phone scores are always ≥ HD scores for the same content.
+- **NEG ≤ HD** for enhanced content: The enhancement gain clamp of 1.0 prevents VIF/ADM from crediting artificial sharpening. For non-enhanced content (typical compression), NEG ≈ HD.
+- **4K scores use a different scale**: The 4K SVM was trained on different subjective data, so scores are not directly comparable to HD/Phone.
+
+### Tests Added
+
+13 model-selection tests in `vmafCore.test.ts`:
+
+| Category | Tests | What's verified |
+|----------|-------|-----------------|
+| Backward compatibility | 1 | Implicit default = explicit "phone" |
+| Phone ≥ HD | 2 | out_gte_in guarantee for identical and noisy images |
+| All models valid | 8 | Each of 4 models: identical → >90, noisy → [0,100] |
+| NEG features | 1 | NEG produces valid scores with gain limit effect |
+| 4K different SVM | 1 | 4K score differs from HD (different SVM/normalization) |
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/utils/vmafModel.ts` | Added 4K model constants (262 SVs, normalization, score denorm) |
+| `src/utils/vmafCore.ts` | Exported `VmafModelId`, parameterized VIF/ADM gain limits, model-specific SVM dispatch |
+| `src/hooks/useDiffRenderer.ts` | Added `vmafModel` param, forward to compute, clear history on model change |
+| `src/components/QualityCompare.tsx` | Model selector button, state, URL persistence, clear history on change |
+| `src/components/ShakaPlayer.tsx` | `compareVmodel` prop, `CompareViewState.vmafModel` |
+| `src/components/VideoControls.tsx` | `vmodel` URL param in share URL builder |
+| `src/App.tsx` | Parse `vmodel` URL param |
+| `src/utils/vmafCore.test.ts` | 13 model-selection tests |
 
 ---
 

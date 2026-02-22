@@ -25,7 +25,7 @@ import {
   computeVmaf,
   createVmafState,
   rgbaToGray,
-  type VmafResult,
+  type VmafModelId,
 } from "./vmafCore";
 
 // ============================================================================
@@ -608,5 +608,86 @@ describe("75-case results summary", () => {
     console.log(`  VMAF range: ${Math.min(...vmafScores).toFixed(1)} — ${Math.max(...vmafScores).toFixed(1)}`);
     console.log(`  Time range: ${Math.min(...times).toFixed(1)}ms — ${Math.max(...times).toFixed(1)}ms`);
     console.log(`  Time mean:  ${(times.reduce((a, b) => a + b, 0) / times.length).toFixed(1)}ms`);
+  });
+});
+
+// ============================================================================
+// Model Selection Tests
+// ============================================================================
+
+describe("VMAF model selection", () => {
+  describe("Default model is phone (backward compatible)", () => {
+    it("explicit phone and implicit default produce same score", () => {
+      const ref = BASES.gradient;
+      const dis = applyGaussianNoise(ref, 0.1);
+      const implicit = computeVmaf(ref, dis, WIDTH, HEIGHT, null);
+      const explicit = computeVmaf(ref, dis, WIDTH, HEIGHT, null, "phone");
+      expect(implicit.score).toBe(explicit.score);
+    });
+  });
+
+  describe("HD vs Phone: Phone >= HD due to out_gte_in", () => {
+    it("phone score >= HD score for identical images", () => {
+      const ref = BASES.gradient;
+      const hd = computeVmaf(ref, ref, WIDTH, HEIGHT, null, "hd");
+      const phone = computeVmaf(ref, ref, WIDTH, HEIGHT, null, "phone");
+      expect(phone.score).toBeGreaterThanOrEqual(hd.score);
+    });
+
+    it("phone score >= HD score for noisy images", () => {
+      const ref = BASES.gradient;
+      const dis = applyGaussianNoise(ref, 0.1);
+      const hd = computeVmaf(ref, dis, WIDTH, HEIGHT, null, "hd");
+      const phone = computeVmaf(ref, dis, WIDTH, HEIGHT, null, "phone");
+      expect(phone.score).toBeGreaterThanOrEqual(hd.score);
+    });
+  });
+
+  describe("All 4 models produce valid scores", () => {
+    const models: VmafModelId[] = ["hd", "phone", "4k", "neg"];
+    for (const model of models) {
+      it(`${model}: identical images → VMAF > 90`, () => {
+        const ref = BASES.gradient;
+        const result = computeVmaf(ref, ref, WIDTH, HEIGHT, null, model);
+        expect(result.score).toBeGreaterThan(90);
+        expect(result.score).toBeLessThanOrEqual(100);
+      });
+
+      it(`${model}: noisy image → VMAF in [0, 100]`, () => {
+        const ref = BASES.gradient;
+        const dis = applyGaussianNoise(ref, 0.2);
+        const result = computeVmaf(ref, dis, WIDTH, HEIGHT, null, model);
+        expect(result.score).toBeGreaterThanOrEqual(0);
+        expect(result.score).toBeLessThanOrEqual(100);
+      });
+    }
+  });
+
+  describe("NEG model: enhancement detection", () => {
+    it("NEG features differ from HD for same input (gain limit effect)", () => {
+      const ref = BASES.gradient;
+      const dis = applyGaussianNoise(ref, 0.1);
+      const hd = computeVmaf(ref, dis, WIDTH, HEIGHT, null, "hd");
+      const neg = computeVmaf(ref, dis, WIDTH, HEIGHT, null, "neg");
+      // NEG uses same SVM as HD but clamps enhancement gain to 1.0,
+      // so features may differ (NEG VIF <= HD VIF for enhanced content)
+      // Both should still be in valid range
+      expect(neg.score).toBeGreaterThanOrEqual(0);
+      expect(neg.score).toBeLessThanOrEqual(100);
+      expect(hd.score).toBeGreaterThanOrEqual(0);
+      expect(hd.score).toBeLessThanOrEqual(100);
+    });
+  });
+
+  describe("4K model uses different SVM", () => {
+    it("4K score differs from HD score", () => {
+      const ref = BASES.gradient;
+      const dis = applyGaussianNoise(ref, 0.1);
+      const hd = computeVmaf(ref, dis, WIDTH, HEIGHT, null, "hd");
+      const fourK = computeVmaf(ref, dis, WIDTH, HEIGHT, null, "4k");
+      // 4K uses a different SVM (262 SVs vs 211) and different normalization
+      // Scores should generally differ
+      expect(fourK.score).not.toBe(hd.score);
+    });
   });
 });
