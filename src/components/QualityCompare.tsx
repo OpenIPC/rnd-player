@@ -1183,6 +1183,7 @@ export default function QualityCompare({
 
   // ── Pan handlers ──
   const onPanPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return; // Only primary (left) button
     // Don't start pan if target is handle or toolbar
     const target = e.target as HTMLElement;
     if (target.closest(".vp-compare-strip") || target.closest(".vp-compare-toolbar")) return;
@@ -1215,6 +1216,8 @@ export default function QualityCompare({
     if (interactRef.current) interactRef.current.style.cursor = "grab";
 
     // Minimal movement → click → play (which resets zoom via onPlay handler)
+    // Only primary (left) button toggles play/pause
+    if (e.button !== 0) return;
     const dx = e.clientX - panStartRef.current.x;
     const dy = e.clientY - panStartRef.current.y;
     if (dx * dx + dy * dy < 25) {
@@ -1253,6 +1256,7 @@ export default function QualityCompare({
 
   // ── Draw handlers (for highlight rectangle at zoom=1, paused, no existing highlight) ──
   const onDrawPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return; // Only primary (left) button
     const container = containerRef.current;
     if (!container) return;
     drawingRef.current = true;
@@ -1300,6 +1304,8 @@ export default function QualityCompare({
     setDrawRect(null);
 
     // Minimal movement → click → play (preserves click-to-play)
+    // Only primary (left) button toggles play/pause
+    if (e.button !== 0) return;
     if (dx * dx + dy * dy < 25) {
       masterVideo.play().catch(() => {});
       return;
