@@ -21,6 +21,17 @@ The quality comparison mode (`QualityCompare.tsx`) plays two video elements side
 - **CPU metrics**: draws both videos to 120×68 OffscreenCanvases via `drawImage(video)`, calls `getImageData()`, computes PSNR/SSIM/VMAF
 - **GPU overlay**: uploads both videos to WebGL textures via `texImage2D(video)`, fragment shader computes diff with selectable palette (grayscale, temperature, PSNR heatmap, SSIM/VMAF heatmap-over-video)
 
+### APIs used
+
+The diff renderer uses only standard web APIs — no WebCodecs (`VideoDecoder`) dependency:
+
+- **`requestVideoFrameCallback`** — fires when a new video frame is presented; provides `meta.mediaTime` (PTS) and guarantees that `drawImage(video)` / `texImage2D(video)` captures the exact presented frame
+- **WebGL2** — GPU texture upload via `texImage2D(video)` and fragment shader for the diff overlay
+- **`OffscreenCanvas` + `drawImage`** — CPU-side frame capture at reduced resolution for metrics computation (PSNR/SSIM/VMAF)
+- **`requestAnimationFrame`** — drives the draw loop that binds front textures and issues GL draw calls
+
+WebCodecs (`VideoDecoder`) is used elsewhere in the codebase (filmstrip thumbnail pipeline in `thumbnailWorker.ts`) but is not needed for the diff renderer's frame synchronization.
+
 ## Root Causes Identified
 
 ### Race 1: Paused seeking (FIXED)
@@ -280,3 +291,4 @@ The DASH test fixture (`e2e/generate-dash-fixture.sh`) has a 4-digit frame count
 - `0363a47` — Double-buffer GPU textures: front/back texture pairs with atomic swap on PTS match. Eliminates both freezing and visual artifacts
 - `e19b268` — Document failed RVFC drift correction attempt (Option C)
 - `9db00b0` — Triple-buffer with prev-capture matching + Bug 7 guard: full frame-rate matching during compositor desync
+- `94161f4` — Remove diagnostic logging, document APIs used (no WebCodecs dependency)
