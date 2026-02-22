@@ -54,7 +54,7 @@
  * on the slave, ensuring both elements are identically sized regardless of
  * CSS `object-fit` rounding differences.
  */
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 import { fetchWithCorsRetry, getCorsBlockedOrigin } from "../utils/corsProxy";
@@ -63,6 +63,7 @@ import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
 import type { FrameType } from "../types/thumbnailWorker.types";
 import { formatBitrate } from "../utils/formatBitrate";
 import { loadSettings } from "../hooks/useSettings";
+import { SplitViewIcon, DiffMapIcon, ToggleViewIcon } from "./icons";
 import { useDiffRenderer } from "../hooks/useDiffRenderer";
 import type { DiffPalette, DiffAmplification } from "../hooks/useDiffRenderer";
 import type { VmafModelId } from "../utils/vmafCore";
@@ -300,10 +301,10 @@ export default function QualityCompare({
     : 500;
   const VALID_AMPS: DiffAmplification[] = [1, 2, 4, 8];
   const initAmp: DiffAmplification = initialAmp && VALID_AMPS.includes(initialAmp as DiffAmplification) ? initialAmp as DiffAmplification : 1;
-  const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr", "ssim", "msssim", "vmaf"];
-  const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "grayscale";
-  const VALID_VMAF_MODELS: VmafModelId[] = ["hd", "phone", "4k", "neg"];
-  const initVmafModel: VmafModelId = initialVmafModel && VALID_VMAF_MODELS.includes(initialVmafModel as VmafModelId) ? initialVmafModel as VmafModelId : "phone";
+  const VALID_PALETTES: DiffPalette[] = ["ssim", "msssim", "psnr", "vmaf", "grayscale", "temperature"];
+  const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "ssim";
+  const VALID_VMAF_MODELS: VmafModelId[] = ["hd", "neg", "phone", "4k"];
+  const initVmafModel: VmafModelId = initialVmafModel && VALID_VMAF_MODELS.includes(initialVmafModel as VmafModelId) ? initialVmafModel as VmafModelId : "hd";
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
   const [flickerInterval, setFlickerInterval] = useState(initFlicker);
   const [amplification, setAmplification] = useState<DiffAmplification>(initAmp);
@@ -316,6 +317,9 @@ export default function QualityCompare({
   const amplificationRef = useRef<DiffAmplification>(initAmp);
   const paletteRef = useRef<DiffPalette>(initPalette);
   const vmafModelRef = useRef<VmafModelId>(initVmafModel);
+
+  const [palettePopup, setPalettePopup] = useState(false);
+  const paletteAnchorRef = useRef<HTMLDivElement>(null);
 
   const [psnrValue, setPsnrValue] = useState<number | null>(null);
   const [ssimValue, setSsimValue] = useState<number | null>(null);
@@ -337,6 +341,15 @@ export default function QualityCompare({
     onMsSsim: setMsSsimValue,
     onVmaf: setVmafValue,
   });
+
+  // Derive B-side resolution height for conditional VMAF 4K
+  const sideBHeight = sideB ? Number(sideB.split("_")[0]) : 0;
+
+  // Filter VMAF models: only show 4K when B-side is >= 2160p
+  const availableVmafModels = useMemo(
+    () => sideBHeight >= 2160 ? VALID_VMAF_MODELS : VALID_VMAF_MODELS.filter((m) => m !== "4k"),
+    [sideBHeight],
+  );
 
   const isDualManifest = slaveSrc !== src;
 
@@ -502,8 +515,8 @@ export default function QualityCompare({
         cmode: mode !== "split" ? mode : undefined,
         flickerInterval: mode === "toggle" ? flickerIntervalRef.current : undefined,
         amplification: mode === "diff" && amplificationRef.current !== 1 ? amplificationRef.current : undefined,
-        palette: mode === "diff" && paletteRef.current !== "grayscale" ? paletteRef.current : undefined,
-        vmafModel: mode === "diff" && paletteRef.current === "vmaf" && vmafModelRef.current !== "phone" ? vmafModelRef.current : undefined,
+        palette: mode === "diff" && paletteRef.current !== "ssim" ? paletteRef.current : undefined,
+        vmafModel: mode === "diff" && paletteRef.current === "vmaf" && vmafModelRef.current !== "hd" ? vmafModelRef.current : undefined,
       };
     }
 
@@ -944,6 +957,13 @@ export default function QualityCompare({
     };
   }, [paused, slaveReady, masterPlayer, masterVideo]);
 
+  // Reset VMAF model to "hd" if 4K was selected but B-side dropped below 2160p
+  useEffect(() => {
+    if (vmafModel === "4k" && sideBHeight < 2160) {
+      setVmafModel("hd");
+    }
+  }, [vmafModel, sideBHeight]);
+
   // Clear frame type cache on unmount
   useEffect(() => {
     return () => clearFrameTypeCache();
@@ -1130,8 +1150,8 @@ export default function QualityCompare({
       vs.cmode = analysisMode !== "split" ? analysisMode : undefined;
       vs.flickerInterval = analysisMode === "toggle" ? flickerInterval : undefined;
       vs.amplification = analysisMode === "diff" && amplification !== 1 ? amplification : undefined;
-      vs.palette = analysisMode === "diff" && palette !== "grayscale" ? palette : undefined;
-      vs.vmafModel = analysisMode === "diff" && palette === "vmaf" && vmafModel !== "phone" ? vmafModel : undefined;
+      vs.palette = analysisMode === "diff" && palette !== "ssim" ? palette : undefined;
+      vs.vmafModel = analysisMode === "diff" && palette === "vmaf" && vmafModel !== "hd" ? vmafModel : undefined;
     }
     // Keep vmafModelRef in sync
     vmafModelRef.current = vmafModel;
@@ -1161,6 +1181,18 @@ export default function QualityCompare({
     };
   }, [analysisMode, flickerInterval, slaveReady]);
 
+  // ── Click outside palette popup to close ──
+  useEffect(() => {
+    if (!palettePopup) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (paletteAnchorRef.current && !paletteAnchorRef.current.contains(e.target as Node)) {
+        setPalettePopup(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [palettePopup]);
+
   // ── T key: cycle analysis mode; D key: toggle diff ──
   useEffect(() => {
     if (!slaveReady) return;
@@ -1170,7 +1202,7 @@ export default function QualityCompare({
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (e.key === "t" || e.key === "T") {
         e.preventDefault();
-        setAnalysisMode((m) => m === "split" ? "toggle" : m === "toggle" ? "diff" : "split");
+        setAnalysisMode((m) => m === "split" ? "diff" : m === "diff" ? "toggle" : "split");
       }
       if (e.key === "d" || e.key === "D") {
         e.preventDefault();
@@ -1488,6 +1520,134 @@ export default function QualityCompare({
             </span>
           )}
         </div>
+        <div className="vp-compare-toolbar-center">
+          {/* Mode icon buttons */}
+          <div className="vp-compare-mode-group">
+            <button
+              className={`vp-compare-mode-icon${analysisMode === "split" ? " vp-active" : ""}`}
+              onClick={() => setAnalysisMode("split")}
+              title="Split view (T)"
+            >
+              <SplitViewIcon />
+            </button>
+            <button
+              className={`vp-compare-mode-icon${analysisMode === "diff" ? " vp-active" : ""}`}
+              onClick={() => setAnalysisMode("diff")}
+              title="Diff map (T)"
+            >
+              <DiffMapIcon />
+            </button>
+            <button
+              className={`vp-compare-mode-icon${analysisMode === "toggle" ? " vp-active" : ""}`}
+              onClick={() => setAnalysisMode("toggle")}
+              title="Toggle view (T)"
+            >
+              <ToggleViewIcon />
+            </button>
+          </div>
+          {analysisMode === "toggle" && (
+            <>
+              <span ref={flickerLabelRef} className="vp-compare-flicker-indicator">A</span>
+              <button
+                className="vp-compare-flicker-speed"
+                onClick={() => setFlickerInterval((i) => {
+                  const idx = FLICKER_SPEEDS.indexOf(i as 250 | 500 | 1000);
+                  return FLICKER_SPEEDS[(idx + 1) % FLICKER_SPEEDS.length];
+                })}
+                title="Cycle flicker speed"
+              >
+                {flickerInterval < 1000 ? `${flickerInterval}ms` : "1s"}
+              </button>
+            </>
+          )}
+          {analysisMode === "diff" && (
+            <>
+              <button
+                className="vp-compare-diff-amp"
+                onClick={() => setAmplification((a) => {
+                  const idx = VALID_AMPS.indexOf(a);
+                  return VALID_AMPS[(idx + 1) % VALID_AMPS.length];
+                })}
+                title="Cycle amplification"
+              >
+                {amplification}x
+              </button>
+              {/* Palette dropdown */}
+              <div className="vp-compare-palette-anchor" ref={paletteAnchorRef}>
+                <button
+                  className="vp-compare-diff-palette"
+                  onClick={() => setPalettePopup((p) => !p)}
+                  title="Select diff palette"
+                >
+                  {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : palette === "ssim" ? "SSIM" : palette === "msssim" ? "MS-SSIM" : "VMAF"}
+                  {palette === "vmaf" && ` ${vmafModel === "hd" ? "HD" : vmafModel === "phone" ? "Phone" : vmafModel === "4k" ? "4K" : "NEG"}`}
+                  <span className="vp-compare-palette-arrow">{"\u25BE"}</span>
+                </button>
+                {palettePopup && (
+                  <div className="vp-compare-palette-dropdown">
+                    <div
+                      className={`vp-compare-palette-item${palette === "ssim" ? " vp-active" : ""}`}
+                      onClick={() => { setPalette("ssim"); setPalettePopup(false); }}
+                    >
+                      SSIM
+                    </div>
+                    <div
+                      className={`vp-compare-palette-item vp-compare-palette-sub${palette === "msssim" ? " vp-active" : ""}`}
+                      onClick={() => { setPalette("msssim"); setPalettePopup(false); }}
+                    >
+                      MS-SSIM
+                    </div>
+                    <div
+                      className={`vp-compare-palette-item${palette === "psnr" ? " vp-active" : ""}`}
+                      onClick={() => { setPalette("psnr"); setPalettePopup(false); }}
+                    >
+                      PSNR
+                    </div>
+                    <div
+                      className={`vp-compare-palette-item vp-compare-palette-vmaf-anchor${palette === "vmaf" ? " vp-active" : ""}`}
+                    >
+                      VMAF
+                      <span className="vp-compare-palette-submenu-arrow">{"\u25B8"}</span>
+                      <div className="vp-compare-vmaf-submenu">
+                        {availableVmafModels.map((m) => (
+                          <div
+                            key={m}
+                            className={`vp-compare-palette-item${palette === "vmaf" && vmafModel === m ? " vp-active" : ""}`}
+                            onClick={() => { setPalette("vmaf"); setVmafModel(m); setPalettePopup(false); }}
+                          >
+                            {m === "hd" ? "HD" : m === "neg" ? "NEG" : m === "phone" ? "Phone" : "4K"}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="vp-compare-palette-separator" />
+                    <div
+                      className={`vp-compare-palette-item${palette === "grayscale" ? " vp-active" : ""}`}
+                      onClick={() => { setPalette("grayscale"); setPalettePopup(false); }}
+                    >
+                      Grayscale
+                    </div>
+                    <div
+                      className={`vp-compare-palette-item${palette === "temperature" ? " vp-active" : ""}`}
+                      onClick={() => { setPalette("temperature"); setPalettePopup(false); }}
+                    >
+                      Temperature
+                    </div>
+                  </div>
+                )}
+              </div>
+              <span className="vp-compare-diff-psnr">
+                {palette === "vmaf"
+                  ? (vmafValue != null ? vmafValue.toFixed(1) : "\u2014")
+                  : palette === "msssim"
+                    ? (msSsimValue != null ? msSsimValue.toFixed(4) : "\u2014")
+                    : palette === "ssim"
+                      ? (ssimValue != null ? ssimValue.toFixed(4) : "\u2014")
+                      : (psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014")}
+              </span>
+            </>
+          )}
+        </div>
         <div className="vp-compare-toolbar-side">
           {isDualManifest && (
             <span className="vp-compare-src-hint" title={src} onClick={() => copyUrl(src)}>
@@ -1516,75 +1676,6 @@ export default function QualityCompare({
           >
             ✕
           </button>
-        </div>
-        <div className="vp-compare-toolbar-center">
-          <button
-            className="vp-compare-mode-btn"
-            onClick={() => setAnalysisMode((m) => m === "split" ? "toggle" : m === "toggle" ? "diff" : "split")}
-            title="Cycle analysis mode (T)"
-          >
-            {analysisMode === "split" ? "Split" : analysisMode === "toggle" ? "Toggle" : "Diff"}
-          </button>
-          {analysisMode === "toggle" && (
-            <>
-              <span ref={flickerLabelRef} className="vp-compare-flicker-indicator">A</span>
-              <button
-                className="vp-compare-flicker-speed"
-                onClick={() => setFlickerInterval((i) => {
-                  const idx = FLICKER_SPEEDS.indexOf(i as 250 | 500 | 1000);
-                  return FLICKER_SPEEDS[(idx + 1) % FLICKER_SPEEDS.length];
-                })}
-                title="Cycle flicker speed"
-              >
-                {flickerInterval < 1000 ? `${flickerInterval}ms` : "1s"}
-              </button>
-            </>
-          )}
-          {analysisMode === "diff" && (
-            <>
-              <button
-                className="vp-compare-diff-amp"
-                onClick={() => setAmplification((a) => {
-                  const idx = VALID_AMPS.indexOf(a);
-                  return VALID_AMPS[(idx + 1) % VALID_AMPS.length];
-                })}
-                title="Cycle amplification"
-              >
-                {amplification}x
-              </button>
-              <button
-                className="vp-compare-diff-palette"
-                onClick={() => setPalette((p) => {
-                  const idx = VALID_PALETTES.indexOf(p);
-                  return VALID_PALETTES[(idx + 1) % VALID_PALETTES.length];
-                })}
-                title="Cycle palette"
-              >
-                {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : palette === "ssim" ? "SSIM" : palette === "msssim" ? "MS-SSIM" : "VMAF"}
-              </button>
-              {palette === "vmaf" && (
-                <button
-                  className="vp-compare-diff-palette"
-                  onClick={() => setVmafModel((m) => {
-                    const idx = VALID_VMAF_MODELS.indexOf(m);
-                    return VALID_VMAF_MODELS[(idx + 1) % VALID_VMAF_MODELS.length];
-                  })}
-                  title="Cycle VMAF model"
-                >
-                  {vmafModel === "hd" ? "HD" : vmafModel === "phone" ? "Phone" : vmafModel === "4k" ? "4K" : "NEG"}
-                </button>
-              )}
-              <span className="vp-compare-diff-psnr">
-                {palette === "vmaf"
-                  ? (vmafValue != null ? vmafValue.toFixed(1) : "\u2014")
-                  : palette === "msssim"
-                    ? (msSsimValue != null ? msSsimValue.toFixed(4) : "\u2014")
-                    : palette === "ssim"
-                      ? (ssimValue != null ? ssimValue.toFixed(4) : "\u2014")
-                      : (psnrValue != null ? psnrValue.toFixed(1) + " dB" : "\u2014")}
-              </span>
-            </>
-          )}
         </div>
       </div>
 

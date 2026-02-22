@@ -217,6 +217,34 @@ export function PipIcon() {
   );
 }
 
+export function SplitViewIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <line x1="10" y1="3" x2="10" y2="17" />
+      <polyline points="7,7 4,10 7,13" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline points="13,7 16,10 13,13" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function DiffMapIcon() {
+  return (
+    <svg {...svgProps} fill="none">
+      <circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M10 3a7 7 0 0 1 0 14z" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function ToggleViewIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="2" y="4" width="12" height="10" rx="1.5" />
+      <rect x="6" y="6" width="12" height="10" rx="1.5" fill="rgba(0,0,0,0.3)" />
+    </svg>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

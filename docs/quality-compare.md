@@ -116,6 +116,36 @@ Both the spotlight clip-path and highlight border position are updated imperativ
 
 The highlight value is tracked via both React state (`highlight`) for conditional rendering and a ref (`highlightRef`) for use inside callbacks without stale closures.
 
+## Analysis Modes
+
+Three modes controlled by icon buttons in the toolbar center. The `T` key cycles `split → diff → toggle → split`. The `D` key toggles between split and diff.
+
+### Split (default)
+
+A/B split with a draggable vertical divider. The slave video is clipped via `clip-path: inset()` to the left of the slider. When zoomed, the clip boundary is recalculated in local coordinates so it tracks the slider's screen position.
+
+### Diff
+
+Per-pixel difference map rendered via WebGL2 on an overlay canvas (`useDiffRenderer`). The slave video is hidden (`visibility: hidden`); the diff canvas replaces it visually.
+
+#### Palette Dropdown
+
+A dropdown button shows the current palette name plus a `▾` arrow. Clicking opens a popup menu grouped by category:
+
+- **Perceptual metrics**: SSIM (default), MS-SSIM (indented sub-option), PSNR, VMAF (with submenu)
+- **Separator**
+- **Basic pixel diffs**: Grayscale, Temperature
+
+VMAF has a hover submenu opening to the right with model options: HD (default), NEG, Phone, 4K. The 4K model is only shown when the B-side rendition height is >= 2160p. If the user has 4K selected and switches B-side below 2160p, the model resets to HD.
+
+The amplification button (`1x → 2x → 4x → 8x`) cycles on click and scales the diff signal.
+
+A metric value readout displays the current frame's computed metric (PSNR in dB, SSIM/MS-SSIM as 0-1, VMAF as 0-100).
+
+### Toggle
+
+Alternates slave visibility at a configurable flicker interval. The `A`/`B` indicator shows which side is visible. The speed button cycles `250ms → 500ms → 1s`.
+
 ## URL Parameter Scheme
 
 | Param | Type | Example | Description |
@@ -134,6 +164,11 @@ The highlight value is tracked via both React state (`highlight`) for conditiona
 | `hy` | float | `0.3000` | Highlight Y (fraction 0-1) |
 | `hw` | float | `0.5000` | Highlight width (fraction 0-1) |
 | `hh` | float | `0.4000` | Highlight height (fraction 0-1) |
+| `cmode` | string | `diff` | Analysis mode (omitted if `split`) |
+| `cfi` | int | `250` | Toggle flicker interval ms (omitted if 500) |
+| `amp` | int | `4` | Diff amplification (omitted if 1) |
+| `pal` | string | `psnr` | Diff palette (omitted if `ssim`) |
+| `vmodel` | string | `neg` | VMAF model (omitted if `hd`; only when `pal=vmaf`) |
 
 Highlight params are only serialized when all four are present. They are parsed in `App.tsx`, threaded through `ShakaPlayer` as `compareHx/Hy/Hw/Hh`, and passed to `QualityCompare` as `initialHighlightX/Y/W/H`. A one-time `useEffect` (gated on `slaveReady`) restores the highlight from URL.
 
