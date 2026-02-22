@@ -590,97 +590,74 @@ export function useDiffRenderer({
     // Prevents drawing uninitialized textures before the first sync.
     let texturesUploaded = false;
 
-    /** Check whether both videos are presenting the same frame */
+    type RVFCMeta = { mediaTime: number };
+    const hasRVFC = typeof HTMLVideoElement !== "undefined" &&
+      "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+
+    /** Check whether both videos are presenting the same frame (paused mode) */
     const isVideoSynced = (): boolean => {
       if (!videoA || !videoB) return false;
       if (videoA.seeking || videoB.seeking) return false;
-      // Half-frame at 30 fps ≈ 16 ms — if currentTimes differ by more,
-      // the videos are likely on different frames.
       return Math.abs(videoA.currentTime - videoB.currentTime) <= 0.016;
     };
 
-    const render = () => {
-      if (contextLostRef.current || !activeRef.current) return;
-      if (!canvas || !videoA || !videoB) return;
-
-      // Resize canvas pixel buffer to match CSS layout * DPR
+    /** Resize GL canvas to match CSS layout * DPR. Returns false if zero-sized. */
+    const resizeCanvas = (): boolean => {
+      if (!canvas) return false;
       const dpr = window.devicePixelRatio || 1;
       const w = Math.round(canvas.clientWidth * dpr);
       const h = Math.round(canvas.clientHeight * dpr);
-      if (w === 0 || h === 0) return;
+      if (w === 0 || h === 0) return false;
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
       }
+      return true;
+    };
 
-      // Only upload new textures when both videos show the same frame.
-      // When the master (B) has seeked but the slave (A) hasn't caught up,
-      // skip the upload to avoid diffing consecutive frames.
-      if (isVideoSynced()) {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, texA);
-        try {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoA);
-        } catch {
-          return; // Cross-origin tainted or video not ready
-        }
-
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, texB);
-        try {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoB);
-        } catch {
-          return;
-        }
-        texturesUploaded = true;
-      }
-
-      // Nothing valid to draw yet — wait for first synced frame
-      if (!texturesUploaded) return;
-
-      gl.viewport(0, 0, w, h);
+    /** Issue the GL draw call (textures must already be bound/uploaded) */
+    const drawQuad = () => {
+      if (!canvas) return;
+      gl.viewport(0, 0, canvas.width, canvas.height);
       gl.useProgram(program);
-
-      // Bind SSIM texture to TEXTURE2 (already uploaded by fireMetrics)
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, texSsim);
-
       gl.uniform1i(uTexA, 0);
       gl.uniform1i(uTexB, 1);
       gl.uniform1i(uTexSsim, 2);
       gl.uniform1f(uAmp, ampRef.current);
       gl.uniform1i(uPal, paletteInt(palRef.current));
-
       gl.bindVertexArray(vao);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.bindVertexArray(null);
     };
 
-    /** Draw both videos to offscreen canvases once, compute PSNR + SSIM, upload SSIM texture */
-    const fireMetrics = () => {
-      if (!videoA || !videoB || !state) return;
-      // Skip metrics if videos are not on the same frame. This prevents
-      // reporting wrong PSNR/SSIM/VMAF when the slave hasn't caught up
-      // to the master's seek, or when playback drift puts them on
-      // different frames.
-      if (!isVideoSynced()) return;
-      const { metricsCtxA, metricsCtxB } = state;
-      const w = metricsCtxA.canvas.width;
-      const h = metricsCtxA.canvas.height;
-      let dataA: ImageData;
-      let dataB: ImageData;
-
+    /** Upload both video textures to GPU from the video elements */
+    const uploadVideoTextures = (): boolean => {
+      if (!videoA) return false;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texA);
       try {
-        metricsCtxA.drawImage(videoA, 0, 0, w, h);
-        metricsCtxB.drawImage(videoB, 0, 0, w, h);
-        dataA = metricsCtxA.getImageData(0, 0, w, h);
-        dataB = metricsCtxB.getImageData(0, 0, w, h);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoA);
       } catch {
-        onPsnrRef.current?.(null);
-        onSsimRef.current?.(null);
-        return;
+        return false;
       }
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, texB);
+      try {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoB);
+      } catch {
+        return false;
+      }
+      return true;
+    };
 
+    /**
+     * Compute all metrics from pre-captured ImageData and upload heatmap.
+     * Used by both the paused path (captures from video) and the RVFC path
+     * (captures inside the frame callback).
+     */
+    const computeMetrics = (dataA: ImageData, dataB: ImageData) => {
       // PSNR
       const psnr = computePsnrFromData(dataA, dataB);
       onPsnrRef.current?.(psnr);
@@ -721,7 +698,6 @@ export function useDiffRenderer({
         onVmafRef.current?.(vmafResult.score);
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
         vmafHistory.current.set(roundedTime, vmafResult.score);
-        // VMAF is a frame-level score (no per-pixel map); use SSIM map as spatial heatmap
       } else {
         onVmafRef.current?.(null);
       }
@@ -741,45 +717,168 @@ export function useDiffRenderer({
     };
 
     if (paused) {
-      // Compute metrics + render only when both videos are on the same frame.
-      // The sync guards inside fireMetrics/render handle this, so we can
-      // call unconditionally — they'll no-op if out of sync.
-      fireMetrics();
-      render();
-      const onSeeked = () => { fireMetrics(); render(); };
-      // Listen to BOTH videos' seeked events. When the master (B) seeks,
-      // QualityCompare sets slave.currentTime which starts an async seek.
-      // If we only listened to B, we'd fire metrics before A finishes
-      // seeking — comparing frame N (old A) with frame N+1 (new B).
-      // Listening to A's seeked ensures we re-attempt once it catches up.
+      // ── Paused: capture from video on seeked events ──
+      const fireAndRender = () => {
+        if (!videoA || !videoB || !state) return;
+        if (!isVideoSynced()) return;
+        const { metricsCtxA, metricsCtxB } = state;
+        const mw = metricsCtxA.canvas.width;
+        const mh = metricsCtxA.canvas.height;
+        try {
+          metricsCtxA.drawImage(videoA, 0, 0, mw, mh);
+          metricsCtxB.drawImage(videoB, 0, 0, mw, mh);
+        } catch {
+          return;
+        }
+        computeMetrics(
+          metricsCtxA.getImageData(0, 0, mw, mh),
+          metricsCtxB.getImageData(0, 0, mw, mh),
+        );
+        if (!resizeCanvas()) return;
+        if (uploadVideoTextures()) {
+          texturesUploaded = true;
+          drawQuad();
+        }
+      };
+
+      fireAndRender();
+      const onSeeked = () => fireAndRender();
+      // Listen to BOTH videos' seeked events so we re-attempt after slave syncs.
       videoB.addEventListener("seeked", onSeeked);
       videoA.addEventListener("seeked", onSeeked);
       return () => {
         videoB.removeEventListener("seeked", onSeeked);
         videoA.removeEventListener("seeked", onSeeked);
       };
+    } else if (hasRVFC && videoA) {
+      // ── Playing + RVFC: capture at exact composition time ──
+      // During playback, two independent decoders present frames at
+      // different wall-clock times. drawImage(video) in a rAF callback
+      // can capture different frames from each element, even when
+      // currentTime values are close. requestVideoFrameCallback fires
+      // at the exact moment a frame is composited, so we capture there.
+      const { metricsCtxA, metricsCtxB } = state;
+      const mw = metricsCtxA.canvas.width;
+      const mh = metricsCtxA.canvas.height;
+
+      // Per-video capture state (set in RVFC callbacks)
+      let capturedDataA: ImageData | null = null;
+      let capturedPtsA = -Infinity;
+      let capturedDataB: ImageData | null = null;
+      let capturedPtsB = -Infinity;
+      // PTS of the last matched pair uploaded to GPU textures
+      let gpuPtsA = -Infinity;
+      let gpuPtsB = -Infinity;
+
+      /** Called after each RVFC capture. If both videos have matching PTS,
+       *  compute metrics from the pre-captured ImageData. GPU textures are
+       *  already uploaded by the individual RVFC callbacks — do NOT re-upload
+       *  from the video elements here (the other video may have advanced). */
+      const tryMatch = () => {
+        if (!capturedDataA || !capturedDataB) return;
+        if (Math.abs(capturedPtsA - capturedPtsB) >= 0.010) return;
+
+        computeMetrics(capturedDataA, capturedDataB);
+        texturesUploaded = true;
+        capturedDataA = null;
+        capturedDataB = null;
+      };
+
+      let rvfcIdA = -1;
+      let rvfcIdB = -1;
+
+      const onFrameA = (_: DOMHighResTimeStamp, meta: RVFCMeta) => {
+        // Capture at exact composition time (this frame is guaranteed visible)
+        try {
+          metricsCtxA.drawImage(videoA!, 0, 0, mw, mh);
+          capturedDataA = metricsCtxA.getImageData(0, 0, mw, mh);
+          capturedPtsA = meta.mediaTime;
+        } catch { /* ignore */ }
+        // Also upload GPU texture while this frame is composited
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texA);
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoA!);
+          gpuPtsA = meta.mediaTime;
+        } catch { /* ignore */ }
+        tryMatch();
+        rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
+      };
+      const onFrameB = (_: DOMHighResTimeStamp, meta: RVFCMeta) => {
+        try {
+          metricsCtxB.drawImage(videoB, 0, 0, mw, mh);
+          capturedDataB = metricsCtxB.getImageData(0, 0, mw, mh);
+          capturedPtsB = meta.mediaTime;
+        } catch { /* ignore */ }
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, texB);
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoB);
+          gpuPtsB = meta.mediaTime;
+        } catch { /* ignore */ }
+        tryMatch();
+        rvfcIdB = (videoB as any).requestVideoFrameCallback(onFrameB);
+      };
+
+      rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
+      rvfcIdB = (videoB as any).requestVideoFrameCallback(onFrameB);
+
+      // rAF loop: just resize canvas and draw (textures are uploaded by RVFC)
+      let rafId: number;
+      const drawLoop = () => {
+        if (contextLostRef.current || !activeRef.current) return;
+        if (!resizeCanvas()) { /* zero-size, retry next frame */ }
+        else if (texturesUploaded && Math.abs(gpuPtsA - gpuPtsB) < 0.010) {
+          drawQuad();
+        }
+        if (activeRef.current && !pausedRef.current) {
+          rafId = requestAnimationFrame(drawLoop);
+        }
+      };
+      rafId = requestAnimationFrame(drawLoop);
+
+      return () => {
+        (videoA as any).cancelVideoFrameCallback(rvfcIdA);
+        (videoB as any).cancelVideoFrameCallback(rvfcIdB);
+        cancelAnimationFrame(rafId);
+      };
     } else {
-      // Continuous rAF loop during playback with adaptive metrics throttle.
-      // Metrics (PSNR + SSIM) are computed every Nth frame, where N is
-      // dynamically adjusted based on measured cost. Target: metrics should
-      // consume at most ~2ms of average per-frame budget. If fireMetrics()
-      // takes 8ms, it runs every 4th frame (8/2=4). If it takes 0.5ms, every
-      // frame. The heatmap and readout always update, just at a lower rate
-      // on slow machines.
+      // ── Playing without RVFC: rAF-based fallback ──
+      // Less accurate — currentTime check can't guarantee same compositor
+      // frame, but it's the best we can do without RVFC.
+      const fireMetricsFallback = () => {
+        if (!videoA || !videoB || !state) return;
+        if (!isVideoSynced()) return;
+        const { metricsCtxA, metricsCtxB } = state;
+        const mw = metricsCtxA.canvas.width;
+        const mh = metricsCtxA.canvas.height;
+        try {
+          metricsCtxA.drawImage(videoA, 0, 0, mw, mh);
+          metricsCtxB.drawImage(videoB, 0, 0, mw, mh);
+        } catch {
+          return;
+        }
+        computeMetrics(
+          metricsCtxA.getImageData(0, 0, mw, mh),
+          metricsCtxB.getImageData(0, 0, mw, mh),
+        );
+        if (uploadVideoTextures()) texturesUploaded = true;
+      };
+
       let metricsSamples = 0;
       let metricsEma = 0;
       const TARGET_PER_FRAME_MS = 2;
       const EMA_ALPHA = 0.2;
       let skipInterval = 1;
       let frameCounter = 0;
-
       let rafId: number;
+
       const loop = () => {
         frameCounter++;
         if (frameCounter >= skipInterval) {
           frameCounter = 0;
           const t0 = performance.now();
-          fireMetrics();
+          fireMetricsFallback();
           const elapsed = performance.now() - t0;
           metricsSamples++;
           metricsEma = metricsSamples === 1
@@ -787,7 +886,8 @@ export function useDiffRenderer({
             : metricsEma * (1 - EMA_ALPHA) + elapsed * EMA_ALPHA;
           skipInterval = Math.max(1, Math.ceil(metricsEma / TARGET_PER_FRAME_MS));
         }
-        render();
+        if (!resizeCanvas()) { /* zero-size */ }
+        else if (texturesUploaded) drawQuad();
         if (activeRef.current && !pausedRef.current) {
           rafId = requestAnimationFrame(loop);
         }
