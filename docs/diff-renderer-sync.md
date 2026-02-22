@@ -64,13 +64,13 @@ The quality comparison mode (`QualityCompare.tsx`) plays two video elements side
 
 **Status**: Fixed, but residual race still exists (see below).
 
-### Race 5: Compositor desync during playback (CONFIRMED — root cause identified)
+### Race 5: Compositor desync during playback (FIXED — double-buffered textures)
 
-**Symptom**: during playback, the diff overlay either freezes for seconds or shows inter-frame artifacts (red flashes in temperature palette). PSNR drops ~6-8 dB when mismatched.
+**Symptom**: during playback, the diff overlay either froze for seconds or showed inter-frame artifacts (red flashes in temperature palette). PSNR dropped ~6-8 dB when mismatched.
 
 **Root cause confirmed via diagnostic logging**: the two independent compositors present frames at systematically different times. Even when `currentTime` values are identical, the compositor independently picks which discrete frame to present for each video element. The RVFC callbacks report PTS values exactly 1 frame (33ms at 30fps) apart, causing `tryMatch` to reject the pair.
 
-**Diagnostic data** (2-second windows at 30fps video):
+**Diagnostic data** (2-second windows at 30fps video, before fix):
 
 | State | rvfcA/s | rvfcB/s | matchCount | missPts | drawCount | lastPts gap |
 |-------|---------|---------|------------|---------|-----------|-------------|
@@ -92,19 +92,42 @@ The quality comparison mode (`QualityCompare.tsx`) plays two video elements side
 
 **Evolution of fixes**:
 
-The original implementation checked `gpuPtsA ≈ gpuPtsB` (within 10ms) in the rAF drawLoop. When compositors were 1 frame apart, this check failed on every rAF cycle → canvas froze for seconds.
+1. **Single-buffer with gpuPts gate** (original): checked `gpuPtsA ≈ gpuPtsB` (within 10ms) in the rAF drawLoop. When compositors were 1 frame apart, this check failed on every rAF cycle → canvas froze for seconds.
 
-Removing the gpuPts check and drawing unconditionally (once both textures are uploaded) fixes the freeze but reintroduces the visual mismatch from Race 2 — the diff overlay compares frames that may be from adjacent time positions. This is the **current trade-off**: smooth rendering with occasional 1-frame artifacts vs. accurate rendering with multi-second freezes.
+2. **Single-buffer without gate** (intermediate): removed the gpuPts check, drew unconditionally once both textures were uploaded. Fixed the freeze but reintroduced visual mismatch from Race 2 — each RVFC callback independently overwrites its texture, so by the time drawLoop fires, the two textures can be from different frames.
 
-**What needs to happen**: the GPU textures for both videos must be from the same PTS when `drawQuad()` fires. The current single-buffer approach can't guarantee this because each RVFC callback independently overwrites its texture. See Action Items below.
+3. **Double-buffer with atomic swap** (current fix): maintains two texture sets — "front" (read by drawLoop) and "back" (written by RVFC). When `tryMatch` confirms both videos have the same PTS, front↔back are swapped atomically via JS reference swap. The drawLoop always binds front textures — guaranteed to be a PTS-matched pair. Between matches, the last matched pair is repeated at 60fps. No freeze, no artifacts.
+
+**How double-buffering solves both problems**:
+
+```
+RVFC-A fires (PTS N)  → uploads to backA (frontA untouched)
+RVFC-B fires (PTS N)  → uploads to backB (frontB untouched)
+tryMatch: PTS match!   → swap front↔back (frontA/B now have PTS N)
+drawLoop               → binds frontA + frontB → correct matched pair
+
+RVFC-A fires (PTS N+1) → uploads to backA (frontA still has N)
+RVFC-B fires (PTS N+2) → uploads to backB (frontB still has N)
+tryMatch: PTS mismatch → no swap
+drawLoop               → binds frontA + frontB → still shows matched N (stale but correct)
+```
+
+When compositors are out of phase (matchCount=0), the canvas shows a slightly stale but PTS-correct frame pair instead of freezing or showing inter-frame artifacts. The visual update rate degrades to the match rate, but no incorrect frames are ever drawn.
+
+**Implementation details**:
+- 4 GPU textures created in `initGl` (`texA`, `texB` = initial front; `texABack`, `texBBack` = initial back)
+- Local variables `frontA`/`frontB`/`backA`/`backB` track which texture is which — swap is a JS reference swap (zero GPU cost)
+- `frontReady` flag gates the first draw — prevents drawing uninitialized front textures before the first swap
+- The paused path is unchanged — it uses `uploadVideoTextures()` which writes to `texA`/`texB` directly (no double-buffering needed when both videos are stopped)
+- GPU memory overhead: 2 extra RGBA textures (~16MB at 1080p). Acceptable.
 
 **Former hypotheses** (from initial investigation, now resolved by logging):
 
-1. ~~GPU texture overwrite between RVFC callbacks~~ — **confirmed as the draw-side problem**, but the underlying cause is compositor desync, not callback ordering
+1. ~~GPU texture overwrite between RVFC callbacks~~ — **confirmed as the draw-side problem**, fixed by double-buffering
 2. ~~Metrics ImageData overwrite~~ — not the issue; metrics cost is <1ms
 3. ~~Frame drops under load~~ — **ruled out**; `presentedFrames` counters match
 4. ~~RVFC callback ordering~~ — not the primary issue; both callbacks fire at normal rate
-5. ~~drawImage lag after RVFC~~ — not investigated yet, but the PTS mismatch accounts for the observed behavior
+5. ~~drawImage lag after RVFC~~ — not investigated; PTS mismatch accounts for observed behavior
 
 ### Bug 6: Double frame-step in quality compare mode (FIXED)
 
@@ -137,48 +160,30 @@ When focus was on any element **inside** `containerEl` (buttons, video element, 
 
 1. **Paused** (`if (paused)`): captures from video on `seeked` events, uses `isVideoSynced()` (currentTime-based), uploads textures synchronously, draws immediately. **Correct** — both videos are stopped, no compositor race.
 
-2. **Playing + RVFC** (`else if (hasRVFC && videoA)`): RVFC callbacks capture metrics data (`drawImage` + `getImageData`) and upload GPU textures (`texImage2D`) at composition time. `tryMatch()` computes metrics only when PTS matches (within 10ms). rAF drawLoop renders unconditionally once both textures are ready. **Trade-off** — metrics are accurate (PTS-checked) but the visual overlay may show 1-frame artifacts when compositors are out of phase.
+2. **Playing + RVFC** (`else if (hasRVFC && videoA)`): double-buffered RVFC capture. RVFC callbacks upload to back textures and capture metrics data. `tryMatch()` computes metrics and swaps front↔back only when PTS matches (within 10ms). rAF drawLoop binds front textures and draws — always a PTS-matched pair. Between matches, last matched pair repeats. **Correct** — no freeze, no artifacts.
 
 3. **Playing without RVFC** (`else`): rAF-based fallback with `isVideoSynced()` guard and adaptive throttle. Less accurate — currentTime check can't guarantee same compositor frame.
 
 ### Key functions
 
 - `computeMetrics(dataA, dataB)` — shared: computes PSNR, SSIM, MS-SSIM (if active), VMAF (if active), uploads heatmap R8 texture
-- `uploadVideoTextures()` — reads from live video elements into GPU textures (used only in paused path now)
-- `drawQuad()` — issues GL draw call with whatever textures are bound
+- `uploadVideoTextures()` — reads from live video elements into GPU textures (used only in paused path)
+- `drawQuad()` — issues GL draw call with whatever textures are bound to TEXTURE0/TEXTURE1
 - `resizeCanvas()` — matches canvas pixel buffer to CSS layout × DPR
 - `isVideoSynced()` — currentTime-based sync check (paused path only)
-- `tryMatch()` — PTS-checked metrics computation; computes only when both RVFC callbacks report same frame
-
-### Current trade-off (Race 5)
-
-The RVFC playback path currently accepts a visual trade-off:
-- **Metrics** (PSNR, SSIM, VMAF readout): accurate, only computed on PTS-matched frames
-- **GPU overlay** (diff heatmap): renders every rAF frame using whatever textures are currently bound — may show 1-frame artifacts when compositors are out of phase (inter-frame motion shows as red flashes in temperature palette)
-- **Previous behavior**: GPU overlay was PTS-checked via `gpuPtsA ≈ gpuPtsB` — accurate when compositors aligned but froze for seconds when they didn't (the common case)
+- `tryMatch()` — PTS-checked metrics computation + front↔back texture swap; only fires when both RVFC callbacks report same frame
 
 ## Action Items
 
-### Priority 1: Fix the visual overlay to only draw matched frames (without freezing)
+### Priority 1: Fix the visual overlay to only draw matched frames (without freezing) — DONE
 
-The core problem: each RVFC callback independently overwrites its GPU texture. By the time the rAF drawLoop fires, one texture may have been overwritten with the next frame, making the pair inconsistent. The previous `gpuPts` check prevented drawing mismatched textures but caused multi-second freezes. Removing the check fixed freezing but reintroduced visual artifacts.
+**Resolved by Option A (double-buffer GPU textures).** See Race 5 section above for full details.
 
-#### Option A: Double-buffer GPU textures (recommended)
+#### ~~Option A: Double-buffer GPU textures~~ (IMPLEMENTED)
 
-Maintain two texture sets ("front" and "back"). RVFC callbacks write to back textures. When `tryMatch` succeeds (PTS match confirmed), swap front↔back atomically. The rAF drawLoop always draws from front textures — guaranteed to be a matched pair.
+Implemented in `useDiffRenderer.ts`. Four GPU textures (front + back for each video), RVFC callbacks write to back, `tryMatch` swaps front↔back on PTS match, drawLoop binds front. No freeze, no artifacts.
 
-Implementation:
-- Create 4 textures instead of 2: `texA_front`, `texA_back`, `texB_front`, `texB_back`
-- RVFC-A uploads to `texA_back`, RVFC-B uploads to `texB_back`
-- `tryMatch` success → swap front↔back for both A and B, mark `frontReady = true`
-- drawLoop binds front textures → `drawQuad()` only when `frontReady`
-- Between swaps, drawLoop repeats the last matched pair (no freeze, no artifacts)
-
-Trade-off: uses 2× GPU texture memory (~32MB for two 1080p RGBA textures). Acceptable.
-
-When compositors are out of phase (matchCount=0), the drawLoop repeats the last good matched pair — canvas shows a slightly stale but correct frame instead of freezing or showing artifacts.
-
-#### Option B: Draw inside tryMatch only
+#### Option B: Draw inside tryMatch only (not needed)
 
 Move `resizeCanvas()` + `drawQuad()` into `tryMatch` (draw synchronously at the moment PTS matches). At match time, both RVFC callbacks have uploaded their textures for the same PTS — textures are guaranteed consistent.
 
@@ -240,4 +245,5 @@ The DASH test fixture (`e2e/generate-dash-fixture.sh`) has a 4-digit frame count
 - `3660d98` — Fix diff renderer race: skip metrics when videos are on different frames (paused fix)
 - `8d8f0b6` — RVFC-based playback capture + tryMatch fix (removes uploadVideoTextures re-read)
 - `20858d4` — Fix double frame-step in quality compare mode (remove duplicate containerEl keyboard listener)
-- WIP — Remove gpuPts drawLoop gate: fixes multi-second freezing but reintroduces visual artifacts when compositors are out of phase (1-frame diff). Added diagnostic logging. Next step: double-buffer GPU textures (Action Item A)
+- `f7e44b5` — Remove gpuPts drawLoop gate: fixes multi-second freezing but reintroduces visual artifacts (intermediate step)
+- `8790ec0` — Double-buffer GPU textures: front/back texture pairs with atomic swap on PTS match. Eliminates both freezing and visual artifacts
