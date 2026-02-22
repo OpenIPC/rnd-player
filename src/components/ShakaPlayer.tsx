@@ -87,6 +87,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const psnrHistoryRef = useRef<Map<number, number>>(new Map());
   const ssimHistoryRef = useRef<Map<number, number>>(new Map());
   const msSsimHistoryRef = useRef<Map<number, number>>(new Map());
+  const vmafHistoryRef = useRef<Map<number, number>>(new Map());
   useEffect(() => {
     if (!polyfillsInstalled) {
       shaka.polyfill.installAll();
@@ -484,6 +485,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
                 psnrHistoryRef={psnrHistoryRef}
                 ssimHistoryRef={ssimHistoryRef}
                 msSsimHistoryRef={msSsimHistoryRef}
+                vmafHistoryRef={vmafHistoryRef}
                 onResolutionChange={(a, b) => {
                   setCompareHeightA(a);
                   setCompareHeightB(b);
@@ -519,6 +521,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               psnrHistory={psnrHistoryRef}
               ssimHistory={ssimHistoryRef}
               msSsimHistory={msSsimHistoryRef}
+              vmafHistory={vmafHistoryRef}
             />
           </Suspense>
         )}
