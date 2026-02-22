@@ -64,7 +64,7 @@ The quality comparison mode (`QualityCompare.tsx`) plays two video elements side
 
 **Status**: Fixed, but residual race still exists (see below).
 
-### Race 5: Compositor desync during playback (FIXED — double-buffered textures)
+### Race 5: Compositor desync during playback (PARTIALLY FIXED — double-buffered textures)
 
 **Symptom**: during playback, the diff overlay either froze for seconds or showed inter-frame artifacts (red flashes in temperature palette). PSNR dropped ~6-8 dB when mismatched.
 
@@ -121,6 +121,8 @@ When compositors are out of phase (matchCount=0), the canvas shows a slightly st
 - The paused path is unchanged — it uses `uploadVideoTextures()` which writes to `texA`/`texB` directly (no double-buffering needed when both videos are stopped)
 - GPU memory overhead: 2 extra RGBA textures (~16MB at 1080p). Acceptable.
 
+**Remaining issue**: during compositor desync periods, the overlay visual update rate degrades to the PTS match rate (3-19 fps instead of 30). The double-buffer repeats the last correct matched pair at 60 fps (no freeze, no artifacts), but the overlay content visibly stutters/lags because metrics and texture swaps only occur when the compositors happen to present the same frame. This is a cosmetic issue — the displayed diff is always from a correctly matched frame pair, never from mismatched frames. The desync episodes are intermittent and vary by browser, hardware, and system load.
+
 **Former hypotheses** (from initial investigation, now resolved by logging):
 
 1. ~~GPU texture overwrite between RVFC callbacks~~ — **confirmed as the draw-side problem**, fixed by double-buffering
@@ -175,9 +177,9 @@ When focus was on any element **inside** `containerEl` (buttons, video element, 
 
 ## Action Items
 
-### Priority 1: Fix the visual overlay to only draw matched frames (without freezing) — DONE
+### Priority 1: Fix the visual overlay to only draw matched frames (without freezing) — PARTIAL
 
-**Resolved by Option A (double-buffer GPU textures).** See Race 5 section above for full details.
+**Partially resolved by Option A (double-buffer GPU textures).** No artifacts (wrong frames never displayed), no hard freezes. Remaining issue: overlay update rate drops to PTS match rate during compositor desync episodes (3-19 fps visual stutter). See Race 5 section for details.
 
 #### ~~Option A: Double-buffer GPU textures~~ (IMPLEMENTED)
 
@@ -189,16 +191,29 @@ Move `resizeCanvas()` + `drawQuad()` into `tryMatch` (draw synchronously at the 
 
 Problem: when compositors are out of phase (matchCount=0-1 per 2s), the canvas still effectively freezes because tryMatch rarely succeeds. This doesn't fix the freeze — it just moves it from drawLoop to tryMatch.
 
-#### Option C: RVFC-driven drift correction
+#### ~~Option C: RVFC-driven drift correction~~ (ATTEMPTED — FAILED)
 
-Feed RVFC PTS values back to the drift correction in `QualityCompare.tsx`. When consecutive missPts exceeds a threshold (e.g., 5 frames), nudge `slaveVideo.currentTime` by ±5ms to push the compositor to present the adjacent frame. This is a micro-seek that doesn't cause decoder flicker.
+**Attempted** feeding RVFC PTS drift back to QualityCompare's sync loop. `useDiffRenderer` exposed a `ptsDriftRef` with the average PTS gap (seconds). The sync loop used `targetTime = masterVideo.currentTime + ptsDriftRef.current` instead of raw `masterVideo.currentTime`. The ±3% rate adjustment would gradually shift the slave's `currentTime` to compensate for the compositor phase offset.
 
-This attacks the root cause (compositor desync) rather than the symptom (stale textures). Could be combined with Option A for belt-and-suspenders.
+**Why it failed**: the drift correction overcompensated. Observed `drift=65.4ms` (~2 frames) instead of the expected ~33ms. Root causes:
 
-Implementation:
-- `useDiffRenderer` exposes a callback `onPtsDrift(driftMs)` or a ref with the current PTS gap
-- `QualityCompare.tsx` reads this and applies a micro-seek correction when gap is consistently ≥ 1 frame
-- The 5ms nudge changes which frame the compositor presents without visible seek
+1. **Convergence delay amplifies drift**: the sync loop's ±3% rate adjustment takes ~1s to shift `currentTime` by 33ms. During convergence, the drift detection keeps accumulating PTS mismatches. Although the running average (`cumulativeDrift / consecutivePtsMisses`) should stay at ~33ms mathematically, the interaction between the gradually shifting `currentTime` and the compositor's frame selection creates a feedback loop. The compositors respond to `currentTime` changes with unpredictable lag (depends on decoder queue, vsync phase), so the PTS gap during convergence can oscillate between 0ms and 66ms, inflating the average.
+
+2. **Compositor phase is not a function of `currentTime`**: the compositor's vsync phase is a hardware/OS-level property independent of the media timeline. Shifting `currentTime` by 33ms changes which frame the decoder targets, but the compositor's relative phase offset persists. The correction shifts the *content* (frame N+1 instead of N) without shifting the *timing* (when the compositor presents). This means the correction might align frames for one vsync period and then fall out of phase again as the compositor continues its fixed-phase presentation.
+
+3. **Sync loop fights the correction**: even if the drift is set correctly at 33ms, the sync loop detects `absDrift = 33ms > 16ms` and adjusts `playbackRate` to correct it. But correcting back to `currentTime ≈ masterTime` undoes the drift compensation. The correction is stable only if the drift value stays exactly at 33ms AND the sync loop maintains that offset — but oscillation between "match → reset counters" and "mismatch → re-detect" causes instability.
+
+**Result**: the slave ended up 2 frames ahead of the master instead of aligned. The diff overlay showed inter-frame artifacts (difference between frame N and frame N+2), which was **worse** than the original 1-frame compositor desync. Reverted.
+
+**Diagnostic data** (during failed attempt):
+
+| State | match | missPts | drift | Symptom |
+|-------|-------|---------|-------|---------|
+| Start freeze, then OK | 6 → 56-60 | 99 → 0-5 | 65.4ms | Initial desync, correction converges but overshoots |
+| Mixed freeze/OK | 30-49 | 19-56 | 49-51ms | Oscillating between overcorrection and re-detection |
+| Random freeze + artifacts | 9-57 | 2-93 | 51.5ms | Stale drift causes comparison of wrong frames |
+
+**Key lesson**: `currentTime` adjustment cannot reliably fix compositor phase desync. The compositor's frame selection depends on the decoder output queue and vsync cycle, not just the media timeline position. A different approach is needed — either accepting the reduced update rate during desync (current double-buffer behavior) or using a fundamentally different synchronization mechanism.
 
 ### Priority 2: Investigate further (completed / deprioritized)
 
