@@ -140,7 +140,7 @@ function App() {
           </button>
         </form>
         <span className="url-version">
-          v{__APP_VERSION__} ({__BUILD_DATE__})
+          v{__APP_VERSION__} ({__BUILD_DATE__}, {__BUILD_COMMIT__})
         </span>
         {showDemo && (
           <div className="demo-overlay" onClick={() => setShowDemo(false)}>
