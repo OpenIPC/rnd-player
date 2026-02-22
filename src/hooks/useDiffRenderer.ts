@@ -586,6 +586,19 @@ export function useDiffRenderer({
 
     const { gl, program, texA, texB, texSsim, vao, uAmp, uPal, uTexA, uTexB, uTexSsim } = state;
 
+    // Track whether we've ever uploaded valid (synced) textures.
+    // Prevents drawing uninitialized textures before the first sync.
+    let texturesUploaded = false;
+
+    /** Check whether both videos are presenting the same frame */
+    const isVideoSynced = (): boolean => {
+      if (!videoA || !videoB) return false;
+      if (videoA.seeking || videoB.seeking) return false;
+      // Half-frame at 30 fps ≈ 16 ms — if currentTimes differ by more,
+      // the videos are likely on different frames.
+      return Math.abs(videoA.currentTime - videoB.currentTime) <= 0.016;
+    };
+
     const render = () => {
       if (contextLostRef.current || !activeRef.current) return;
       if (!canvas || !videoA || !videoB) return;
@@ -600,26 +613,33 @@ export function useDiffRenderer({
         canvas.height = h;
       }
 
+      // Only upload new textures when both videos show the same frame.
+      // When the master (B) has seeked but the slave (A) hasn't caught up,
+      // skip the upload to avoid diffing consecutive frames.
+      if (isVideoSynced()) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texA);
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoA);
+        } catch {
+          return; // Cross-origin tainted or video not ready
+        }
+
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, texB);
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoB);
+        } catch {
+          return;
+        }
+        texturesUploaded = true;
+      }
+
+      // Nothing valid to draw yet — wait for first synced frame
+      if (!texturesUploaded) return;
+
       gl.viewport(0, 0, w, h);
       gl.useProgram(program);
-
-      // Upload video A texture
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texA);
-      try {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoA);
-      } catch {
-        return; // Cross-origin tainted or video not ready
-      }
-
-      // Upload video B texture
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, texB);
-      try {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoB);
-      } catch {
-        return;
-      }
 
       // Bind SSIM texture to TEXTURE2 (already uploaded by fireMetrics)
       gl.activeTexture(gl.TEXTURE2);
@@ -639,6 +659,11 @@ export function useDiffRenderer({
     /** Draw both videos to offscreen canvases once, compute PSNR + SSIM, upload SSIM texture */
     const fireMetrics = () => {
       if (!videoA || !videoB || !state) return;
+      // Skip metrics if videos are not on the same frame. This prevents
+      // reporting wrong PSNR/SSIM/VMAF when the slave hasn't caught up
+      // to the master's seek, or when playback drift puts them on
+      // different frames.
+      if (!isVideoSynced()) return;
       const { metricsCtxA, metricsCtxB } = state;
       const w = metricsCtxA.canvas.width;
       const h = metricsCtxA.canvas.height;
@@ -716,12 +741,23 @@ export function useDiffRenderer({
     };
 
     if (paused) {
-      // Compute metrics first so SSIM texture is ready, then render
+      // Compute metrics + render only when both videos are on the same frame.
+      // The sync guards inside fireMetrics/render handle this, so we can
+      // call unconditionally — they'll no-op if out of sync.
       fireMetrics();
       render();
       const onSeeked = () => { fireMetrics(); render(); };
+      // Listen to BOTH videos' seeked events. When the master (B) seeks,
+      // QualityCompare sets slave.currentTime which starts an async seek.
+      // If we only listened to B, we'd fire metrics before A finishes
+      // seeking — comparing frame N (old A) with frame N+1 (new B).
+      // Listening to A's seeked ensures we re-attempt once it catches up.
       videoB.addEventListener("seeked", onSeeked);
-      return () => videoB.removeEventListener("seeked", onSeeked);
+      videoA.addEventListener("seeked", onSeeked);
+      return () => {
+        videoB.removeEventListener("seeked", onSeeked);
+        videoA.removeEventListener("seeked", onSeeked);
+      };
     } else {
       // Continuous rAF loop during playback with adaptive metrics throttle.
       // Metrics (PSNR + SSIM) are computed every Nth frame, where N is
