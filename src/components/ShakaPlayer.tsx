@@ -21,6 +21,7 @@ export interface CompareViewState {
   flickerInterval?: number;
   amplification?: number;
   palette?: string;
+  vmafModel?: string;
 }
 
 interface ShakaPlayerProps {
@@ -43,6 +44,7 @@ interface ShakaPlayerProps {
   compareCfi?: number;
   compareAmp?: number;
   comparePal?: string;
+  compareVmodel?: string;
 }
 
 let polyfillsInstalled = false;
@@ -65,7 +67,7 @@ function describeLoadError(e: shaka.util.Error): string {
   return `Failed to load video (code ${e.code}).`;
 }
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
@@ -481,6 +483,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
                 initialFlickerInterval={compareCfi}
                 initialAmp={compareAmp}
                 initialPalette={comparePal}
+                initialVmafModel={compareVmodel}
                 viewStateRef={compareViewRef}
                 psnrHistoryRef={psnrHistoryRef}
                 ssimHistoryRef={ssimHistoryRef}

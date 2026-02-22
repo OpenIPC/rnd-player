@@ -65,6 +65,7 @@ import { formatBitrate } from "../utils/formatBitrate";
 import { loadSettings } from "../hooks/useSettings";
 import { useDiffRenderer } from "../hooks/useDiffRenderer";
 import type { DiffPalette, DiffAmplification } from "../hooks/useDiffRenderer";
+import type { VmafModelId } from "../utils/vmafCore";
 import type { CompareViewState } from "./ShakaPlayer";
 
 const FRAME_TYPE_COLORS: Record<FrameType, string> = {
@@ -106,6 +107,7 @@ interface QualityCompareProps {
   initialFlickerInterval?: number;
   initialAmp?: number;
   initialPalette?: string;
+  initialVmafModel?: string;
   viewStateRef?: React.RefObject<CompareViewState | null>;
   psnrHistoryRef?: React.MutableRefObject<Map<number, number>>;
   ssimHistoryRef?: React.MutableRefObject<Map<number, number>>;
@@ -233,6 +235,7 @@ export default function QualityCompare({
   initialFlickerInterval,
   initialAmp,
   initialPalette,
+  initialVmafModel,
   viewStateRef,
   psnrHistoryRef,
   ssimHistoryRef,
@@ -299,16 +302,20 @@ export default function QualityCompare({
   const initAmp: DiffAmplification = initialAmp && VALID_AMPS.includes(initialAmp as DiffAmplification) ? initialAmp as DiffAmplification : 1;
   const VALID_PALETTES: DiffPalette[] = ["grayscale", "temperature", "psnr", "ssim", "msssim", "vmaf"];
   const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "grayscale";
+  const VALID_VMAF_MODELS: VmafModelId[] = ["hd", "phone", "4k", "neg"];
+  const initVmafModel: VmafModelId = initialVmafModel && VALID_VMAF_MODELS.includes(initialVmafModel as VmafModelId) ? initialVmafModel as VmafModelId : "phone";
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
   const [flickerInterval, setFlickerInterval] = useState(initFlicker);
   const [amplification, setAmplification] = useState<DiffAmplification>(initAmp);
   const [palette, setPalette] = useState<DiffPalette>(initPalette);
+  const [vmafModel, setVmafModel] = useState<VmafModelId>(initVmafModel);
   const analysisModeRef = useRef<AnalysisMode>(initMode);
   const flickerIntervalRef = useRef(initFlicker);
   const flickerLabelRef = useRef<HTMLSpanElement>(null);
   const diffCanvasRef = useRef<HTMLCanvasElement>(null);
   const amplificationRef = useRef<DiffAmplification>(initAmp);
   const paletteRef = useRef<DiffPalette>(initPalette);
+  const vmafModelRef = useRef<VmafModelId>(initVmafModel);
 
   const [psnrValue, setPsnrValue] = useState<number | null>(null);
   const [ssimValue, setSsimValue] = useState<number | null>(null);
@@ -324,6 +331,7 @@ export default function QualityCompare({
     paused,
     amplification,
     palette,
+    vmafModel,
     onPsnr: setPsnrValue,
     onSsim: setSsimValue,
     onMsSsim: setMsSsimValue,
@@ -495,6 +503,7 @@ export default function QualityCompare({
         flickerInterval: mode === "toggle" ? flickerIntervalRef.current : undefined,
         amplification: mode === "diff" && amplificationRef.current !== 1 ? amplificationRef.current : undefined,
         palette: mode === "diff" && paletteRef.current !== "grayscale" ? paletteRef.current : undefined,
+        vmafModel: mode === "diff" && paletteRef.current === "vmaf" && vmafModelRef.current !== "phone" ? vmafModelRef.current : undefined,
       };
     }
 
@@ -1122,8 +1131,11 @@ export default function QualityCompare({
       vs.flickerInterval = analysisMode === "toggle" ? flickerInterval : undefined;
       vs.amplification = analysisMode === "diff" && amplification !== 1 ? amplification : undefined;
       vs.palette = analysisMode === "diff" && palette !== "grayscale" ? palette : undefined;
+      vs.vmafModel = analysisMode === "diff" && palette === "vmaf" && vmafModel !== "phone" ? vmafModel : undefined;
     }
-  }, [analysisMode, flickerInterval, amplification, palette, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory, ssimHistoryRef, ssimHistory, msSsimHistoryRef, msSsimHistory, vmafHistoryRef, vmafHistory]);
+    // Keep vmafModelRef in sync
+    vmafModelRef.current = vmafModel;
+  }, [analysisMode, flickerInterval, amplification, palette, vmafModel, updateClipPath, viewStateRef, psnrHistoryRef, psnrHistory, ssimHistoryRef, ssimHistory, msSsimHistoryRef, msSsimHistory, vmafHistoryRef, vmafHistory]);
 
   // ── Toggle/Flicker mode: alternate slave visibility ──
   useEffect(() => {
@@ -1544,6 +1556,18 @@ export default function QualityCompare({
               >
                 {palette === "grayscale" ? "Gray" : palette === "temperature" ? "Temp" : palette === "psnr" ? "PSNR" : palette === "ssim" ? "SSIM" : palette === "msssim" ? "MS-SSIM" : "VMAF"}
               </button>
+              {palette === "vmaf" && (
+                <button
+                  className="vp-compare-diff-palette"
+                  onClick={() => setVmafModel((m) => {
+                    const idx = VALID_VMAF_MODELS.indexOf(m);
+                    return VALID_VMAF_MODELS[(idx + 1) % VALID_VMAF_MODELS.length];
+                  })}
+                  title="Cycle VMAF model"
+                >
+                  {vmafModel === "hd" ? "HD" : vmafModel === "phone" ? "Phone" : vmafModel === "4k" ? "4K" : "NEG"}
+                </button>
+              )}
               <span className="vp-compare-diff-psnr">
                 {palette === "vmaf"
                   ? (vmafValue != null ? vmafValue.toFixed(1) : "\u2014")

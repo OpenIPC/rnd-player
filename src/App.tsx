@@ -21,6 +21,7 @@ function parseUrlParams(): {
   compareCfi: number | null;
   compareAmp: number | null;
   comparePal: string | null;
+  compareVmodel: string | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
@@ -41,6 +42,7 @@ function parseUrlParams(): {
   const cfi = params.get("cfi");
   const amp = params.get("amp");
   const pal = params.get("pal");
+  const vmodel = params.get("vmodel");
 
   return {
     src: v || null,
@@ -61,6 +63,7 @@ function parseUrlParams(): {
     compareCfi: cfi ? parseInt(cfi, 10) || null : null,
     compareAmp: amp ? parseInt(amp, 10) || null : null,
     comparePal: pal || null,
+    compareVmodel: vmodel || null,
   };
 }
 
@@ -195,6 +198,7 @@ function App() {
         compareCfi={initial.compareCfi ?? undefined}
         compareAmp={initial.compareAmp ?? undefined}
         comparePal={initial.comparePal ?? undefined}
+        compareVmodel={initial.compareVmodel ?? undefined}
       />
     </div>
   );

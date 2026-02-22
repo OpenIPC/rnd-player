@@ -21,7 +21,7 @@
  */
 import { useEffect, useRef } from "react";
 import { computeVmafFromImageData, createVmafState } from "../utils/vmafCore";
-import type { VmafState } from "../utils/vmafCore";
+import type { VmafState, VmafModelId } from "../utils/vmafCore";
 
 export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim" | "msssim" | "vmaf";
 export type DiffAmplification = 1 | 2 | 4 | 8;
@@ -127,6 +127,7 @@ interface UseDiffRendererParams {
   paused: boolean;
   amplification: DiffAmplification;
   palette: DiffPalette;
+  vmafModel?: VmafModelId;
   onPsnr?: (psnr: number | null) => void;
   onSsim?: (ssim: number | null) => void;
   onMsSsim?: (msSsim: number | null) => void;
@@ -513,6 +514,7 @@ export function useDiffRenderer({
   paused,
   amplification,
   palette,
+  vmafModel = "phone",
   onPsnr,
   onSsim,
   onMsSsim,
@@ -523,6 +525,7 @@ export function useDiffRenderer({
   const palRef = useRef(palette);
   const pausedRef = useRef(paused);
   const activeRef = useRef(active);
+  const vmafModelRef = useRef(vmafModel);
   const onPsnrRef = useRef(onPsnr);
   const onSsimRef = useRef(onSsim);
   const onMsSsimRef = useRef(onMsSsim);
@@ -531,6 +534,7 @@ export function useDiffRenderer({
   palRef.current = palette;
   pausedRef.current = paused;
   activeRef.current = active;
+  vmafModelRef.current = vmafModel;
   onPsnrRef.current = onPsnr;
   onSsimRef.current = onSsim;
   onMsSsimRef.current = onMsSsim;
@@ -688,7 +692,7 @@ export function useDiffRenderer({
 
       // VMAF (only when palette is active — ~3.5ms extra cost)
       if (palRef.current === "vmaf") {
-        const vmafResult = computeVmafFromImageData(dataA, dataB, vmafStateRef.current);
+        const vmafResult = computeVmafFromImageData(dataA, dataB, vmafStateRef.current, vmafModelRef.current);
         onVmafRef.current?.(vmafResult.score);
         const roundedTime = Math.round(videoB.currentTime * 1000) / 1000;
         vmafHistory.current.set(roundedTime, vmafResult.score);
@@ -755,7 +759,7 @@ export function useDiffRenderer({
       rafId = requestAnimationFrame(loop);
       return () => cancelAnimationFrame(rafId);
     }
-  }, [active, videoA, videoB, paused, canvasRef, amplification, palette]);
+  }, [active, videoA, videoB, paused, canvasRef, amplification, palette, vmafModel]);
 
   // Clear metric histories when diff mode is deactivated
   useEffect(() => {
@@ -767,6 +771,12 @@ export function useDiffRenderer({
       vmafStateRef.current = createVmafState();
     }
   }, [active]);
+
+  // Clear VMAF history when model changes (scores from different models aren't comparable)
+  useEffect(() => {
+    vmafHistory.current = new Map();
+    vmafStateRef.current = createVmafState();
+  }, [vmafModel]);
 
   // Destroy GL resources on unmount
   useEffect(() => {

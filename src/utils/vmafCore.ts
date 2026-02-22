@@ -22,11 +22,19 @@ import {
   TRANSFORM_P1,
   TRANSFORM_P2,
   SUPPORT_VECTORS,
+  VMAF_4K_RHO,
+  VMAF_4K_SCORE_SLOPE,
+  VMAF_4K_SCORE_INTERCEPT,
+  VMAF_4K_FEATURE_SLOPES,
+  VMAF_4K_FEATURE_INTERCEPTS,
+  VMAF_4K_SUPPORT_VECTORS,
 } from "./vmafModel";
 
 // ============================================================================
 // Types
 // ============================================================================
+
+export type VmafModelId = "hd" | "phone" | "4k" | "neg";
 
 export interface VmafFeatures {
   vif_scale0: number;
@@ -67,8 +75,8 @@ const FILTER_SUM = 65536;
 // in Q16 fixed-point. In floating-point at [0,255] range this is 2.0.
 const VIF_SIGMA_NSQ = 2.0;
 
-// VIF enhancement gain limit
-const VIF_ENHN_GAIN_LIMIT = 100.0;
+// VIF enhancement gain limit (default; NEG model uses 1.0)
+const VIF_ENHN_GAIN_LIMIT_DEFAULT = 100.0;
 
 // ADM Daubechies-2 wavelet filter coefficients (floating-point)
 const DWT_LO = new Float64Array([0.48296291314469025, 0.83651630373746899, 0.22414386804185735, -0.12940952255092145]);
@@ -82,7 +90,7 @@ const ADM_CSF_G = [1.501, 1.0, 0.534, 1.0]; // h, v, d, a
 const ADM_NORM_VIEW_DIST = 3.0;
 const ADM_REF_DISPLAY_HEIGHT = 1080;
 const ADM_BORDER_FACTOR = 0.1;
-const ADM_ENHN_GAIN_LIMIT = 100.0;
+const ADM_ENHN_GAIN_LIMIT_DEFAULT = 100.0;
 
 // ADM basis function amplitudes per scale (1-indexed in libvmaf, 0-indexed here)
 // [h, v, d, a] for each scale
@@ -205,6 +213,7 @@ function computeVifScale(
   ref: Float64Array, dis: Float64Array,
   width: number, height: number,
   kernel: Float64Array,
+  enhGainLimit: number,
 ): VifScaleResult {
   // Compute local statistics via separable convolution
   const mu1 = convolve2D(ref, width, height, kernel);
@@ -243,7 +252,7 @@ function computeVifScale(
       if (sigma12 > 0 && sigma2Sq > 0) {
         let g = sigma12 / sigma1Sq;
         const svSq = Math.max(sigma2Sq - g * sigma12, 0);
-        g = Math.min(g, VIF_ENHN_GAIN_LIMIT);
+        g = Math.min(g, enhGainLimit);
         numAccum += Math.log2(1.0 + g * g * sigma1Sq / (svSq + VIF_SIGMA_NSQ));
       }
       // else: numAccum += 0 (no contribution)
@@ -268,6 +277,7 @@ function computeVifScale(
 export function computeVif(
   ref: Float64Array, dis: Float64Array,
   width: number, height: number,
+  enhGainLimit: number = VIF_ENHN_GAIN_LIMIT_DEFAULT,
 ): [number, number, number, number] {
   const scores: [number, number, number, number] = [0, 0, 0, 0];
 
@@ -283,7 +293,7 @@ export function computeVif(
       continue;
     }
 
-    const result = computeVifScale(curRef, curDis, w, h, VIF_FILTERS[scale]);
+    const result = computeVifScale(curRef, curDis, w, h, VIF_FILTERS[scale], enhGainLimit);
     scores[scale] = result.den > 0 ? result.num / result.den : 1.0;
 
     // Downsample for next scale using the destination scale's filter
@@ -409,12 +419,13 @@ function computeCsfWeight(scale: number, orientation: number): number {
  *   ADM2 = num / den  (~1.0 for clean, <1.0 for distorted)
  *
  * Decouple: per-coefficient gain clamped to [0,1], with angle-based
- * enhancement check (gain up to ADM_ENHN_GAIN_LIMIT when direction < 1°).
+ * enhancement check (gain up to enhGainLimit when direction < 1°).
  * Masking: from artifact energy (not reference), cross-orientation.
  */
 export function computeAdm2(
   ref: Float64Array, dis: Float64Array,
   width: number, height: number,
+  enhGainLimit: number = ADM_ENHN_GAIN_LIMIT_DEFAULT,
 ): number {
   // Pre-compute CSF weights for all scales and orientations.
   // libvmaf uses theta=1 for BOTH H and V (g[1]=1.0, amp[s][1]),
@@ -499,13 +510,13 @@ export function computeAdm2(
       const angleFlag = otDp >= 0 && otDp * otDp >= COS_1DEG_SQ * oMagSq * tMagSq;
 
       if (angleFlag) {
-        // Allow gain up to ADM_ENHN_GAIN_LIMIT for near-parallel distortion
-        if (rstH > 0) rstH = Math.min(rstH * ADM_ENHN_GAIN_LIMIT, th);
-        else if (rstH < 0) rstH = Math.max(rstH * ADM_ENHN_GAIN_LIMIT, th);
-        if (rstV > 0) rstV = Math.min(rstV * ADM_ENHN_GAIN_LIMIT, tv);
-        else if (rstV < 0) rstV = Math.max(rstV * ADM_ENHN_GAIN_LIMIT, tv);
-        if (rstD > 0) rstD = Math.min(rstD * ADM_ENHN_GAIN_LIMIT, td);
-        else if (rstD < 0) rstD = Math.max(rstD * ADM_ENHN_GAIN_LIMIT, td);
+        // Allow gain up to enhGainLimit for near-parallel distortion
+        if (rstH > 0) rstH = Math.min(rstH * enhGainLimit, th);
+        else if (rstH < 0) rstH = Math.max(rstH * enhGainLimit, th);
+        if (rstV > 0) rstV = Math.min(rstV * enhGainLimit, tv);
+        else if (rstV < 0) rstV = Math.max(rstV * enhGainLimit, tv);
+        if (rstD > 0) rstD = Math.min(rstD * enhGainLimit, td);
+        else if (rstD < 0) rstD = Math.max(rstD * enhGainLimit, td);
       }
 
       restored[0][i] = rstH;
@@ -624,7 +635,11 @@ export function computeMotion(
 /**
  * Normalize raw features using the per-feature slopes and intercepts from the model.
  */
-function normalizeFeatures(features: VmafFeatures): number[] {
+function normalizeFeatures(
+  features: VmafFeatures,
+  slopes: readonly number[],
+  intercepts: readonly number[],
+): number[] {
   const raw = [
     features.adm2,
     features.motion2,
@@ -634,17 +649,21 @@ function normalizeFeatures(features: VmafFeatures): number[] {
     features.vif_scale3,
   ];
 
-  return raw.map((val, i) => FEATURE_SLOPES[i] * val + FEATURE_INTERCEPTS[i]);
+  return raw.map((val, i) => slopes[i] * val + intercepts[i]);
 }
 
 /**
  * Run SVM prediction with RBF kernel on normalized features.
  */
-function svmPredict(normFeatures: number[]): number {
+function svmPredict(
+  normFeatures: number[],
+  supportVectors: readonly (readonly number[])[],
+  rho: number,
+): number {
   let sum = 0;
 
-  for (let i = 0; i < SUPPORT_VECTORS.length; i++) {
-    const sv = SUPPORT_VECTORS[i];
+  for (let i = 0; i < supportVectors.length; i++) {
+    const sv = supportVectors[i];
     const alpha = sv[0];
 
     // Compute squared distance ||x - sv||^2
@@ -659,24 +678,36 @@ function svmPredict(normFeatures: number[]): number {
   }
 
   // Subtract rho (note: rho is negative, so subtracting it adds)
-  return sum - VMAF_RHO;
+  return sum - rho;
 }
 
 /**
  * Convert raw SVM output to final VMAF score.
+ *
+ * - HD/NEG: denormalize only (v0.6.1 normalization, no polynomial transform)
+ * - Phone: denormalize + polynomial transform + out_gte_in (current v0.6.1 behavior)
+ * - 4K: denormalize with 4K-specific constants (no transform in 4K model)
  */
-function denormalizeScore(raw: number): number {
-  // Denormalize
-  const score = (raw - SCORE_INTERCEPT) / SCORE_SLOPE;
+function denormalizeScore(
+  raw: number,
+  model: VmafModelId,
+): number {
+  const slope = model === "4k" ? VMAF_4K_SCORE_SLOPE : SCORE_SLOPE;
+  const intercept = model === "4k" ? VMAF_4K_SCORE_INTERCEPT : SCORE_INTERCEPT;
 
-  // Polynomial transform
-  const transformed = TRANSFORM_P0 + TRANSFORM_P1 * score + TRANSFORM_P2 * score * score;
+  // Denormalize: inverse of linear_rescale normalization
+  const score = (raw - intercept) / slope;
 
-  // Rectification: out_gte_in
-  const rectified = Math.max(transformed, score);
+  if (model === "phone") {
+    // Polynomial transform (score_transform from v0.6.1 model)
+    const transformed = TRANSFORM_P0 + TRANSFORM_P1 * score + TRANSFORM_P2 * score * score;
+    // Rectification: out_gte_in
+    const rectified = Math.max(transformed, score);
+    return Math.max(0, Math.min(100, rectified));
+  }
 
-  // Clip to [0, 100]
-  return Math.max(0, Math.min(100, rectified));
+  // HD, NEG, 4K: no polynomial transform
+  return Math.max(0, Math.min(100, score));
 }
 
 // ============================================================================
@@ -698,18 +729,23 @@ export function createVmafState(): VmafState {
  * @param width    - Frame width
  * @param height   - Frame height
  * @param state    - Mutable state for motion temporal buffering (pass null to skip motion)
+ * @param model    - VMAF model to use (default: "phone" for backward compatibility)
  * @returns VMAF result with score and raw features
  */
 export function computeVmaf(
   refGray: Float64Array, disGray: Float64Array,
   width: number, height: number,
   state: VmafState | null,
+  model: VmafModelId = "phone",
 ): VmafResult {
+  // NEG model uses enhancement gain limit of 1.0; all others use 100.0
+  const enhGainLimit = model === "neg" ? 1.0 : 100.0;
+
   // 1. VIF at 4 scales
-  const [vif0, vif1, vif2, vif3] = computeVif(refGray, disGray, width, height);
+  const [vif0, vif1, vif2, vif3] = computeVif(refGray, disGray, width, height, enhGainLimit);
 
   // 2. ADM2
-  const adm2 = computeAdm2(refGray, disGray, width, height);
+  const adm2 = computeAdm2(refGray, disGray, width, height, enhGainLimit);
 
   // 3. Motion
   let motion2 = 0;
@@ -733,10 +769,16 @@ export function computeVmaf(
     motion2,
   };
 
-  // 5. Normalize, predict, denormalize
-  const normFeatures = normalizeFeatures(features);
-  const raw = svmPredict(normFeatures);
-  const score = denormalizeScore(raw);
+  // 5. Select model-specific SVM constants
+  const slopes = model === "4k" ? VMAF_4K_FEATURE_SLOPES : FEATURE_SLOPES;
+  const intercepts = model === "4k" ? VMAF_4K_FEATURE_INTERCEPTS : FEATURE_INTERCEPTS;
+  const supportVectors = model === "4k" ? VMAF_4K_SUPPORT_VECTORS : SUPPORT_VECTORS;
+  const rho = model === "4k" ? VMAF_4K_RHO : VMAF_RHO;
+
+  // 6. Normalize, predict, denormalize
+  const normFeatures = normalizeFeatures(features, slopes, intercepts);
+  const raw = svmPredict(normFeatures, supportVectors, rho);
+  const score = denormalizeScore(raw, model);
 
   return { score, features };
 }
@@ -748,9 +790,10 @@ export function computeVmaf(
 export function computeVmafFromImageData(
   dataA: ImageData, dataB: ImageData,
   state: VmafState | null,
+  model: VmafModelId = "phone",
 ): VmafResult {
   const { width, height } = dataA;
   const refGray = rgbaToGray(dataA.data, width, height);
   const disGray = rgbaToGray(dataB.data, width, height);
-  return computeVmaf(refGray, disGray, width, height, state);
+  return computeVmaf(refGray, disGray, width, height, state, model);
 }
