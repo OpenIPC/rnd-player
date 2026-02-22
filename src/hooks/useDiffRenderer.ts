@@ -766,19 +766,42 @@ export function useDiffRenderer({
       let capturedPtsA = -Infinity;
       let capturedDataB: ImageData | null = null;
       let capturedPtsB = -Infinity;
-      // PTS of the last matched pair uploaded to GPU textures
-      let gpuPtsA = -Infinity;
-      let gpuPtsB = -Infinity;
+      // Track whether each texture has been uploaded at least once
+      let texAReady = false;
+      let texBReady = false;
+
+      // ── Diagnostic counters (temporary — remove after debugging) ──
+      let diagMatchCount = 0;
+      let diagMissNoData = 0;
+      let diagMissPts = 0;
+      let diagCallbackA = 0;
+      let diagCallbackB = 0;
+      let diagDrawCount = 0;
+      let diagMetricsMs = 0;
+      let diagLastLogTime = performance.now();
+      let diagPresentedA = 0;
+      let diagPresentedB = 0;
+      let diagLastPtsA = -Infinity;
+      let diagLastPtsB = -Infinity;
 
       /** Called after each RVFC capture. If both videos have matching PTS,
        *  compute metrics from the pre-captured ImageData. GPU textures are
        *  already uploaded by the individual RVFC callbacks — do NOT re-upload
        *  from the video elements here (the other video may have advanced). */
       const tryMatch = () => {
-        if (!capturedDataA || !capturedDataB) return;
-        if (Math.abs(capturedPtsA - capturedPtsB) >= 0.010) return;
+        if (!capturedDataA || !capturedDataB) {
+          diagMissNoData++;
+          return;
+        }
+        if (Math.abs(capturedPtsA - capturedPtsB) >= 0.010) {
+          diagMissPts++;
+          return;
+        }
 
+        const t0 = performance.now();
         computeMetrics(capturedDataA, capturedDataB);
+        diagMetricsMs += performance.now() - t0;
+        diagMatchCount++;
         texturesUploaded = true;
         capturedDataA = null;
         capturedDataB = null;
@@ -787,7 +810,12 @@ export function useDiffRenderer({
       let rvfcIdA = -1;
       let rvfcIdB = -1;
 
-      const onFrameA = (_: DOMHighResTimeStamp, meta: RVFCMeta) => {
+      type RVFCMetaExt = RVFCMeta & { presentedFrames?: number };
+
+      const onFrameA = (_: DOMHighResTimeStamp, meta: RVFCMetaExt) => {
+        diagCallbackA++;
+        diagLastPtsA = meta.mediaTime;
+        if (meta.presentedFrames != null) diagPresentedA = meta.presentedFrames;
         // Capture at exact composition time (this frame is guaranteed visible)
         try {
           metricsCtxA.drawImage(videoA!, 0, 0, mw, mh);
@@ -799,12 +827,15 @@ export function useDiffRenderer({
         gl.bindTexture(gl.TEXTURE_2D, texA);
         try {
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoA!);
-          gpuPtsA = meta.mediaTime;
+          texAReady = true;
         } catch { /* ignore */ }
         tryMatch();
         rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
       };
-      const onFrameB = (_: DOMHighResTimeStamp, meta: RVFCMeta) => {
+      const onFrameB = (_: DOMHighResTimeStamp, meta: RVFCMetaExt) => {
+        diagCallbackB++;
+        diagLastPtsB = meta.mediaTime;
+        if (meta.presentedFrames != null) diagPresentedB = meta.presentedFrames;
         try {
           metricsCtxB.drawImage(videoB, 0, 0, mw, mh);
           capturedDataB = metricsCtxB.getImageData(0, 0, mw, mh);
@@ -814,7 +845,7 @@ export function useDiffRenderer({
         gl.bindTexture(gl.TEXTURE_2D, texB);
         try {
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoB);
-          gpuPtsB = meta.mediaTime;
+          texBReady = true;
         } catch { /* ignore */ }
         tryMatch();
         rvfcIdB = (videoB as any).requestVideoFrameCallback(onFrameB);
@@ -823,14 +854,36 @@ export function useDiffRenderer({
       rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
       rvfcIdB = (videoB as any).requestVideoFrameCallback(onFrameB);
 
-      // rAF loop: just resize canvas and draw (textures are uploaded by RVFC)
+      // rAF loop: resize canvas and draw.
+      // Textures are uploaded by RVFC callbacks; metrics are PTS-checked
+      // in tryMatch. The draw loop renders unconditionally once both
+      // textures are ready — when decoders present adjacent frames
+      // (1-frame offset), the diff still updates smoothly instead of
+      // freezing. The inter-frame artifact is barely visible.
       let rafId: number;
       const drawLoop = () => {
         if (contextLostRef.current || !activeRef.current) return;
         if (!resizeCanvas()) { /* zero-size, retry next frame */ }
-        else if (texturesUploaded && Math.abs(gpuPtsA - gpuPtsB) < 0.010) {
+        else if (texAReady && texBReady) {
           drawQuad();
+          diagDrawCount++;
         }
+
+        // ── Diagnostic log every 2s ──
+        const now = performance.now();
+        if (now - diagLastLogTime >= 2000) {
+          const elapsed = (now - diagLastLogTime) / 1000;
+          const avgMs = diagMatchCount > 0 ? (diagMetricsMs / diagMatchCount).toFixed(1) : "0";
+          console.log(
+            `[DiffSync] ${elapsed.toFixed(1)}s: rvfcA=${diagCallbackA}(${(diagCallbackA / elapsed).toFixed(0)}/s) rvfcB=${diagCallbackB}(${(diagCallbackB / elapsed).toFixed(0)}/s) match=${diagMatchCount} miss(noData=${diagMissNoData} pts=${diagMissPts}) draw=${diagDrawCount} metricsAvg=${avgMs}ms presentedA=${diagPresentedA} presentedB=${diagPresentedB} lastPtsA=${diagLastPtsA.toFixed(3)} lastPtsB=${diagLastPtsB.toFixed(3)}`,
+          );
+          diagCallbackA = diagCallbackB = 0;
+          diagMatchCount = diagMissNoData = diagMissPts = 0;
+          diagDrawCount = 0;
+          diagMetricsMs = 0;
+          diagLastLogTime = now;
+        }
+
         if (activeRef.current && !pausedRef.current) {
           rafId = requestAnimationFrame(drawLoop);
         }
