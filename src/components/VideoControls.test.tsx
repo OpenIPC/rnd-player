@@ -10,8 +10,21 @@ import {
   createDefaultTrack,
   type MockShakaPlayer,
 } from "../test/helpers/createMockShakaPlayer";
+import { MODULE_DEFAULTS } from "../types/moduleConfig";
+import type { DeviceProfile } from "../utils/detectCapabilities";
 
 vi.mock("shaka-player");
+
+const defaultDeviceProfile: DeviceProfile = {
+  cpuCores: 8,
+  deviceMemoryGB: 8,
+  webCodecs: true,
+  webGL2: true,
+  webAudio: true,
+  workers: true,
+  offscreenCanvas: true,
+  performanceTier: "high",
+};
 
 function setup(
   videoOverrides?: Partial<MockVideoElement>,
@@ -28,6 +41,14 @@ function setup(
       videoEl={videoEl as unknown as HTMLVideoElement}
       containerEl={containerEl}
       player={player as unknown as import("shaka-player").default.Player}
+      src="https://example.com/test.mpd"
+      inPoint={null}
+      outPoint={null}
+      onInPointChange={() => {}}
+      onOutPointChange={() => {}}
+      moduleConfig={MODULE_DEFAULTS}
+      deviceProfile={defaultDeviceProfile}
+      onModuleConfigChange={() => {}}
     />
   );
 
@@ -228,6 +249,14 @@ describe("VideoControls", () => {
           player={
             player as unknown as import("shaka-player").default.Player
           }
+          src="https://example.com/test.mpd"
+          inPoint={null}
+          outPoint={null}
+          onInPointChange={() => {}}
+          onOutPointChange={() => {}}
+          moduleConfig={MODULE_DEFAULTS}
+          deviceProfile={defaultDeviceProfile}
+          onModuleConfigChange={() => {}}
         />
       );
 

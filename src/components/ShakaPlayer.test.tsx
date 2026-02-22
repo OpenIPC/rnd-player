@@ -2,8 +2,27 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 import ShakaPlayer from "./ShakaPlayer";
 import shaka from "shaka-player";
+import { MODULE_DEFAULTS } from "../types/moduleConfig";
+import type { DeviceProfile } from "../utils/detectCapabilities";
 
 vi.mock("shaka-player");
+
+const defaultDeviceProfile: DeviceProfile = {
+  cpuCores: 8,
+  deviceMemoryGB: 8,
+  webCodecs: true,
+  webGL2: true,
+  webAudio: true,
+  workers: true,
+  offscreenCanvas: true,
+  performanceTier: "high",
+};
+
+const defaultModuleProps = {
+  moduleConfig: MODULE_DEFAULTS,
+  deviceProfile: defaultDeviceProfile,
+  onModuleConfigChange: () => {},
+};
 
 // Mock VideoControls to avoid needing the full mock chain
 vi.mock("./VideoControls", () => ({
@@ -66,7 +85,7 @@ describe("ShakaPlayer", () => {
   });
 
   it("installs polyfills and attaches player", async () => {
-    render(<ShakaPlayer src="https://example.com/manifest.mpd" />);
+    render(<ShakaPlayer src="https://example.com/manifest.mpd" {...defaultModuleProps} />);
 
     expect(shaka.polyfill.installAll).toHaveBeenCalled();
     expect(shaka.Player).toHaveBeenCalled();
@@ -77,7 +96,7 @@ describe("ShakaPlayer", () => {
   });
 
   it("loads the manifest from src prop", async () => {
-    render(<ShakaPlayer src="https://example.com/manifest.mpd" />);
+    render(<ShakaPlayer src="https://example.com/manifest.mpd" {...defaultModuleProps} />);
 
     await waitFor(() => {
       expect(mockPlayerInstance.load).toHaveBeenCalledWith(
@@ -88,7 +107,7 @@ describe("ShakaPlayer", () => {
   });
 
   it("renders VideoControls after player is ready", async () => {
-    render(<ShakaPlayer src="https://example.com/manifest.mpd" />);
+    render(<ShakaPlayer src="https://example.com/manifest.mpd" {...defaultModuleProps} />);
 
     await waitFor(() => {
       expect(screen.getByTestId("video-controls")).toBeInTheDocument();
@@ -96,7 +115,7 @@ describe("ShakaPlayer", () => {
   });
 
   it("renders a video element", () => {
-    render(<ShakaPlayer src="https://example.com/manifest.mpd" />);
+    render(<ShakaPlayer src="https://example.com/manifest.mpd" {...defaultModuleProps} />);
 
     const video = document.querySelector("video");
     expect(video).toBeInTheDocument();
@@ -108,7 +127,7 @@ describe("ShakaPlayer", () => {
       .mockResolvedValue(undefined);
 
     render(
-      <ShakaPlayer src="https://example.com/manifest.mpd" autoPlay />
+      <ShakaPlayer src="https://example.com/manifest.mpd" autoPlay {...defaultModuleProps} />
     );
 
     const video = document.querySelector("video")!;
@@ -123,7 +142,7 @@ describe("ShakaPlayer", () => {
 
   it("destroys player on unmount", async () => {
     const { unmount } = render(
-      <ShakaPlayer src="https://example.com/manifest.mpd" />
+      <ShakaPlayer src="https://example.com/manifest.mpd" {...defaultModuleProps} />
     );
 
     await waitFor(() => {
@@ -138,7 +157,7 @@ describe("ShakaPlayer", () => {
   it("does not render if browser is unsupported", () => {
     (shaka.Player.isBrowserSupported as ReturnType<typeof vi.fn>).mockReturnValue(false);
 
-    render(<ShakaPlayer src="https://example.com/manifest.mpd" />);
+    render(<ShakaPlayer src="https://example.com/manifest.mpd" {...defaultModuleProps} />);
 
     // VideoControls should not render
     expect(screen.queryByTestId("video-controls")).not.toBeInTheDocument();

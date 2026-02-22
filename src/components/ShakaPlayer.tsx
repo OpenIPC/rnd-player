@@ -3,6 +3,8 @@ import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin, getCorsBlockedOrigin } from "../utils/corsProxy";
+import type { PlayerModuleConfig } from "../types/moduleConfig";
+import type { DeviceProfile } from "../utils/detectCapabilities";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
@@ -45,6 +47,9 @@ interface ShakaPlayerProps {
   compareAmp?: number;
   comparePal?: string;
   compareVmodel?: string;
+  moduleConfig: PlayerModuleConfig;
+  deviceProfile: DeviceProfile;
+  onModuleConfigChange: (config: PlayerModuleConfig) => void;
 }
 
 let polyfillsInstalled = false;
@@ -67,7 +72,7 @@ function describeLoadError(e: shaka.util.Error): string {
   return `Failed to load video (code ${e.code}).`;
 }
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel, moduleConfig, deviceProfile, onModuleConfigChange }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
@@ -454,9 +459,13 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               onInPointChange={setInPoint}
               onOutPointChange={setOutPoint}
               startOffset={startOffset}
+              moduleConfig={moduleConfig}
+              deviceProfile={deviceProfile}
+              onModuleConfigChange={onModuleConfigChange}
             />
           )}
-        {compareMode &&
+        {moduleConfig.qualityCompare &&
+          compareMode &&
           slaveSrc &&
           playerReady &&
           videoRef.current &&
@@ -508,7 +517,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
           </Suspense>
         )}
       </div>
-      {showFilmstrip &&
+      {moduleConfig.filmstrip &&
+        showFilmstrip &&
         playerReady &&
         videoRef.current &&
         playerRef.current && (

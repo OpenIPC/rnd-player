@@ -16,34 +16,34 @@ beforeEach(() => {
 
 describe("loadSettings", () => {
   it("returns defaults when nothing is stored", () => {
-    expect(loadSettings()).toEqual({ alwaysShowBitrate: false });
+    expect(loadSettings()).toEqual({ alwaysShowBitrate: false, moduleOverrides: {} });
   });
 
   it("returns stored values", () => {
     store.set("vp_settings", JSON.stringify({ alwaysShowBitrate: true }));
-    expect(loadSettings()).toEqual({ alwaysShowBitrate: true });
+    expect(loadSettings()).toEqual({ alwaysShowBitrate: true, moduleOverrides: {} });
   });
 
   it("merges partial stored values with defaults", () => {
     store.set("vp_settings", JSON.stringify({}));
-    expect(loadSettings()).toEqual({ alwaysShowBitrate: false });
+    expect(loadSettings()).toEqual({ alwaysShowBitrate: false, moduleOverrides: {} });
   });
 
   it("returns defaults for corrupt JSON", () => {
     store.set("vp_settings", "not json");
-    expect(loadSettings()).toEqual({ alwaysShowBitrate: false });
+    expect(loadSettings()).toEqual({ alwaysShowBitrate: false, moduleOverrides: {} });
   });
 });
 
 describe("saveSettings", () => {
   it("persists settings to localStorage", () => {
-    const settings: PlayerSettings = { alwaysShowBitrate: true };
+    const settings: PlayerSettings = { alwaysShowBitrate: true, moduleOverrides: {} };
     saveSettings(settings);
     expect(JSON.parse(store.get("vp_settings")!)).toEqual(settings);
   });
 
   it("round-trips correctly", () => {
-    const settings: PlayerSettings = { alwaysShowBitrate: true };
+    const settings: PlayerSettings = { alwaysShowBitrate: true, moduleOverrides: {} };
     saveSettings(settings);
     expect(loadSettings()).toEqual(settings);
   });

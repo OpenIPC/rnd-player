@@ -2260,3 +2260,31 @@ video::-webkit-media-text-track-container {
   height: 15px;
   cursor: pointer;
 }
+
+.vp-settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 14px;
+  margin-bottom: 4px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.vp-settings-desc {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 1px;
+}
+
+.vp-settings-row.vp-settings-disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.vp-settings-row.vp-settings-disabled input[type="checkbox"] {
+  cursor: default;
+}

@@ -19,6 +19,7 @@ interface UseKeyboardShortcutsOptions {
   onToggleSubtitleByIndex?: (index: number) => void;
   onToggleAllSubtitles?: () => void;
   onToggleHelp?: () => void;
+  enabled?: boolean;
 }
 
 interface ShuttleState {
@@ -37,6 +38,7 @@ export function useKeyboardShortcuts({
   onToggleSubtitleByIndex,
   onToggleAllSubtitles,
   onToggleHelp,
+  enabled = true,
 }: UseKeyboardShortcutsOptions): ShuttleState {
   const [shuttleSpeed, setShuttleSpeed] = useState(0);
   const [shuttleDirection, setShuttleDirection] = useState<-1 | 0 | 1>(0);
@@ -76,6 +78,8 @@ export function useKeyboardShortcuts({
   }, [videoEl]);
 
   useEffect(() => {
+    if (!enabled) return;
+
     const onKeyDown = (e: KeyboardEvent) => {
       // Ignore when typing in form elements
       const tag = (e.target as HTMLElement).tagName;
@@ -307,6 +311,7 @@ export function useKeyboardShortcuts({
     onToggleHelp,
     resetShuttle,
     startReverseLoop,
+    enabled,
   ]);
 
   return {

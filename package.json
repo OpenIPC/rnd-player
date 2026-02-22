@@ -12,7 +12,9 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "build:production": "VITE_MODULE_PRESET=production tsc -b && vite build",
+    "build:minimal": "VITE_MODULE_PRESET=minimal tsc -b && vite build"
   },
   "dependencies": {
     "mp4box": "^2.3.0",

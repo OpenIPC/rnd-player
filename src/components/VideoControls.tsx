@@ -14,22 +14,14 @@ import {
   SubtitleIcon,
   PipIcon,
   SettingsIcon,
-  CopyLinkIcon,
-  StatsNerdIcon,
-  AudioLevelsIcon,
-  FilmstripIcon,
-  InPointIcon,
-  OutPointIcon,
-  ClearMarkersIcon,
   FrameModeIcon,
-  SaveSegmentIcon,
-  CompareIcon,
-  TranslateIcon,
 } from "./icons";
-import { useSegmentExport, type ExportRendition } from "../hooks/useSegmentExport";
+import { useSegmentExport } from "../hooks/useSegmentExport";
 import { formatBitrate } from "../utils/formatBitrate";
 import { useMultiSubtitles, type TextTrackInfo } from "../hooks/useMultiSubtitles";
 import SubtitleOverlay from "./SubtitleOverlay";
+import ContextMenu from "./ContextMenu";
+import ExportPicker from "./ExportPicker";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
 const SettingsModal = lazy(() => import("./SettingsModal"));
@@ -37,8 +29,11 @@ import AdaptationToast from "./AdaptationToast";
 import { formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useSleepWakeRecovery } from "../hooks/useSleepWakeRecovery";
 import { loadSettings } from "../hooks/useSettings";
 import type { CompareViewState } from "./ShakaPlayer";
+import type { PlayerModuleConfig } from "../types/moduleConfig";
+import type { DeviceProfile } from "../utils/detectCapabilities";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -59,6 +54,9 @@ interface VideoControlsProps {
   onInPointChange: (time: number | null) => void;
   onOutPointChange: (time: number | null) => void;
   startOffset?: number;
+  moduleConfig: PlayerModuleConfig;
+  deviceProfile: DeviceProfile;
+  onModuleConfigChange: (config: PlayerModuleConfig) => void;
 }
 
 interface QualityOption {
@@ -112,6 +110,9 @@ export default function VideoControls({
   onInPointChange,
   onOutPointChange,
   startOffset = 0,
+  moduleConfig,
+  deviceProfile,
+  onModuleConfigChange,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -158,10 +159,11 @@ export default function VideoControls({
     clearKey,
   );
 
-  // ── Track last-known-good state for sleep/wake recovery ──
-  const lastTimeRef = useRef(videoEl.currentTime);
-  const wasPausedRef = useRef(videoEl.paused);
-  const guardUntilRef = useRef(0);
+  // ── Sleep/wake recovery (extracted hook) ──
+  const { lastTimeRef, wasPausedRef, guardUntilRef } = useSleepWakeRecovery(
+    videoEl,
+    moduleConfig.sleepWakeRecovery,
+  );
 
   // ── Video event listeners ──
   useEffect(() => {
@@ -367,44 +369,6 @@ export default function VideoControls({
       setIsAutoQuality(abrEnabled);
     }
   }, [showCompare, player]);
-
-  // ── Sleep/wake recovery ──
-  // Uses both visibilitychange and a timer-gap detector so we catch real
-  // system-sleep even when visibilitychange fires too early or not at all.
-  const GUARD_DURATION = 5_000; // ms – how long to intercept unwanted play/seek after wake
-
-  const startGuard = useCallback(() => {
-    guardUntilRef.current = Date.now() + GUARD_DURATION;
-    videoEl.currentTime = lastTimeRef.current;
-    if (wasPausedRef.current) {
-      videoEl.pause();
-    }
-  }, [videoEl]);
-
-  useEffect(() => {
-    const onVisibilityChange = () => {
-      if (!document.hidden) {
-        // Waking up — restore state and start guard window
-        startGuard();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [startGuard]);
-
-  // Timer-gap sleep detector: if a 1 s interval takes ≥ 4 s, the system slept
-  useEffect(() => {
-    let lastTick = Date.now();
-    const id = setInterval(() => {
-      const now = Date.now();
-      if (now - lastTick >= 4_000) {
-        startGuard();
-      }
-      lastTick = now;
-    }, 1_000);
-    return () => clearInterval(id);
-  }, [startGuard]);
 
   // Compare mode while paused: hide controls so the frame comparison is unobstructed.
   const compareHidesControls = !!showCompare && !playing;
@@ -647,6 +611,7 @@ export default function VideoControls({
     onToggleSubtitleByIndex: toggleSubtitleByIndex,
     onToggleAllSubtitles: stableToggleAllSubtitles,
     onToggleHelp: useCallback(() => setShowHelp((s) => !s), []),
+    enabled: moduleConfig.keyboardShortcuts,
   });
 
   // Multi-subtitle hook: fetches, parses, and filters active cues
@@ -1072,138 +1037,64 @@ export default function VideoControls({
       </div>
 
       {/* Context menu (right-click) — portaled so it stays above controls */}
-      {contextMenu &&
-        createPortal(
-          <div
-            className="vp-context-menu"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              className="vp-context-menu-item"
-              onClick={copyVideoUrl}
-            >
-              <CopyLinkIcon />
-              Copy video URL at current time
-            </div>
-            <div className="vp-context-menu-separator" />
-            <div
-              className="vp-context-menu-item"
-              onClick={() => {
-                onInPointChange(videoEl.currentTime);
-                setContextMenu(null);
-              }}
-            >
-              <InPointIcon />
-              Set in-point (I)
-            </div>
-            <div
-              className="vp-context-menu-item"
-              onClick={() => {
-                onOutPointChange(videoEl.currentTime);
-                setContextMenu(null);
-              }}
-            >
-              <OutPointIcon />
-              Set out-point (O)
-            </div>
-            {(inPoint != null || outPoint != null) && (
-              <div
-                className="vp-context-menu-item"
-                onClick={() => {
-                  onInPointChange(null);
-                  onOutPointChange(null);
-                  setContextMenu(null);
-                }}
-              >
-                <ClearMarkersIcon />
-                Clear in/out points
-              </div>
-            )}
-            {inPoint != null && outPoint != null && (
-              <div
-                className="vp-context-menu-item"
-                onClick={() => {
-                  setShowExportPicker(true);
-                  setContextMenu(null);
-                }}
-              >
-                <SaveSegmentIcon />
-                Save MP4...
-              </div>
-            )}
-            {activeTextIds.size > 0 && (() => { try { const raw = localStorage.getItem("vp_subtitle_positions"); return raw && Object.keys(JSON.parse(raw)).length > 0; } catch { return false; } })() && (
-              <div
-                className="vp-context-menu-item"
-                onClick={() => {
-                  setSubtitleResetSignal((s) => s + 1);
-                  setContextMenu(null);
-                }}
-              >
-                <SubtitleIcon />
-                Reset subtitle positions
-              </div>
-            )}
-            {activeTextIds.size > 0 && (() => { try { const raw = localStorage.getItem("vp_translate_settings"); if (!raw) return false; const s = JSON.parse(raw); return s.apiKey || s.endpoint; } catch { return false; } })() && (
-              <div
-                className="vp-context-menu-item"
-                onClick={() => {
-                  setTranslateSetupSignal((s) => s + 1);
-                  setContextMenu(null);
-                }}
-              >
-                <TranslateIcon />
-                Translation settings
-              </div>
-            )}
-            <div className="vp-context-menu-separator" />
-            <div
-              className="vp-context-menu-item"
-              onClick={() => {
-                setShowStats((s) => !s);
-                setContextMenu(null);
-              }}
-            >
-              <StatsNerdIcon />
-              {showStats ? "Hide stats for nerds" : "Stats for nerds"}
-            </div>
-            <div
-              className="vp-context-menu-item"
-              onClick={() => {
-                setShowAudioLevels((s) => !s);
-                setContextMenu(null);
-              }}
-            >
-              <AudioLevelsIcon />
-              {showAudioLevels ? "Hide audio levels" : "Audio levels"}
-            </div>
-            {onToggleCompare && (
-              <div
-                className="vp-context-menu-item"
-                onClick={() => {
-                  onToggleCompare();
-                  setContextMenu(null);
-                }}
-              >
-                <CompareIcon />
-                {showCompare ? "Hide quality compare" : "Quality compare"}
-              </div>
-            )}
-            {onToggleFilmstrip && (
-              <div
-                className="vp-context-menu-item"
-                onClick={() => {
-                  onToggleFilmstrip();
-                  setContextMenu(null);
-                }}
-              >
-                <FilmstripIcon />
-                {showFilmstrip ? "Hide filmstrip" : "Filmstrip timeline"}
-              </div>
-            )}
-          </div>,
-          containerEl
-        )}
+      {contextMenu && (
+        <ContextMenu
+          position={contextMenu}
+          containerEl={containerEl}
+          moduleConfig={moduleConfig}
+          onCopyUrl={copyVideoUrl}
+          onSetInPoint={() => {
+            onInPointChange(videoEl.currentTime);
+            setContextMenu(null);
+          }}
+          onSetOutPoint={() => {
+            onOutPointChange(videoEl.currentTime);
+            setContextMenu(null);
+          }}
+          onClearMarkers={() => {
+            onInPointChange(null);
+            onOutPointChange(null);
+            setContextMenu(null);
+          }}
+          onExportMp4={() => {
+            setShowExportPicker(true);
+            setContextMenu(null);
+          }}
+          onResetSubtitlePositions={() => {
+            setSubtitleResetSignal((s) => s + 1);
+            setContextMenu(null);
+          }}
+          onTranslationSettings={() => {
+            setTranslateSetupSignal((s) => s + 1);
+            setContextMenu(null);
+          }}
+          onToggleStats={() => {
+            setShowStats((s) => !s);
+            setContextMenu(null);
+          }}
+          onToggleAudioLevels={() => {
+            setShowAudioLevels((s) => !s);
+            setContextMenu(null);
+          }}
+          onToggleCompare={onToggleCompare ? () => {
+            onToggleCompare();
+            setContextMenu(null);
+          } : undefined}
+          onToggleFilmstrip={onToggleFilmstrip ? () => {
+            onToggleFilmstrip();
+            setContextMenu(null);
+          } : undefined}
+          hasMarkers={inPoint != null || outPoint != null}
+          hasInOutPoints={inPoint != null && outPoint != null}
+          hasActiveSubtitles={activeTextIds.size > 0}
+          hasSubtitlePositions={(() => { try { const raw = localStorage.getItem("vp_subtitle_positions"); return !!(raw && Object.keys(JSON.parse(raw)).length > 0); } catch { return false; } })()}
+          hasTranslateConfig={(() => { try { const raw = localStorage.getItem("vp_translate_settings"); if (!raw) return false; const s = JSON.parse(raw); return !!(s.apiKey || s.endpoint); } catch { return false; } })()}
+          showStats={showStats}
+          showAudioLevels={showAudioLevels}
+          showCompare={!!showCompare}
+          showFilmstrip={!!showFilmstrip}
+        />
+      )}
 
       {/* Copied toast */}
       {copiedMsg &&
@@ -1213,71 +1104,24 @@ export default function VideoControls({
         )}
 
       {/* ABR adaptation toast — only in Auto quality mode */}
-      {isAutoQuality &&
+      {moduleConfig.adaptationToast && isAutoQuality &&
         createPortal(
           <AdaptationToast player={player} videoEl={videoEl} />,
           containerEl
         )}
 
       {/* Export rendition picker */}
-      {showExportPicker &&
-        createPortal(
-          <div
-            className="vp-export-picker"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="vp-export-picker-card">
-              <div className="vp-export-picker-header">
-                Save MP4 — select rendition
-              </div>
-              {(() => {
-                const manifest = player.getManifest();
-                const variants = manifest?.variants ?? [];
-                const seen = new Map<string, ExportRendition>();
-                for (const v of variants) {
-                  if (!v.video || v.video.height == null) continue;
-                  const vbw = v.video.bandwidth ?? v.bandwidth;
-                  const key = `${v.video.height}_${vbw}`;
-                  if (!seen.has(key)) {
-                    seen.set(key, {
-                      width: v.video.width ?? 0,
-                      height: v.video.height,
-                      videoCodec: v.video.codecs ?? "",
-                      bandwidth: vbw,
-                    });
-                  }
-                }
-                const renditions = Array.from(seen.values()).sort(
-                  (a, b) => b.height - a.height || b.bandwidth - a.bandwidth,
-                );
-                return renditions.map((r) => (
-                  <div
-                    key={`${r.height}_${r.bandwidth}`}
-                    className="vp-export-picker-item"
-                    onClick={() => {
-                      setShowExportPicker(false);
-                      startExport(r);
-                    }}
-                  >
-                    {r.height}p
-                    <span className="vp-export-picker-detail">
-                      {r.videoCodec}
-                      {" · "}
-                      {formatBitrate(r.bandwidth)}
-                    </span>
-                  </div>
-                ));
-              })()}
-              <div
-                className="vp-export-picker-cancel"
-                onClick={() => setShowExportPicker(false)}
-              >
-                Cancel
-              </div>
-            </div>
-          </div>,
-          containerEl
-        )}
+      {showExportPicker && (
+        <ExportPicker
+          player={player}
+          containerEl={containerEl}
+          onSelect={(r) => {
+            setShowExportPicker(false);
+            startExport(r);
+          }}
+          onClose={() => setShowExportPicker(false)}
+        />
+      )}
 
       {/* Export progress toast */}
       {exporting &&
@@ -1291,12 +1135,12 @@ export default function VideoControls({
 
       {/* Subtitle overlay — portaled so it stays visible when controls auto-hide */}
       {createPortal(
-        <SubtitleOverlay activeCues={activeCues} trackOrder={trackOrder} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} translateSetupSignal={translateSetupSignal} onCopyText={handleSubtitleCopy} getContextCues={getContextCues} videoEl={videoEl} />,
+        <SubtitleOverlay activeCues={moduleConfig.subtitles ? activeCues : new Map()} trackOrder={moduleConfig.subtitles ? trackOrder : []} controlsVisible={visible} textTracks={textTracks} resetSignal={subtitleResetSignal} translateSetupSignal={translateSetupSignal} onCopyText={handleSubtitleCopy} getContextCues={getContextCues} videoEl={videoEl} />,
         containerEl
       )}
 
       {/* Stats for nerds panel — portaled into containerEl so it stays visible when controls auto-hide */}
-      {showStats &&
+      {moduleConfig.statsPanel && showStats &&
         createPortal(
           <Suspense fallback={null}>
             <StatsPanel
@@ -1309,7 +1153,7 @@ export default function VideoControls({
         )}
 
       {/* Audio level meters — portaled into containerEl so they stay visible when controls auto-hide */}
-      {showAudioLevels && (
+      {moduleConfig.audioLevels && showAudioLevels && (
         <Suspense fallback={null}>
           <AudioLevels
             videoEl={videoEl}
@@ -1376,7 +1220,12 @@ export default function VideoControls({
       {/* Settings modal — portaled to body */}
       {showSettings && (
         <Suspense fallback={null}>
-          <SettingsModal onClose={() => setShowSettings(false)} />
+          <SettingsModal
+            onClose={() => setShowSettings(false)}
+            moduleConfig={moduleConfig}
+            deviceProfile={deviceProfile}
+            onModuleConfigChange={onModuleConfigChange}
+          />
         </Suspense>
       )}
     </div>
