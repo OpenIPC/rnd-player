@@ -10,7 +10,6 @@ const FRAME_SEEK_EPSILON = 0.001;
 
 interface UseKeyboardShortcutsOptions {
   videoEl: HTMLVideoElement;
-  containerEl: HTMLDivElement;
   fps: number;
   onTogglePlay: () => void;
   onToggleMute: () => void;
@@ -29,7 +28,6 @@ interface ShuttleState {
 
 export function useKeyboardShortcuts({
   videoEl,
-  containerEl,
   fps,
   onTogglePlay,
   onToggleMute,
@@ -290,17 +288,14 @@ export function useKeyboardShortcuts({
       }
     };
 
-    containerEl.addEventListener("keydown", onKeyDown);
     document.addEventListener("keydown", onKeyDown);
 
     return () => {
-      containerEl.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keydown", onKeyDown);
       cancelAnimationFrame(rafRef.current);
     };
   }, [
     videoEl,
-    containerEl,
     fps,
     onTogglePlay,
     onToggleMute,

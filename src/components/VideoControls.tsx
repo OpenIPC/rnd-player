@@ -638,7 +638,6 @@ export default function VideoControls({
 
   const { shuttleSpeed, shuttleDirection } = useKeyboardShortcuts({
     videoEl,
-    containerEl,
     fps,
     onTogglePlay: togglePlay,
     onToggleMute: toggleMute,
