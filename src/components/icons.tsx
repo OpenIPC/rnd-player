@@ -245,6 +245,17 @@ export function ToggleViewIcon() {
   );
 }
 
+export function SceneMarkersIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <line x1="4" y1="3" x2="4" y2="17" strokeLinecap="round" />
+      <line x1="10" y1="3" x2="10" y2="17" strokeLinecap="round" />
+      <line x1="16" y1="3" x2="16" y2="17" strokeLinecap="round" />
+      <path d="M4 7h6M10 12h6" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

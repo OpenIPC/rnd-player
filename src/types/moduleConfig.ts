@@ -8,6 +8,7 @@ export interface PlayerModuleConfig {
   adaptationToast: boolean;
   keyboardShortcuts: boolean;
   sleepWakeRecovery: boolean;
+  sceneMarkers: boolean;
 }
 
 export const MODULE_DEFAULTS: PlayerModuleConfig = {
@@ -20,4 +21,5 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   adaptationToast: true,
   keyboardShortcuts: true,
   sleepWakeRecovery: true,
+  sceneMarkers: true,
 };

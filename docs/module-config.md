@@ -4,7 +4,7 @@ How the player enables and disables analysis modules at runtime and build time, 
 
 ## Core Concept
 
-Core playback (play/pause, seek, volume, quality, speed, fullscreen) is always available. Everything else is a **toggleable module** controlled by a unified `PlayerModuleConfig` — 9 boolean flags that gate rendering, event listeners, and lazy chunk loading.
+Core playback (play/pause, seek, volume, quality, speed, fullscreen) is always available. Everything else is a **toggleable module** controlled by a unified `PlayerModuleConfig` — 10 boolean flags that gate rendering, event listeners, and lazy chunk loading.
 
 ```
 PlayerModuleConfig {
@@ -17,6 +17,7 @@ PlayerModuleConfig {
   adaptationToast   — ABR adaptation toast notifications
   keyboardShortcuts — JKL shuttle, frame step, hotkeys
   sleepWakeRecovery — Visibilitychange + timer-gap sleep detector
+  sceneMarkers      — av1an scene boundary visualization (progress bar ticks, filmstrip lines)
 }
 ```
 
@@ -34,7 +35,7 @@ The `VITE_MODULE_PRESET` environment variable selects a named preset that is com
 |---|---|---|
 | `full` (default) | none | R&D / development |
 | `production` | filmstrip, qualityCompare, audioLevels, segmentExport | Lightweight deployment |
-| `minimal` | all 9 modules | Bare player with only core playback |
+| `minimal` | all 10 modules | Bare player with only core playback |
 
 ```bash
 npm run build                  # full preset (default)
@@ -123,6 +124,7 @@ App.tsx (mount)
             ├─ useKeyboardShortcuts receives enabled: moduleConfig.keyboardShortcuts
             ├─ useSleepWakeRecovery receives enabled: moduleConfig.sleepWakeRecovery
             ├─ ExportPicker gated via ContextMenu's moduleConfig.segmentExport
+            ├─ Scene ticks/tooltip/navigation gated on moduleConfig.sceneMarkers
             └─ SettingsModal receives all three props for the Features UI
 ```
 

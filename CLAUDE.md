@@ -24,7 +24,7 @@ R&D Player — a custom web video player built with React 19, TypeScript, and Sh
 
 Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 
-**App.tsx** — Root component. Renders a URL input form; on submit passes the manifest URL to ShakaPlayer. On mount, runs device capability detection (`detectCapabilities`), computes the module config via `autoConfig` merged with user overrides from localStorage, and passes `moduleConfig`/`deviceProfile`/`onModuleConfigChange` down to ShakaPlayer. Waits for capability detection before rendering the player.
+**App.tsx** — Root component. Renders a URL input form; on submit passes the manifest URL to ShakaPlayer. On mount, runs device capability detection (`detectCapabilities`), computes the module config via `autoConfig` merged with user overrides from localStorage, and passes `moduleConfig`/`deviceProfile`/`onModuleConfigChange` down to ShakaPlayer. Waits for capability detection before rendering the player. Owns all scene data loading: fetches from `scenes` URL param on mount, provides a file picker button (orange "Scenes") in the URL form, and exposes `onLoadSceneData` (triggers file picker), `onLoadSceneFile` (reads+parses a `File`), and `onSceneDataChange` (for FPS correction and clearing) callbacks. The hidden file input is always mounted so it works from any screen.
 
 **ShakaPlayer** (`src/components/ShakaPlayer.tsx`) — Bridge between React and the native Shaka Player library. Handles:
 - One-time polyfill installation at module level
@@ -34,13 +34,15 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - Error handling with severity categorization
 - Clean destruction on unmount via a `destroyed` safety flag
 - Module config gating: FilmstripTimeline render gated on `moduleConfig.filmstrip`, QualityCompare on `moduleConfig.qualityCompare`
+- Passes scene data through to VideoControls and FilmstripTimeline
 
 **VideoControls** (`src/components/VideoControls.tsx`) — Custom overlay UI with 20+ state variables managing:
 - Play/pause, seek bar, volume slider, quality/speed/audio/subtitle popups
 - Auto-hide (3s inactivity timer)
 - Fullscreen API integration
-- Module config gating: each optional feature (stats, audio levels, adaptation toast, subtitles, segment export, keyboard shortcuts, sleep/wake) is conditionally rendered or enabled based on `moduleConfig` props
+- Module config gating: each optional feature (stats, audio levels, adaptation toast, subtitles, segment export, keyboard shortcuts, sleep/wake, scene markers) is conditionally rendered or enabled based on `moduleConfig` props
 - Delegates right-click menu to `ContextMenu`, export picker to `ExportPicker`, sleep/wake to `useSleepWakeRecovery`
+- Scene markers: renders orange tick marks on progress bar at scene boundaries, scene-aware hover tooltip ("01:23.456 · Scene 3"), next/prev scene navigation via `goToNextScene`/`goToPrevScene` (mapped to PageDown/PageUp), drag-and-drop `.json` scene files onto the player (delegates to `onLoadSceneFile`), FPS correction when detected FPS differs from initial, `scenes=` param in shareable URL
 
 **ContextMenu** (`src/components/ContextMenu.tsx`) — Right-click context menu extracted from VideoControls. Renders via `createPortal` into the container element. Accepts `moduleConfig` and conditionally shows menu items: stats (`statsPanel`), audio levels (`audioLevels`), quality compare (`qualityCompare`), filmstrip (`filmstrip`), save MP4 (`segmentExport`). Always shows copy URL, in/out point controls, and subtitle-related items.
 
@@ -54,6 +56,8 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - GOP tooltip on hover over bitrate bars showing per-frame size bars and per-type stats
 - Save frame via right-click context menu with position-based frame targeting (see `docs/frame-pipeline.md`)
 - Color-coded frame borders: red=I, blue=P, green=B
+- Scene markers: dashed orange vertical lines (`rgba(255, 160, 40, 0.7)`) at scene boundaries spanning full canvas height, scene number labels ("S1", "S2", ...) in ruler area, hover tooltip when cursor is within ~3px of a boundary line
+- Right-click context menu includes "Load scene data..." or "Clear scene data" (mutually exclusive, gated on `onLoadSceneData`/`onClearSceneData` props)
 
 **useThumbnailGenerator** (`src/hooks/useThumbnailGenerator.ts`) — Hook that manages the thumbnail worker lifecycle. Extracts segment URLs from Shaka's manifest, spawns the worker, and handles lazy-loading based on visible viewport. When `clearKey` is provided for encrypted streams, passes the hex key to the worker for self-decryption. Exposes:
 - `thumbnails` — `Map<number, ImageBitmap>`: I-frame thumbnails keyed by segment start time
@@ -108,15 +112,19 @@ When activated, `configureSoftwareDecryption()` registers an async Shaka respons
 
 **useSleepWakeRecovery** (`src/hooks/useSleepWakeRecovery.ts`) — Hook extracted from VideoControls that detects system sleep via two complementary strategies: `visibilitychange` events and a timer-gap detector (1s interval that triggers when elapsed time exceeds 4s). On wake, starts a 5s guard window that intercepts unwanted play/seek events from Shaka's internal recovery. Accepts `videoEl` and `enabled` (gated on `moduleConfig.sleepWakeRecovery`). Returns `{ lastTimeRef, wasPausedRef, guardUntilRef }` so VideoControls' play/pause handlers can read them.
 
-**useKeyboardShortcuts** (`src/hooks/useKeyboardShortcuts.ts`) — Hook for JKL shuttle, frame step, volume, fullscreen, in/out points, subtitle toggles, and help modal hotkeys. Accepts an `enabled` option (default `true`, gated on `moduleConfig.keyboardShortcuts`) — when `false`, the `useEffect` returns early without registering any key listeners.
+**useKeyboardShortcuts** (`src/hooks/useKeyboardShortcuts.ts`) — Hook for JKL shuttle, frame step, volume, fullscreen, in/out points, subtitle toggles, help modal hotkeys, and scene navigation (PageDown/PageUp). Accepts an `enabled` option (default `true`, gated on `moduleConfig.keyboardShortcuts`) — when `false`, the `useEffect` returns early without registering any key listeners. Scene navigation callbacks (`onNextScene`/`onPrevScene`) are optional and only wired when scene data is loaded.
 
-**PlayerModuleConfig** (`src/types/moduleConfig.ts`) — Interface with 9 boolean fields controlling which optional modules are active: `filmstrip`, `qualityCompare`, `statsPanel`, `audioLevels`, `segmentExport`, `subtitles`, `adaptationToast`, `keyboardShortcuts`, `sleepWakeRecovery`. `MODULE_DEFAULTS` has all fields `true`.
+**PlayerModuleConfig** (`src/types/moduleConfig.ts`) — Interface with 10 boolean fields controlling which optional modules are active: `filmstrip`, `qualityCompare`, `statsPanel`, `audioLevels`, `segmentExport`, `subtitles`, `adaptationToast`, `keyboardShortcuts`, `sleepWakeRecovery`, `sceneMarkers`. `MODULE_DEFAULTS` has all fields `true`.
+
+**SceneData types** (`src/types/sceneData.ts`) — Types for av1an scene detection integration: `Av1anScene` (raw scene entry with `start_frame`/`end_frame`), `Av1anSceneJson` (top-level JSON shape with `frames` count and `scenes` array), `SceneData` (processed: `totalFrames`, `boundaries: number[]` in seconds, `fps`).
+
+**parseSceneData** (`src/utils/parseSceneData.ts`) — Pure function `parseSceneData(json: unknown, fps: number): SceneData | null`. Validates av1an JSON structure, converts `start_frame > 0` to seconds via `frame / fps`, sorts and deduplicates boundaries. Returns null on invalid input or fps <= 0.
 
 **detectCapabilities** (`src/utils/detectCapabilities.ts`) — Async function that probes browser APIs (`VideoDecoder`, `WebGL2`, `AudioContext`, `Worker`, `OffscreenCanvas`) and hardware (`hardwareConcurrency`, `deviceMemory`) to produce a `DeviceProfile`. Result is cached at module level. Classifies a `performanceTier` of `'low'`/`'mid'`/`'high'` used for soft-gating heavy modules.
 
 **autoConfig** (`src/utils/autoConfig.ts`) — Maps a `DeviceProfile` + optional build preset to a `PlayerModuleConfig`. Applies hard gates (missing APIs disable dependent modules) and soft gates (low-tier devices disable filmstrip + qualityCompare). See `docs/module-config.md` for the full three-layer config system.
 
-**Utilities** in `src/utils/`: `formatTime`, `formatTrackRes`, `safeNum`, `formatBitrate` — small pure functions.
+**Utilities** in `src/utils/`: `formatTime`, `formatTrackRes`, `safeNum`, `formatBitrate`, `parseSceneData` — small pure functions.
 
 ## Testing
 

@@ -19,6 +19,8 @@ interface UseKeyboardShortcutsOptions {
   onToggleSubtitleByIndex?: (index: number) => void;
   onToggleAllSubtitles?: () => void;
   onToggleHelp?: () => void;
+  onNextScene?: () => void;
+  onPrevScene?: () => void;
   enabled?: boolean;
 }
 
@@ -38,6 +40,8 @@ export function useKeyboardShortcuts({
   onToggleSubtitleByIndex,
   onToggleAllSubtitles,
   onToggleHelp,
+  onNextScene,
+  onPrevScene,
   enabled = true,
 }: UseKeyboardShortcutsOptions): ShuttleState {
   const [shuttleSpeed, setShuttleSpeed] = useState(0);
@@ -282,6 +286,22 @@ export function useKeyboardShortcuts({
           break;
         }
 
+        case "PageDown": {
+          if (onNextScene) {
+            e.preventDefault();
+            onNextScene();
+          }
+          break;
+        }
+
+        case "PageUp": {
+          if (onPrevScene) {
+            e.preventDefault();
+            onPrevScene();
+          }
+          break;
+        }
+
         case "h":
         case "H":
         case "?": {
@@ -309,6 +329,8 @@ export function useKeyboardShortcuts({
     onToggleSubtitleByIndex,
     onToggleAllSubtitles,
     onToggleHelp,
+    onNextScene,
+    onPrevScene,
     resetShuttle,
     startReverseLoop,
     enabled,

@@ -6,8 +6,9 @@ import type { BitrateGraphData } from "../hooks/useBitrateGraph";
 import { formatTime, formatTimecode } from "../utils/formatTime";
 import type { TimecodeMode } from "../utils/formatTime";
 import { formatBitrate } from "../utils/formatBitrate";
-import { SaveSegmentIcon } from "./icons";
+import { SaveSegmentIcon, SceneMarkersIcon } from "./icons";
 import type { FrameType } from "../types/thumbnailWorker.types";
+import type { SceneData } from "../types/sceneData";
 import SegmentFramesModal from "./SegmentFramesModal";
 
 interface FilmstripTimelineProps {
@@ -24,6 +25,9 @@ interface FilmstripTimelineProps {
   ssimHistory?: React.RefObject<Map<number, number>>;
   msSsimHistory?: React.RefObject<Map<number, number>>;
   vmafHistory?: React.RefObject<Map<number, number>>;
+  sceneData?: SceneData | null;
+  onLoadSceneData?: () => void;
+  onClearSceneData?: () => void;
 }
 
 const RULER_HEIGHT = 22;
@@ -37,6 +41,8 @@ const FONT = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-s
 const FRAME_BORDER_I = "rgba(255, 50, 50, 0.8)";
 const FRAME_BORDER_P = "rgba(60, 130, 255, 0.8)";
 const FRAME_BORDER_B = "rgba(50, 200, 50, 0.8)";
+const SCENE_LINE_COLOR = "rgba(255, 160, 40, 0.7)";
+const SCENE_LABEL_COLOR = "rgba(255, 160, 40, 0.5)";
 const GRAPH_MEASURED_COLOR = "rgba(74, 158, 237, 0.6)";
 const GRAPH_ESTIMATED_COLOR = "rgba(74, 158, 237, 0.25)";
 const GRAPH_AVG_COLOR = "rgba(74, 158, 237, 0.5)";
@@ -86,6 +92,9 @@ export default function FilmstripTimeline({
   ssimHistory,
   msSsimHistory,
   vmafHistory,
+  sceneData,
+  onLoadSceneData,
+  onClearSceneData,
 }: FilmstripTimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -106,6 +115,8 @@ export default function FilmstripTimeline({
   const [gopTooltip, setGopTooltip] = useState<{ x: number; y: number; segIdx: number; segDuration: number } | null>(null);
   const gopTooltipRef = useRef<{ x: number; y: number; segIdx: number; segDuration: number } | null>(null);
   const [segmentModal, setSegmentModal] = useState<{ startTime: number; endTime: number } | null>(null);
+  const [sceneTooltip, setSceneTooltip] = useState<{ x: number; y: number; sceneNum: number; time: number } | null>(null);
+  const sceneTooltipRef = useRef<{ x: number; y: number; sceneNum: number; time: number } | null>(null);
 
   const containerWidthRef = useRef(0);
   const durationRef = useRef(0);
@@ -160,6 +171,9 @@ export default function FilmstripTimeline({
     return null;
   })();
   fpsRef.current = detectedFps ?? fps;
+
+  const sceneDataRef = useRef(sceneData);
+  sceneDataRef.current = sceneData;
 
   const startOffsetRef = useRef(startOffset);
   startOffsetRef.current = startOffset;
@@ -877,6 +891,46 @@ export default function FilmstripTimeline({
         }
       }
 
+      // ── Scene markers ──
+      const sd = sceneDataRef.current;
+      if (sd && sd.boundaries.length > 0) {
+        ctx.strokeStyle = SCENE_LINE_COLOR;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+
+        for (const boundary of sd.boundaries) {
+          const bx = boundary * pxPerSec - sl;
+          if (bx < -2 || bx > w + 2) continue;
+          ctx.beginPath();
+          ctx.moveTo(bx, 0);
+          ctx.lineTo(bx, h);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Scene labels in ruler area
+        ctx.font = "9px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+        ctx.fillStyle = SCENE_LABEL_COLOR;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+
+        // S1 at position 0
+        const s1x = 0 * pxPerSec - sl;
+        if (s1x >= -30 && s1x <= w + 2) {
+          ctx.fillText("S1", s1x + 3, 2);
+        }
+        // S2, S3, ... at each boundary
+        for (let i = 0; i < sd.boundaries.length; i++) {
+          const bx = sd.boundaries[i] * pxPerSec - sl;
+          if (bx < -30 || bx > w + 2) continue;
+          ctx.fillText(`S${i + 2}`, bx + 3, 2);
+        }
+
+        // Reset text settings
+        ctx.font = FONT;
+        ctx.textAlign = "center";
+      }
+
       // ── Playhead ──
       const playheadX = time * pxPerSec - sl;
       if (playheadX >= -2 && playheadX <= w + 2) {
@@ -969,6 +1023,40 @@ export default function FilmstripTimeline({
 
     const onMouseMove = (e: MouseEvent) => {
       if (isDraggingRef.current) return;
+
+      // Check for scene boundary proximity
+      const sd = sceneDataRef.current;
+      if (sd && sd.boundaries.length > 0) {
+        const rect2 = canvas.getBoundingClientRect();
+        const localX2 = e.clientX - rect2.left;
+        const hoverTime = (localX2 + scrollLeftRef.current) / pxPerSecRef.current;
+        const proximityPx = 3;
+        const proximityTime = proximityPx / pxPerSecRef.current;
+
+        let hitBoundary: { sceneNum: number; time: number } | null = null;
+        for (let i = 0; i < sd.boundaries.length; i++) {
+          if (Math.abs(sd.boundaries[i] - hoverTime) <= proximityTime) {
+            hitBoundary = { sceneNum: i + 2, time: sd.boundaries[i] };
+            break;
+          }
+        }
+
+        if (hitBoundary) {
+          sceneTooltipRef.current = { x: e.clientX, y: e.clientY, ...hitBoundary };
+          setSceneTooltip({ x: e.clientX, y: e.clientY, ...hitBoundary });
+        } else {
+          if (sceneTooltipRef.current) {
+            sceneTooltipRef.current = null;
+            setSceneTooltip(null);
+          }
+        }
+      } else {
+        if (sceneTooltipRef.current) {
+          sceneTooltipRef.current = null;
+          setSceneTooltip(null);
+        }
+      }
+
       if (!showBitrateGraphRef.current) {
         if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
         return;
@@ -1036,6 +1124,7 @@ export default function FilmstripTimeline({
 
     const onMouseLeave = () => {
       if (gopTooltipRef.current) { gopTooltipRef.current = null; setGopTooltip(null); }
+      if (sceneTooltipRef.current) { sceneTooltipRef.current = null; setSceneTooltip(null); }
     };
 
     canvas.addEventListener("pointerdown", onPointerDown);
@@ -1292,6 +1381,34 @@ export default function FilmstripTimeline({
             <SaveSegmentIcon />
             Save frame...
           </div>
+          {(onLoadSceneData || onClearSceneData) && (
+            <>
+              <div className="vp-context-menu-separator" />
+              {sceneData && onClearSceneData ? (
+                <div
+                  className="vp-context-menu-item"
+                  onClick={() => {
+                    onClearSceneData();
+                    setCtxMenu(null);
+                  }}
+                >
+                  <SceneMarkersIcon />
+                  Clear scene data
+                </div>
+              ) : onLoadSceneData ? (
+                <div
+                  className="vp-context-menu-item"
+                  onClick={() => {
+                    onLoadSceneData();
+                    setCtxMenu(null);
+                  }}
+                >
+                  <SceneMarkersIcon />
+                  Load scene data...
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
       )}
       {gopTooltip && (() => {
@@ -1337,6 +1454,16 @@ export default function FilmstripTimeline({
           </div>
         );
       })()}
+      {sceneTooltip && (
+        <div
+          className="vp-gop-tooltip"
+          style={{ left: sceneTooltip.x, top: sceneTooltip.y }}
+        >
+          <div className="vp-gop-tooltip-label" style={{ color: "rgba(255, 160, 40, 0.85)" }}>
+            Scene {sceneTooltip.sceneNum} · {formatTime(sceneTooltip.time)}
+          </div>
+        </div>
+      )}
       {segmentModal && (
         <SegmentFramesModal
           segmentStartTime={segmentModal.startTime}

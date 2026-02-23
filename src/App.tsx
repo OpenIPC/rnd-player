@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import ShakaPlayer from "./components/ShakaPlayer";
 import type { PlayerModuleConfig } from "./types/moduleConfig";
+import type { SceneData } from "./types/sceneData";
 import type { DeviceProfile } from "./utils/detectCapabilities";
 import { detectCapabilities } from "./utils/detectCapabilities";
 import { autoConfig } from "./utils/autoConfig";
+import { parseSceneData } from "./utils/parseSceneData";
 import { loadModuleOverrides, loadSettings, saveSettings } from "./hooks/useSettings";
 import "./App.css";
 
@@ -27,6 +29,8 @@ function parseUrlParams(): {
   compareAmp: number | null;
   comparePal: string | null;
   compareVmodel: string | null;
+  scenes: string | null;
+  sceneFps: number | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
@@ -48,6 +52,8 @@ function parseUrlParams(): {
   const amp = params.get("amp");
   const pal = params.get("pal");
   const vmodel = params.get("vmodel");
+  const scenes = params.get("scenes");
+  const sceneFpsRaw = params.get("sceneFps");
 
   return {
     src: v || null,
@@ -69,6 +75,8 @@ function parseUrlParams(): {
     compareAmp: amp ? parseInt(amp, 10) || null : null,
     comparePal: pal || null,
     compareVmodel: vmodel || null,
+    scenes: scenes || null,
+    sceneFps: sceneFpsRaw ? parseFloat(sceneFpsRaw) || null : null,
   };
 }
 
@@ -115,6 +123,9 @@ function App() {
   const [showDemo, setShowDemo] = useState(false);
   const [deviceProfile, setDeviceProfile] = useState<DeviceProfile | null>(null);
   const [moduleConfig, setModuleConfig] = useState<PlayerModuleConfig | null>(null);
+  const [sceneData, setSceneData] = useState<SceneData | null>(null);
+  const [scenesUrl, setScenesUrl] = useState<string | null>(initial.scenes);
+  const sceneFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     detectCapabilities().then((profile) => {
@@ -133,6 +144,73 @@ function App() {
     });
   }, []);
 
+  // Fetch scene data from URL param on mount
+  useEffect(() => {
+    if (!initial.scenes) return;
+    fetch(initial.scenes)
+      .then((r) => r.json())
+      .then((json) => {
+        const fps = initial.sceneFps ?? 30;
+        const parsed = parseSceneData(json, fps);
+        if (parsed) setSceneData(parsed);
+      })
+      .catch(() => {
+        // Silently ignore fetch/parse errors for scene data
+      });
+  }, []);
+
+  const sceneDataFpsRef = useRef(30);
+  useEffect(() => {
+    if (sceneData?.fps) sceneDataFpsRef.current = sceneData.fps;
+  }, [sceneData?.fps]);
+
+  const handleSceneFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const json = JSON.parse(reader.result as string);
+        const parsed = parseSceneData(json, sceneDataFpsRef.current);
+        if (parsed) {
+          setSceneData(parsed);
+          setScenesUrl(null);
+        }
+      } catch {
+        // Invalid JSON
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so the same file can be re-selected
+    e.target.value = "";
+  }, []);
+
+  const handleSceneDataChange = useCallback((data: SceneData | null) => {
+    setSceneData(data);
+    if (!data) setScenesUrl(null);
+  }, []);
+
+  const handleLoadSceneData = useCallback(() => {
+    sceneFileRef.current?.click();
+  }, []);
+
+  const handleLoadSceneFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const json = JSON.parse(reader.result as string);
+        const parsed = parseSceneData(json, sceneDataFpsRef.current);
+        if (parsed) {
+          setSceneData(parsed);
+          setScenesUrl(null);
+        }
+      } catch {
+        // Invalid JSON
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
   const handleModuleConfigChange = useCallback((next: PlayerModuleConfig) => {
     setModuleConfig(next);
     const settings = loadSettings();
@@ -140,9 +218,20 @@ function App() {
     saveSettings(settings);
   }, []);
 
+  const sceneFileInput = (
+    <input
+      ref={sceneFileRef}
+      type="file"
+      accept=".json"
+      style={{ display: "none" }}
+      onChange={handleSceneFileChange}
+    />
+  );
+
   if (!src) {
     return (
       <div className="player-container">
+        {sceneFileInput}
         <form
           className="url-form"
           onSubmit={(e) => {
@@ -168,6 +257,14 @@ function App() {
             onClick={() => setShowDemo(true)}
           >
             Demo
+          </button>
+          <button
+            type="button"
+            className="url-scenes"
+            onClick={() => sceneFileRef.current?.click()}
+          >
+            Scenes
+            {sceneData && <span className="url-scenes-dot" />}
           </button>
         </form>
         <span className="url-version">
@@ -208,11 +305,12 @@ function App() {
   }
 
   if (!moduleConfig || !deviceProfile) {
-    return <div className="player-container" />;
+    return <div className="player-container">{sceneFileInput}</div>;
   }
 
   return (
     <div className="player-container">
+      {sceneFileInput}
       <ShakaPlayer
         src={src}
         autoPlay
@@ -237,6 +335,11 @@ function App() {
         moduleConfig={moduleConfig}
         deviceProfile={deviceProfile}
         onModuleConfigChange={handleModuleConfigChange}
+        sceneData={sceneData}
+        onSceneDataChange={handleSceneDataChange}
+        onLoadSceneData={handleLoadSceneData}
+        onLoadSceneFile={handleLoadSceneFile}
+        scenesUrl={scenesUrl}
       />
     </div>
   );

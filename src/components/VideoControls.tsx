@@ -33,6 +33,7 @@ import { useSleepWakeRecovery } from "../hooks/useSleepWakeRecovery";
 import { loadSettings } from "../hooks/useSettings";
 import type { CompareViewState } from "./ShakaPlayer";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
+import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 
 interface VideoControlsProps {
@@ -57,6 +58,10 @@ interface VideoControlsProps {
   moduleConfig: PlayerModuleConfig;
   deviceProfile: DeviceProfile;
   onModuleConfigChange: (config: PlayerModuleConfig) => void;
+  sceneData?: SceneData | null;
+  onSceneDataChange?: (data: SceneData | null) => void;
+  onLoadSceneFile?: (file: File) => void;
+  scenesUrl?: string | null;
 }
 
 interface QualityOption {
@@ -113,6 +118,10 @@ export default function VideoControls({
   moduleConfig,
   deviceProfile,
   onModuleConfigChange,
+  sceneData,
+  onSceneDataChange,
+  onLoadSceneFile,
+  scenesUrl,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -164,6 +173,66 @@ export default function VideoControls({
     videoEl,
     moduleConfig.sleepWakeRecovery,
   );
+
+  // ── Scene data: FPS correction ──
+  useEffect(() => {
+    if (!sceneData || !detectedFps || !onSceneDataChange) return;
+    if (Math.abs(detectedFps - sceneData.fps) < 0.01) return;
+    // Recalculate boundaries with corrected FPS
+    const ratio = sceneData.fps / detectedFps;
+    const corrected: SceneData = {
+      ...sceneData,
+      boundaries: sceneData.boundaries.map((b) => b * ratio),
+      fps: detectedFps,
+    };
+    onSceneDataChange(corrected);
+  }, [detectedFps, sceneData, onSceneDataChange]);
+
+  // ── Scene navigation ──
+  const SCENE_EPSILON = 0.05;
+
+  const goToNextScene = useCallback(() => {
+    if (!sceneData || sceneData.boundaries.length === 0) return;
+    const t = videoEl.currentTime;
+    const next = sceneData.boundaries.find((b) => b > t + SCENE_EPSILON);
+    if (next != null) videoEl.currentTime = next;
+  }, [sceneData, videoEl]);
+
+  const goToPrevScene = useCallback(() => {
+    if (!sceneData || sceneData.boundaries.length === 0) return;
+    const t = videoEl.currentTime;
+    const boundaries = sceneData.boundaries;
+    let prev: number | undefined;
+    for (let i = boundaries.length - 1; i >= 0; i--) {
+      if (boundaries[i] < t - SCENE_EPSILON) {
+        prev = boundaries[i];
+        break;
+      }
+    }
+    if (prev != null) videoEl.currentTime = prev;
+    else videoEl.currentTime = 0;
+  }, [sceneData, videoEl]);
+
+  // ── Drag-and-drop scene JSON onto player ──
+  useEffect(() => {
+    if (!moduleConfig.sceneMarkers || !onLoadSceneFile) return;
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      const file = e.dataTransfer?.files?.[0];
+      if (!file || !file.name.endsWith(".json")) return;
+      onLoadSceneFile(file);
+    };
+    containerEl.addEventListener("dragover", onDragOver);
+    containerEl.addEventListener("drop", onDrop);
+    return () => {
+      containerEl.removeEventListener("dragover", onDragOver);
+      containerEl.removeEventListener("drop", onDrop);
+    };
+  }, [containerEl, moduleConfig.sceneMarkers, onLoadSceneFile]);
 
   // ── Video event listeners ──
   useEffect(() => {
@@ -417,7 +486,15 @@ export default function VideoControls({
     const onClick = (e: MouseEvent) => {
       // Only primary (left) button toggles play/pause
       if (e.button !== 0) return;
+      // Skip if a context menu action was just clicked — the menu portal
+      // is removed before this handler runs, so closest() can't match it.
+      if (contextMenuDismissedRef.current) {
+        contextMenuDismissedRef.current = false;
+        return;
+      }
       const target = e.target as HTMLElement;
+      // Skip programmatic .click() on file inputs (e.g. context menu "Load scene data...")
+      if (target.tagName === "INPUT" && (target as HTMLInputElement).type === "file") return;
       // Ignore clicks on control bar or popups
       if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop") || target.closest(".vp-adaptation-toast")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
@@ -457,12 +534,18 @@ export default function VideoControls({
   }, [containerEl]);
 
   // ── Context menu (right-click) ──
+  // Track when a context menu click just dismissed the menu, so the
+  // play/pause click handler can ignore the same click event.
+  const contextMenuDismissedRef = useRef(false);
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       setContextMenu({ x: e.clientX, y: e.clientY });
     };
-    const dismissContextMenu = () => setContextMenu(null);
+    const dismissContextMenu = () => {
+      if (contextMenu) contextMenuDismissedRef.current = true;
+      setContextMenu(null);
+    };
 
     containerEl.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("click", dismissContextMenu);
@@ -470,7 +553,7 @@ export default function VideoControls({
       containerEl.removeEventListener("contextmenu", onContextMenu);
       document.removeEventListener("click", dismissContextMenu);
     };
-  }, [containerEl]);
+  }, [containerEl, contextMenu]);
 
   // ── Handlers ──
   const togglePlay = () => {
@@ -611,6 +694,8 @@ export default function VideoControls({
     onToggleSubtitleByIndex: toggleSubtitleByIndex,
     onToggleAllSubtitles: stableToggleAllSubtitles,
     onToggleHelp: useCallback(() => setShowHelp((s) => !s), []),
+    onNextScene: sceneData ? goToNextScene : undefined,
+    onPrevScene: sceneData ? goToPrevScene : undefined,
     enabled: moduleConfig.keyboardShortcuts,
   });
 
@@ -676,6 +761,7 @@ export default function VideoControls({
     params.set("v", src);
     params.set("t", `${parseFloat(videoEl.currentTime.toFixed(3))}s`);
     if (clearKey) params.set("key", clearKey);
+    if (scenesUrl) params.set("scenes", scenesUrl);
     if (compareSrc) params.set("compare", compareSrc);
     if (compareHeightA) params.set("qa", String(compareHeightA));
     if (compareHeightB) params.set("qb", String(compareHeightB));
@@ -790,6 +876,14 @@ export default function VideoControls({
               style={{ left: `${hoverInfo.pct}%` }}
             >
               {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
+              {moduleConfig.sceneMarkers && sceneData && sceneData.boundaries.length > 0 && (() => {
+                let sceneNum = 1;
+                for (const b of sceneData.boundaries) {
+                  if (hoverInfo.time >= b) sceneNum++;
+                  else break;
+                }
+                return ` \u00b7 Scene ${sceneNum}`;
+              })()}
             </div>
           )}
           <div className="vp-progress-track">
@@ -822,6 +916,14 @@ export default function VideoControls({
                 style={{ left: `${(outPoint / duration) * 100}%` }}
               />
             )}
+            {moduleConfig.sceneMarkers && sceneData && duration > 0 &&
+              sceneData.boundaries.map((t, i) => (
+                <div
+                  key={i}
+                  className="vp-scene-tick"
+                  style={{ left: `${(t / duration) * 100}%` }}
+                />
+              ))}
           </div>
           <input
             className="vp-progress-input"
@@ -1187,6 +1289,8 @@ export default function VideoControls({
                 <div className="vp-help-row"><kbd>Shift+&darr;</kbd><span>Back 1 second</span></div>
                 <div className="vp-help-row"><kbd>Home</kbd><span>Go to beginning</span></div>
                 <div className="vp-help-row"><kbd>End</kbd><span>Go to end</span></div>
+                <div className="vp-help-row"><kbd>PgDn</kbd><span>Next scene boundary</span></div>
+                <div className="vp-help-row"><kbd>PgUp</kbd><span>Previous scene boundary</span></div>
               </div>
               <div className="vp-help-section">
                 <h4 className="vp-help-section-title">Audio</h4>

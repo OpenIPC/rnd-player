@@ -72,6 +72,11 @@ const MODULE_INFO: ModuleInfo[] = [
     label: "Sleep/wake recovery",
     description: "Restore playback position after system sleep",
   },
+  {
+    key: "sceneMarkers",
+    label: "Scene markers",
+    description: "av1an scene boundary visualization on progress bar and filmstrip",
+  },
 ];
 
 export default function SettingsModal({
