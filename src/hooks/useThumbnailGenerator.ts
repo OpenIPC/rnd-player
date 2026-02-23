@@ -34,6 +34,13 @@ export type RequestIntraBatchFn = (
   priorityTime: number,
 ) => void;
 
+export interface BoundaryPreview {
+  before: ImageBitmap | null;
+  after: ImageBitmap | null;
+}
+
+export type RequestBoundaryPreviewFn = (boundaryTime: number, frameNumber: number) => void;
+
 export interface ThumbnailGeneratorResult {
   thumbnails: Map<number, ImageBitmap>;
   segmentTimes: number[];
@@ -49,6 +56,9 @@ export interface ThumbnailGeneratorResult {
   requestIntraBatch: RequestIntraBatchFn;
   decodeSegmentFrames: DecodeSegmentFramesFn;
   cancelDecodeSegment: CancelDecodeSegmentFn;
+  boundaryPreviews: Map<number, BoundaryPreview>;
+  requestBoundaryPreview: RequestBoundaryPreviewFn;
+  clearBoundaryPreviews: () => void;
 }
 
 function isWebCodecsSupported(): boolean {
@@ -99,6 +109,7 @@ export function useThumbnailGenerator(
   const [intraFrameTypes, setIntraFrameTypes] = useState<Map<number, FrameType[]>>(new Map());
   const [intraTimestamps, setIntraTimestamps] = useState<Map<number, number[]>>(new Map());
   const [gopStructures, setGopStructures] = useState<Map<number, GopFrame[]>>(new Map());
+  const [boundaryPreviews, setBoundaryPreviews] = useState<Map<number, BoundaryPreview>>(new Map());
 
   const workerRef = useRef<Worker | null>(null);
   const thumbnailsRef = useRef<Map<number, ImageBitmap>>(new Map());
@@ -111,6 +122,8 @@ export function useThumbnailGenerator(
   const gopStructuresRef = useRef<Map<number, GopFrame[]>>(new Map());
   const lastSentIntraRef = useRef<string>("");
   const decodeCallbacksRef = useRef<Map<string, { onFrame: (frame: SegmentFrame) => void; onDone: (totalFrames: number) => void }>>(new Map());
+  const boundaryPreviewsRef = useRef<Map<number, BoundaryPreview>>(new Map());
+  const pendingBoundaryRef = useRef<Set<number>>(new Set());
 
   // Track visible range for eviction
   const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
@@ -156,11 +169,18 @@ export function useThumbnailGenerator(
     intraTimestampsRef.current = new Map();
     gopStructuresRef.current = new Map();
     lastSentIntraRef.current = "";
+    for (const bp of boundaryPreviewsRef.current.values()) {
+      if (bp.before) bp.before.close();
+      if (bp.after) bp.after.close();
+    }
+    boundaryPreviewsRef.current = new Map();
+    pendingBoundaryRef.current = new Set();
     setThumbnails(new Map());
     setSegmentTimes([]);
     setIntraFrames(new Map());
     setIntraFrameTypes(new Map());
     setGopStructures(new Map());
+    setBoundaryPreviews(new Map());
   }, []);
 
   // requestRange: called from paint loop, throttled to avoid flooding worker
@@ -259,6 +279,28 @@ export function useThumbnailGenerator(
     // Already have it cached
     if (gopStructuresRef.current.has(segmentIndex)) return;
     worker.postMessage({ type: "requestGop", segmentIndex } satisfies WorkerRequest);
+  }, []);
+
+  // requestBoundaryPreview: decode frames on either side of a scene boundary
+  const requestBoundaryPreview = useCallback<RequestBoundaryPreviewFn>((boundaryTime: number, frameNumber: number) => {
+    const worker = workerRef.current;
+    if (!worker || !workerReadyRef.current) return;
+    // Already cached or in-flight
+    if (boundaryPreviewsRef.current.has(boundaryTime)) return;
+    if (pendingBoundaryRef.current.has(boundaryTime)) return;
+    pendingBoundaryRef.current.add(boundaryTime);
+    worker.postMessage({ type: "boundaryPreview", boundaryTime, frameNumber } satisfies WorkerRequest);
+  }, []);
+
+  // clearBoundaryPreviews: invalidate cache when scene data changes (FPS correction)
+  const clearBoundaryPreviews = useCallback(() => {
+    for (const bp of boundaryPreviewsRef.current.values()) {
+      if (bp.before) bp.before.close();
+      if (bp.after) bp.after.close();
+    }
+    boundaryPreviewsRef.current = new Map();
+    pendingBoundaryRef.current = new Set();
+    setBoundaryPreviews(new Map());
   }, []);
 
   // saveFrame: sends a one-shot decode request to the worker for the active stream
@@ -548,6 +590,15 @@ export function useThumbnailGenerator(
               }
               break;
             }
+            case "boundaryPreview": {
+              pendingBoundaryRef.current.delete(msg.boundaryTime);
+              boundaryPreviewsRef.current.set(msg.boundaryTime, {
+                before: msg.beforeBitmap,
+                after: msg.afterBitmap,
+              });
+              setBoundaryPreviews(new Map(boundaryPreviewsRef.current));
+              break;
+            }
             case "ready":
               workerReadyRef.current = true;
               break;
@@ -614,5 +665,5 @@ export function useThumbnailGenerator(
     };
   }, [player, videoEl, enabled, supported, encrypted, clearKey, streamEncrypted, cleanup]);
 
-  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch, decodeSegmentFrames, cancelDecodeSegment };
+  return { thumbnails, segmentTimes, supported, requestRange, saveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch, decodeSegmentFrames, cancelDecodeSegment, boundaryPreviews, requestBoundaryPreview, clearBoundaryPreviews };
 }

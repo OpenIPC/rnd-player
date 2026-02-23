@@ -55,6 +55,15 @@ export type WorkerRequest =
       height: number;
     }
   | { type: "cancelDecodeSegment"; requestId: string }
+  | {
+      /** Decode the last frame before and first frame after a scene boundary.
+       *  Uses frame number for index-based capture (immune to CTS/CTO/FPS mismatches). */
+      type: "boundaryPreview";
+      /** Scene boundary time in DASH presentation time (for segment lookup) */
+      boundaryTime: number;
+      /** Global display-order frame number at the boundary (from av1an originalFrames) */
+      frameNumber: number;
+    }
   | { type: "abort" };
 
 /** Messages from thumbnail worker to main thread */
@@ -66,4 +75,5 @@ export type WorkerResponse =
   | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[]; gopStructure: GopFrame[]; timestamps: number[] }
   | { type: "gopStructure"; segmentIndex: number; gopStructure: GopFrame[] }
   | { type: "segmentFrame"; requestId: string; frameIndex: number; totalFrames: number; bitmap: ImageBitmap; frameType: FrameType; sizeBytes: number }
-  | { type: "segmentFramesDone"; requestId: string; totalFrames: number };
+  | { type: "segmentFramesDone"; requestId: string; totalFrames: number }
+  | { type: "boundaryPreview"; boundaryTime: number; beforeBitmap: ImageBitmap | null; afterBitmap: ImageBitmap | null };

@@ -126,7 +126,7 @@ export default function FilmstripTimeline({
 
   const duration = videoEl.duration || 0;
 
-  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch, decodeSegmentFrames, cancelDecodeSegment } =
+  const { thumbnails, segmentTimes, supported, requestRange, saveFrame: workerSaveFrame, intraFrames, intraFrameTypes, intraTimestamps, gopStructures, requestGop, requestIntraBatch, decodeSegmentFrames, cancelDecodeSegment, boundaryPreviews, requestBoundaryPreview, clearBoundaryPreviews } =
     useThumbnailGenerator(player, videoEl, true, clearKey);
 
   // Keep latest values in refs so the rAF paint loop can read them
@@ -174,6 +174,21 @@ export default function FilmstripTimeline({
 
   const sceneDataRef = useRef(sceneData);
   sceneDataRef.current = sceneData;
+
+  // Clear boundary preview cache when scene data changes (e.g., FPS correction
+  // recalculates boundary times, invalidating cached previews)
+  const prevSceneDataRef = useRef(sceneData);
+  useEffect(() => {
+    if (prevSceneDataRef.current !== sceneData) {
+      prevSceneDataRef.current = sceneData;
+      clearBoundaryPreviews();
+    }
+  }, [sceneData, clearBoundaryPreviews]);
+
+  const boundaryPreviewsRef = useRef(boundaryPreviews);
+  boundaryPreviewsRef.current = boundaryPreviews;
+  const requestBoundaryPreviewRef = useRef(requestBoundaryPreview);
+  requestBoundaryPreviewRef.current = requestBoundaryPreview;
 
   const startOffsetRef = useRef(startOffset);
   startOffsetRef.current = startOffset;
@@ -1041,17 +1056,22 @@ export default function FilmstripTimeline({
         const proximityPx = 3;
         const proximityTime = proximityPx / pxPerSecRef.current;
 
-        let hitBoundary: { sceneNum: number; time: number } | null = null;
+        let hitBoundary: { sceneNum: number; time: number; boundaryIdx: number } | null = null;
         for (let i = 0; i < sd.boundaries.length; i++) {
           if (Math.abs(sd.boundaries[i] - hoverTime) <= proximityTime) {
-            hitBoundary = { sceneNum: i + 2, time: sd.boundaries[i] };
+            hitBoundary = { sceneNum: i + 2, time: sd.boundaries[i], boundaryIdx: i };
             break;
           }
         }
 
         if (hitBoundary) {
-          sceneTooltipRef.current = { x: e.clientX, y: e.clientY, ...hitBoundary };
-          setSceneTooltip({ x: e.clientX, y: e.clientY, ...hitBoundary });
+          sceneTooltipRef.current = { x: e.clientX, y: e.clientY, sceneNum: hitBoundary.sceneNum, time: hitBoundary.time };
+          setSceneTooltip({ x: e.clientX, y: e.clientY, sceneNum: hitBoundary.sceneNum, time: hitBoundary.time });
+          // Trigger boundary frame decode using original frame number (immune to CTS mismatches)
+          const frameNum = sd.originalFrames?.[hitBoundary.boundaryIdx];
+          if (frameNum != null) {
+            requestBoundaryPreviewRef.current(hitBoundary.time, frameNum);
+          }
         } else {
           if (sceneTooltipRef.current) {
             sceneTooltipRef.current = null;
@@ -1463,16 +1483,57 @@ export default function FilmstripTimeline({
           </div>
         );
       })()}
-      {sceneTooltip && (
-        <div
-          className="vp-gop-tooltip"
-          style={{ left: sceneTooltip.x, top: sceneTooltip.y }}
-        >
-          <div className="vp-gop-tooltip-label" style={{ color: "rgba(255, 160, 40, 0.85)" }}>
-            Scene {sceneTooltip.sceneNum} · {formatTime(sceneTooltip.time)}
+      {sceneTooltip && (() => {
+        const preview = boundaryPreviews.get(sceneTooltip.time);
+        const hasBefore = preview?.before != null;
+        const hasAfter = preview?.after != null;
+        const hasFrames = hasBefore || hasAfter;
+        // Use bitmap dimensions for canvas (worker produces thumbnails at correct aspect ratio)
+        const bmpW = preview?.before?.width ?? preview?.after?.width ?? 160;
+        const bmpH = preview?.before?.height ?? preview?.after?.height ?? 90;
+        return (
+          <div
+            className="vp-gop-tooltip"
+            style={{ left: sceneTooltip.x, top: sceneTooltip.y }}
+          >
+            <div className="vp-gop-tooltip-label" style={{ color: "rgba(255, 160, 40, 0.85)" }}>
+              Scene {sceneTooltip.sceneNum} · {formatTime(sceneTooltip.time)}
+            </div>
+            {hasFrames && (
+              <div className="vp-boundary-frames">
+                <canvas
+                  key={`${sceneTooltip.time}-before`}
+                  className="vp-boundary-frame"
+                  width={bmpW}
+                  height={bmpH}
+                  ref={(el) => {
+                    if (el && preview?.before) {
+                      const ctx = el.getContext("2d");
+                      if (ctx) ctx.drawImage(preview.before, 0, 0, bmpW, bmpH);
+                    }
+                  }}
+                />
+                <div className="vp-boundary-divider" style={{ height: bmpH }} />
+                <canvas
+                  key={`${sceneTooltip.time}-after`}
+                  className="vp-boundary-frame"
+                  width={bmpW}
+                  height={bmpH}
+                  ref={(el) => {
+                    if (el && preview?.after) {
+                      const ctx = el.getContext("2d");
+                      if (ctx) ctx.drawImage(preview.after, 0, 0, bmpW, bmpH);
+                    }
+                  }}
+                />
+              </div>
+            )}
+            {!hasFrames && preview === undefined && (
+              <div className="vp-boundary-loading">Loading...</div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
       {segmentModal && (
         <SegmentFramesModal
           segmentStartTime={segmentModal.startTime}

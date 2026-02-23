@@ -23,6 +23,8 @@ describe("parseSceneData", () => {
     expect(result!.boundaries[0]).toBeCloseTo(8, 5);
     expect(result!.boundaries[1]).toBeCloseTo(500 / 30, 5);
     expect(result!.boundaries[2]).toBeCloseTo(1000 / 30, 5);
+    // Original frames preserved
+    expect(result!.originalFrames).toEqual([240, 500, 1000]);
   });
 
   it("parses valid JSON at 24 fps", () => {
