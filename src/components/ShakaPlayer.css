@@ -243,6 +243,14 @@ video::-webkit-media-text-track-container {
   z-index: 2;
 }
 
+/* When boundary previews are present, make tooltip interactive and bridge
+   the gap to the progress row so the cursor can reach the click targets */
+.vp-progress-tooltip-interactive {
+  pointer-events: auto;
+  margin-bottom: 0;
+  padding-bottom: 10px;
+}
+
 .vp-progress-tooltip-text {
   white-space: nowrap;
 }

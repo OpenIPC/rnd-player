@@ -1055,45 +1055,44 @@ export default function VideoControls({
           onMouseMove={onProgressMouseMove}
           onMouseLeave={onProgressMouseLeave}
         >
-          {hoverInfo && (
+          {hoverInfo && (() => {
+            // Pre-compute boundary preview data to determine interactivity
+            let sceneNum = 0;
+            let leftPreview: BoundaryPreview | undefined;
+            let rightPreview: BoundaryPreview | undefined;
+            let leftIdx = -1;
+            let rightIdx = -1;
+            if (moduleConfig.sceneMarkers && sceneData && sceneData.boundaries.length > 0 && boundaryPreviews) {
+              sceneNum = 1;
+              for (const b of sceneData.boundaries) {
+                if (hoverInfo.time >= b) sceneNum++;
+                else break;
+              }
+              leftIdx = sceneNum >= 2 ? sceneNum - 2 : -1;
+              rightIdx = sceneNum - 1 < sceneData.boundaries.length ? sceneNum - 1 : -1;
+              leftPreview = leftIdx >= 0 ? boundaryPreviews.get(sceneData.boundaries[leftIdx]) : undefined;
+              rightPreview = rightIdx >= 0 ? boundaryPreviews.get(sceneData.boundaries[rightIdx]) : undefined;
+            }
+            const hasPreviewImages = !!(leftPreview || rightPreview);
+
+            const seekToBoundary = (boundaryTime: number) => (e: React.MouseEvent) => {
+              e.stopPropagation();
+              videoEl.currentTime = boundaryTime;
+              setHoverInfo(null);
+            };
+
+            return (
             <div
               ref={tooltipRef}
-              className="vp-progress-tooltip"
+              className={`vp-progress-tooltip${hasPreviewImages ? " vp-progress-tooltip-interactive" : ""}`}
               style={{ left: `${hoverInfo.pct}%` }}
               onMouseLeave={onTooltipMouseLeave}
             >
               <div className="vp-progress-tooltip-text">
                 {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
-                {moduleConfig.sceneMarkers && sceneData && sceneData.boundaries.length > 0 && (() => {
-                  let sceneNum = 1;
-                  for (const b of sceneData.boundaries) {
-                    if (hoverInfo.time >= b) sceneNum++;
-                    else break;
-                  }
-                  return ` \u00b7 Scene ${sceneNum}`;
-                })()}
+                {sceneNum > 0 && ` \u00b7 Scene ${sceneNum}`}
               </div>
-              {moduleConfig.sceneMarkers && sceneData && sceneData.boundaries.length > 0 && boundaryPreviews && (() => {
-                let sceneNum = 1;
-                for (const b of sceneData.boundaries) {
-                  if (hoverInfo.time >= b) sceneNum++;
-                  else break;
-                }
-
-                const leftIdx = sceneNum >= 2 ? sceneNum - 2 : -1;
-                const rightIdx = sceneNum - 1 < sceneData.boundaries.length ? sceneNum - 1 : -1;
-                const leftPreview = leftIdx >= 0 ? boundaryPreviews.get(sceneData.boundaries[leftIdx]) : undefined;
-                const rightPreview = rightIdx >= 0 ? boundaryPreviews.get(sceneData.boundaries[rightIdx]) : undefined;
-
-                if (!leftPreview && !rightPreview) return null;
-
-                const seekToBoundary = (boundaryTime: number) => (e: React.MouseEvent) => {
-                  e.stopPropagation();
-                  videoEl.currentTime = boundaryTime;
-                  setHoverInfo(null);
-                };
-
-                return (
+              {hasPreviewImages && sceneData && (
                   <div className="vp-progress-boundary-row">
                     {leftPreview && (
                       <div
@@ -1122,10 +1121,10 @@ export default function VideoControls({
                       </div>
                     )}
                   </div>
-                );
-              })()}
+              )}
             </div>
-          )}
+            );
+          })()}
           <div className="vp-progress-track">
             <div
               className="vp-progress-buffered"
