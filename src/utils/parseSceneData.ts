@@ -30,5 +30,6 @@ export function parseSceneData(json: unknown, fps: number): SceneData | null {
     totalFrames: raw.frames,
     boundaries,
     fps,
+    ptsOffset: 0,
   };
 }

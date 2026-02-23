@@ -17,6 +17,7 @@ describe("parseSceneData", () => {
     expect(result).not.toBeNull();
     expect(result!.totalFrames).toBe(1500);
     expect(result!.fps).toBe(30);
+    expect(result!.ptsOffset).toBe(0);
     // Boundaries: 240/30=8, 500/30=16.667, 1000/30=33.333
     expect(result!.boundaries).toHaveLength(3);
     expect(result!.boundaries[0]).toBeCloseTo(8, 5);

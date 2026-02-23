@@ -14,4 +14,6 @@ export interface SceneData {
   totalFrames: number;
   boundaries: number[];
   fps: number;
+  /** Applied PTS offset (from B-frame CTO); prevents double-application */
+  ptsOffset: number;
 }
