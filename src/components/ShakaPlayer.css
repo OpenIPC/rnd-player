@@ -263,6 +263,20 @@ video::-webkit-media-text-track-container {
   pointer-events: none;
 }
 
+.vp-scene-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: rgba(255, 160, 40, 0.5);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.vp-progress-row:hover .vp-scene-tick {
+  background: rgba(255, 160, 40, 0.7);
+}
+
 /* ── Controls row ── */
 .vp-controls-row {
   display: flex;

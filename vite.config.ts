@@ -30,6 +30,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     adaptationToast: false,
     keyboardShortcuts: false,
     sleepWakeRecovery: false,
+    sceneMarkers: false,
   },
 }
 
@@ -53,6 +54,7 @@ function resolveModulePreset(): ModulePreset | undefined {
     adaptationToast: true,
     keyboardShortcuts: true,
     sleepWakeRecovery: true,
+    sceneMarkers: true,
   }
   return { ...defaults, ...preset }
 }

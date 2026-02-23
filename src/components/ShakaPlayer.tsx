@@ -4,6 +4,7 @@ import VideoControls from "./VideoControls";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin, getCorsBlockedOrigin } from "../utils/corsProxy";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
+import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
@@ -50,6 +51,11 @@ interface ShakaPlayerProps {
   moduleConfig: PlayerModuleConfig;
   deviceProfile: DeviceProfile;
   onModuleConfigChange: (config: PlayerModuleConfig) => void;
+  sceneData?: SceneData | null;
+  onSceneDataChange?: (data: SceneData | null) => void;
+  onLoadSceneData?: () => void;
+  onLoadSceneFile?: (file: File) => void;
+  scenesUrl?: string | null;
 }
 
 let polyfillsInstalled = false;
@@ -72,7 +78,7 @@ function describeLoadError(e: shaka.util.Error): string {
   return `Failed to load video (code ${e.code}).`;
 }
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel, moduleConfig, deviceProfile, onModuleConfigChange }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel, moduleConfig, deviceProfile, onModuleConfigChange, sceneData, onSceneDataChange, onLoadSceneData, onLoadSceneFile, scenesUrl }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
@@ -462,6 +468,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               moduleConfig={moduleConfig}
               deviceProfile={deviceProfile}
               onModuleConfigChange={onModuleConfigChange}
+              sceneData={sceneData}
+              onSceneDataChange={onSceneDataChange}
+              onLoadSceneFile={onLoadSceneFile}
+              scenesUrl={scenesUrl}
             />
           )}
         {moduleConfig.qualityCompare &&
@@ -535,6 +545,9 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               ssimHistory={ssimHistoryRef}
               msSsimHistory={msSsimHistoryRef}
               vmafHistory={vmafHistoryRef}
+              sceneData={sceneData}
+              onLoadSceneData={onLoadSceneData}
+              onClearSceneData={onSceneDataChange ? () => onSceneDataChange(null) : undefined}
             />
           </Suspense>
         )}
