@@ -44,6 +44,7 @@ describe("ShakaPlayer", () => {
     getManifestType: ReturnType<typeof vi.fn>;
     configure: ReturnType<typeof vi.fn>;
     setVideoContainer: ReturnType<typeof vi.fn>;
+    getManifest: ReturnType<typeof vi.fn>;
     getAudioTracks: ReturnType<typeof vi.fn>;
     getTextTracks: ReturnType<typeof vi.fn>;
     selectAudioTrack: ReturnType<typeof vi.fn>;
@@ -72,6 +73,7 @@ describe("ShakaPlayer", () => {
       getManifestType: vi.fn(() => ""),
       configure: vi.fn(),
       setVideoContainer: vi.fn(),
+      getManifest: vi.fn(() => null),
       getAudioTracks: vi.fn(() => []),
       getTextTracks: vi.fn(() => []),
       selectAudioTrack: vi.fn(),

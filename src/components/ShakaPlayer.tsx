@@ -3,6 +3,7 @@ import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin, getCorsBlockedOrigin } from "../utils/corsProxy";
+import { useBoundaryPreviews } from "../hooks/useBoundaryPreviews";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
@@ -101,6 +102,14 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const ssimHistoryRef = useRef<Map<number, number>>(new Map());
   const msSsimHistoryRef = useRef<Map<number, number>>(new Map());
   const vmafHistoryRef = useRef<Map<number, number>>(new Map());
+  // Boundary previews for progress bar tooltip (independent of filmstrip)
+  const { boundaryPreviews, requestBoundaryPreview, clearBoundaryPreviews } = useBoundaryPreviews(
+    playerRef.current,
+    videoRef.current,
+    playerReady && !!sceneData && moduleConfig.sceneMarkers,
+    activeKey,
+  );
+
   useEffect(() => {
     if (!polyfillsInstalled) {
       shaka.polyfill.installAll();
@@ -524,6 +533,9 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               onSceneDataChange={onSceneDataChange}
               onLoadSceneFile={onLoadSceneFile}
               scenesUrl={scenesUrl}
+              boundaryPreviews={boundaryPreviews}
+              requestBoundaryPreview={requestBoundaryPreview}
+              clearBoundaryPreviews={clearBoundaryPreviews}
             />
           )}
         {moduleConfig.qualityCompare &&

@@ -36,6 +36,7 @@ import type { CompareViewState } from "./ShakaPlayer";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
+import type { BoundaryPreview, RequestBoundaryPreviewFn } from "../hooks/useBoundaryPreviews";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -63,6 +64,9 @@ interface VideoControlsProps {
   onSceneDataChange?: (data: SceneData | null) => void;
   onLoadSceneFile?: (file: File) => void;
   scenesUrl?: string | null;
+  boundaryPreviews?: Map<number, BoundaryPreview>;
+  requestBoundaryPreview?: RequestBoundaryPreviewFn;
+  clearBoundaryPreviews?: () => void;
 }
 
 interface QualityOption {
@@ -97,6 +101,31 @@ const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const HIDE_DELAY = 3000;
 const STORAGE_KEY = "vp_playback_state";
 
+/** Small canvas that draws a single ImageBitmap scaled to a target width */
+function BoundaryCanvas({ bitmap, width }: { bitmap: ImageBitmap | null; width: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const height = bitmap ? Math.round(width * (bitmap.height / bitmap.width)) : 56;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !bitmap) return;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (ctx) ctx.drawImage(bitmap, 0, 0, width, height);
+  }, [bitmap, width, height]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="vp-boundary-frame"
+      width={width}
+      height={height}
+      style={{ width, height }}
+    />
+  );
+}
+
 export default function VideoControls({
   videoEl,
   containerEl,
@@ -123,6 +152,9 @@ export default function VideoControls({
   onSceneDataChange,
   onLoadSceneFile,
   scenesUrl,
+  boundaryPreviews,
+  requestBoundaryPreview,
+  clearBoundaryPreviews,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -964,6 +996,34 @@ export default function VideoControls({
     setHoverInfo(null);
   }, []);
 
+  // ── Boundary previews: request on hover ──
+  useEffect(() => {
+    if (!hoverInfo || !sceneData || !moduleConfig.sceneMarkers || !requestBoundaryPreview) return;
+    if (sceneData.boundaries.length === 0 || !sceneData.originalFrames) return;
+
+    let sceneNum = 1;
+    for (const b of sceneData.boundaries) {
+      if (hoverInfo.time >= b) sceneNum++;
+      else break;
+    }
+
+    // Left boundary: entry into current scene (boundary between scene N-1 and N)
+    if (sceneNum >= 2) {
+      const idx = sceneNum - 2;
+      requestBoundaryPreview(sceneData.boundaries[idx], sceneData.originalFrames[idx]);
+    }
+    // Right boundary: exit from current scene (boundary between scene N and N+1)
+    if (sceneNum - 1 < sceneData.boundaries.length) {
+      const idx = sceneNum - 1;
+      requestBoundaryPreview(sceneData.boundaries[idx], sceneData.originalFrames[idx]);
+    }
+  }, [hoverInfo, sceneData, moduleConfig.sceneMarkers, requestBoundaryPreview]);
+
+  // ── Clear boundary previews when sceneData changes (FPS correction) ──
+  useEffect(() => {
+    if (clearBoundaryPreviews) clearBoundaryPreviews();
+  }, [sceneData, clearBoundaryPreviews]);
+
   return (
     <div
       ref={wrapperRef}
@@ -989,14 +1049,55 @@ export default function VideoControls({
               className="vp-progress-tooltip"
               style={{ left: `${hoverInfo.pct}%` }}
             >
-              {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
-              {moduleConfig.sceneMarkers && sceneData && sceneData.boundaries.length > 0 && (() => {
+              <div className="vp-progress-tooltip-text">
+                {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
+                {moduleConfig.sceneMarkers && sceneData && sceneData.boundaries.length > 0 && (() => {
+                  let sceneNum = 1;
+                  for (const b of sceneData.boundaries) {
+                    if (hoverInfo.time >= b) sceneNum++;
+                    else break;
+                  }
+                  return ` \u00b7 Scene ${sceneNum}`;
+                })()}
+              </div>
+              {moduleConfig.sceneMarkers && sceneData && sceneData.boundaries.length > 0 && boundaryPreviews && (() => {
                 let sceneNum = 1;
                 for (const b of sceneData.boundaries) {
                   if (hoverInfo.time >= b) sceneNum++;
                   else break;
                 }
-                return ` \u00b7 Scene ${sceneNum}`;
+
+                const leftIdx = sceneNum >= 2 ? sceneNum - 2 : -1;
+                const rightIdx = sceneNum - 1 < sceneData.boundaries.length ? sceneNum - 1 : -1;
+                const leftPreview = leftIdx >= 0 ? boundaryPreviews.get(sceneData.boundaries[leftIdx]) : undefined;
+                const rightPreview = rightIdx >= 0 ? boundaryPreviews.get(sceneData.boundaries[rightIdx]) : undefined;
+
+                if (!leftPreview && !rightPreview) return null;
+
+                return (
+                  <div className="vp-progress-boundary-row">
+                    {leftPreview && (
+                      <div className="vp-progress-boundary-pair">
+                        <div className="vp-progress-boundary-label">S{sceneNum - 1} → S{sceneNum}</div>
+                        <div className="vp-boundary-frames">
+                          <BoundaryCanvas bitmap={leftPreview.before} width={100} />
+                          <div className="vp-boundary-divider" style={{ height: leftPreview.before ? Math.round(100 * (leftPreview.before.height / leftPreview.before.width)) : 56 }} />
+                          <BoundaryCanvas bitmap={leftPreview.after} width={100} />
+                        </div>
+                      </div>
+                    )}
+                    {rightPreview && (
+                      <div className="vp-progress-boundary-pair">
+                        <div className="vp-progress-boundary-label">S{sceneNum} → S{sceneNum + 1}</div>
+                        <div className="vp-boundary-frames">
+                          <BoundaryCanvas bitmap={rightPreview.before} width={100} />
+                          <div className="vp-boundary-divider" style={{ height: rightPreview.before ? Math.round(100 * (rightPreview.before.height / rightPreview.before.width)) : 56 }} />
+                          <BoundaryCanvas bitmap={rightPreview.after} width={100} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
               })()}
             </div>
           )}
