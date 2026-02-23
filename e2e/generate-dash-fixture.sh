@@ -194,6 +194,29 @@ ffmpeg -y -loglevel error \
 # Cleanup intermediate source
 rm -f "$HEVC_SOURCE"
 
+# Fix HEVC codec strings in manifest.
+# ffmpeg's DASH muxer writes bare codecs="hvc1" without profile/level,
+# which browsers reject via isTypeSupported(). Probe each video init
+# segment for the actual level and patch the manifest with the full
+# codec string: hvc1.{profile}.{compat}.L{level}.{constraints}
+echo "==> Fixing HEVC codec strings in manifest..."
+for init in "$HEVC_DIR"/init-stream*.m4s; do
+  stream_id="${init##*init-stream}"
+  stream_id="${stream_id%.m4s}"
+  codec_type=$(ffprobe -v error -select_streams 0 \
+    -show_entries stream=codec_type -of csv=p=0 "$init" 2>/dev/null)
+  [ "$codec_type" != "video" ] && continue
+  level=$(ffprobe -v error -select_streams v \
+    -show_entries stream=level -of csv=p=0 "$init" 2>/dev/null)
+  [ -z "$level" ] && continue
+  # Main profile=1, compat=6, Main tier=L, constraints=90
+  codec_str="hvc1.1.6.L${level}.90"
+  sed -i.bak "/<Representation id=\"${stream_id}\"/s/codecs=\"hvc1\"/codecs=\"${codec_str}\"/" \
+    "$HEVC_DIR/manifest.mpd"
+  echo "  stream $stream_id: $codec_str"
+done
+rm -f "$HEVC_DIR/manifest.mpd.bak"
+
 echo "==> HEVC DASH fixture ready in $HEVC_DIR"
 ls -lh "$HEVC_DIR"
 
