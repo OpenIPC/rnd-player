@@ -256,6 +256,16 @@ export function SceneMarkersIcon() {
   );
 }
 
+export function DownloadScriptIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 3v8M7 8l3 3 3-3" />
+      <path d="M3 13v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3" />
+      <line x1="6" y1="17" x2="14" y2="17" strokeWidth="1.2" strokeDasharray="1.5 1.5" />
+    </svg>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
