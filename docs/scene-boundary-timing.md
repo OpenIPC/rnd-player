@@ -1,12 +1,14 @@
-# Scene Boundary Timing — ISM/DASH PTS Offset Investigation
+# Scene Boundary Timing — DASH CTO (Composition Time Offset) Investigation
 
-Investigation of scene boundary misalignment when loading av1an scene detection data for DASH streams served by IIS Smooth Streaming (ISM) origins.
+Investigation of scene boundary misalignment and inaccessible first frames when loading av1an scene detection data for DASH streams with B-frame composition time offsets. Originally discovered on ISM/DASH streams, confirmed to affect any DASH stream with B-frames regardless of packager or codec.
 
 ## Problem Statement
 
 When av1an scene detection JSON (produced from a locally downloaded copy of a DASH stream) is loaded into the player, scene boundary markers don't align with actual shot changes visible in the video. A related symptom: the first 2–3 frames of the video are inaccessible — seeking to 0:00:00.000 snaps forward to ~0:00:00.080.
 
-## Test Stream
+## Test Streams
+
+### Stream A: ISM/HEVC
 
 ```
 <ISM_DASH_MANIFEST_URL>
@@ -23,6 +25,26 @@ Properties:
 - **Segment structure**: 142 segments × 3.000s + 1 final segment × 2.920s (143 total)
 - **Manifest timescale**: 10,000,000 (ISM standard, 100ns ticks)
 - **Audio**: AAC 48 kHz stereo, 256 kbps
+
+### Stream B: Kaltura/AVC
+
+```
+<KALTURA_DASH_MANIFEST_URL>
+```
+
+*(Redacted — online cinema CDN URL. Add locally for reproduction.)*
+
+Properties:
+- **Origin**: Kaltura packager
+- **Codec**: AVC (H.264) High profile (`avc1.640828`) with B-frames
+- **Frame rate**: 24 fps
+- **Representations**: 360p (460 kbps), 480p (1.6 Mbps), 576p (2.8 Mbps), 720p (4.9 Mbps), 1080p (7.3 Mbps)
+- **Manifest duration**: `PT2H23M58.750S` (8638.75s)
+- **Segment structure**: 2159 segments × 4.000s + 1 final segment × 2.750s (2160 total)
+- **Manifest timescale**: 1,000
+- **`presentationTimeOffset`**: 3600000 (3600s / 1 hour — broadcast epoch offset, fully normalized by Shaka)
+- **Audio**: AAC 48 kHz stereo, ~192 kbps, 2 tracks (Russian + Chinese)
+- **Subtitles**: Russian (VTT)
 
 ## Reproduction Steps
 
@@ -143,13 +165,14 @@ The inaccessible frames 0–1 on the ISM stream are caused by the non-zero PTS o
 
 **Corrected comparison**:
 
-| Fixture | Codec | First frame PTS | Frames 0-1 accessible? | Cause |
-|---|---|---|---|---|
-| Frame Counter (AVC) | H.264 | 0.000s | Yes | — |
-| Frame Counter (HEVC) | H.265 | 0.000s | Yes | — |
-| ISM HEVC stream | H.265 | 0.093s | No | Non-zero CTO from ISM packager |
+| Stream | Codec | Packager | First video PTS (MSE) | CTO | Frames 0-1 accessible? |
+|---|---|---|---|---|---|
+| Frame Counter (AVC) | H.264 | ffmpeg | 0.000s | 0 | Yes |
+| Frame Counter (HEVC) | H.265 | ffmpeg | 0.000s | 0 | Yes |
+| Stream A (ISM/HEVC) | H.265 | ISM | 0.080s | 2 frames @ 25fps | No |
+| Stream B (Kaltura/AVC) | H.264 | Kaltura | 0.084s | 2 frames @ 24fps | No |
 
-**Root cause identified** — see Finding 7.
+**Root cause identified** — see Findings 7 and 9.
 
 ### Finding 7: `startOffset` Detection Had Two Bugs
 
@@ -190,6 +213,37 @@ Key observations:
 
 4. **The delta approach works for any seek position**: the CTO is constant across segments (same GOP structure). When loading from a mid-stream saved position, audio and video buffers for the loaded segment still differ by the CTO. `video[0].start - audio[0].start ≈ 0.08` regardless of which segment was loaded.
 
+### Finding 9: CTO Confirmed on Kaltura/AVC Stream — Not ISM-Specific
+
+Diagnostic output from Stream B (Kaltura-packaged AVC, 24fps):
+
+```
+loadStartTime: null
+video.currentTime: 0.084333
+video.readyState: 4
+video.buffered[0]: 0.084333 – 4.011666
+shaka bufferedInfo.audio: [{"start":0.001,"end":4.011666}]
+shaka bufferedInfo.video: [{"start":0.084333,"end":4.084332}]
+audio/video delta: 0.083333
+seekRangeStart: 0
+seekRangeEnd: 8638.75
+final startOffset: 0.083333
+```
+
+Key observations:
+
+1. **Audio starts at 0.001s** (not exactly 0) — tiny AAC encoder priming delay. The delta approach handles this correctly: `0.084333 - 0.001 = 0.083333`.
+
+2. **Video starts at 0.084333s** — the CTO (0.083333s) plus the audio priming offset (0.001s). The CTO is exactly **2/24 = 2 frames at 24fps**.
+
+3. **Same 2-frame pattern**: Stream A (ISM/HEVC) = 2 frames at 25fps (0.080s), Stream B (Kaltura/AVC) = 2 frames at 24fps (0.083s). Both have a reorder depth of 2 — the most common B-frame configuration.
+
+4. **`presentationTimeOffset` fully normalized**: The manifest has PTO=3600s (1-hour broadcast epoch offset), but it's invisible in the buffer ranges. Shaka's `timestampOffset` subtracted it, and `seekRangeStart = 0` confirms the presentation timeline starts at 0.
+
+5. **`video.buffered.start(0)` would have been slightly wrong**: Returns 0.084333 (the intersection start, which equals the video start since video starts after audio). This includes the 0.001s audio priming offset, giving a CTO of 0.084333 instead of the correct 0.083333. The audio/video delta approach is more accurate because it isolates the video-vs-audio gap.
+
+**Conclusion**: The CTO is caused by B-frame reordering in the encoder, not by any specific packager. Any DASH stream encoded with B-frames will exhibit it. The ffmpeg-generated test fixtures don't have it because they use simple GOP structures without composition time offsets. Our `getBufferedInfo()` delta detection works across packagers (ISM, Kaltura) and codecs (HEVC, AVC).
+
 ### Finding 5: Scene Boundary Conversion Error
 
 The current conversion `boundary_time = start_frame / fps` assumes frame 0 is at time 0.000s. But in the DASH player, frame 0 is at time ~0.093s.
@@ -222,9 +276,11 @@ The root cause is the mismatch between two time domains:
 
 2. **MP4 frame index domain** — av1an numbers frames sequentially (0, 1, 2, ...). Frame N's PTS in the container is `0.093 + N × 0.040s`. The conversion `N / 25` maps to `N × 0.040s`, missing the base offset.
 
-The offset originates from the HEVC encoder's B-frame reordering. With a reorder depth of ~2 frames, the first I-frame's composition time is pushed forward to leave room for B-frames that precede it in display order but follow in decode order. The ISM packager preserves this raw CTS (0.093018s in the MP4). Shaka's DASH segment timeline mapping partially normalizes it when setting `timestampOffset` on the SourceBuffer, resulting in a clean 0.080s (2 frames) offset in the MSE presentation timeline.
+The offset originates from the encoder's B-frame reordering, not from any specific packager or codec. With a reorder depth of ~2 frames, the first I-frame's composition time is pushed forward to leave room for B-frames that precede it in display order but follow in decode order. Confirmed on both HEVC (ISM packager) and AVC (Kaltura packager) streams — both show exactly 2 frames of CTO. Shaka's DASH segment timeline mapping partially normalizes the raw CTS when setting `timestampOffset` on the SourceBuffer, resulting in a frame-aligned offset (0.080s at 25fps, 0.083s at 24fps) in the MSE presentation timeline.
 
 ### Three Time Domains
+
+**Stream A (ISM/HEVC, 25fps):**
 
 | Domain | Frame 0 PTS | Frame 105 PTS | Source |
 |---|---|---|---|
@@ -232,7 +288,14 @@ The offset originates from the HEVC encoder's B-frame reordering. With a reorder
 | MSE presentation (browser) | 0.080s | 4.280s | After Shaka `timestampOffset` |
 | av1an frame index (`N/fps`) | 0.000s | 4.200s | Frame count ÷ fps |
 
-The player operates in the MSE presentation domain. Scene boundaries must be corrected from the av1an domain by adding the MSE-visible CTO (0.080s), not the raw MP4 CTO (0.093s).
+**Stream B (Kaltura/AVC, 24fps):**
+
+| Domain | Frame 0 PTS | Source |
+|---|---|---|
+| MSE presentation (browser) | 0.084s | `getBufferedInfo()` video start (0.001s audio priming + 0.083s CTO) |
+| av1an frame index (`N/fps`) | 0.000s | Frame count ÷ fps |
+
+The player operates in the MSE presentation domain. Scene boundaries must be corrected from the av1an domain by adding the MSE-visible CTO (detected as `video[0].start - audio[0].start`). The CTO is exactly 2/fps for both streams tested (0.080s at 25fps, 0.083s at 24fps).
 
 ## Action Plan
 
@@ -311,7 +374,7 @@ Pros: Uses data already available from Shaka. Cons: Assumes uniform frame count 
 
 ## Open Questions
 
-1. Is the 93ms CTO offset universal for ISM/DASH streams, or does it vary per encoder/packager? Other ISM streams should be tested. The ffmpeg-generated HEVC fixture does NOT exhibit the CTO offset (PTS starts at 0.000), confirming this is ISM-specific.
+1. ~~Is the 93ms CTO offset universal for ISM/DASH streams, or does it vary per encoder/packager? Other ISM streams should be tested. The ffmpeg-generated HEVC fixture does NOT exhibit the CTO offset (PTS starts at 0.000), confirming this is ISM-specific.~~ **Answered (Finding 9)**: The CTO is **not** packager-specific. Confirmed on ISM (HEVC, 25fps → 0.080s CTO) and Kaltura (AVC, 24fps → 0.083s CTO). Both show exactly 2 frames of CTO. The offset originates from B-frame reordering in the encoder. ffmpeg-generated fixtures lack it because they use simple GOP structures. The exact CTO value varies by frame rate (2/fps) but the pattern is consistent.
 2. ~~Does Shaka Player's `timestampOffset` on the SourceBuffer ever compensate for the CTO? Current evidence says no (the inaccessible frames 0–1 confirm it).~~ **Partially answered**: Shaka applies `timestampOffset` that normalizes the raw CTO (0.093s) to a frame-aligned value (0.080s = 2 frames at 25fps). The CTO is not fully compensated away — it becomes a clean 2-frame offset instead of 2.3 frames.
 3. Does av1an's scene detection accuracy itself contribute to perceived misalignment? The detection algorithm may place boundaries 1–2 frames away from the true cut point independently of the timing issue.
 4. The last-segment download failure with ffmpeg — is this reproducible across streams, or specific to short final segments?
