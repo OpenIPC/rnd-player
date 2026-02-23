@@ -2023,6 +2023,32 @@ video::-webkit-media-text-track-container {
 .vp-gop-stat-B { color: rgb(50, 200, 50); font-weight: bold; }
 .vp-gop-stat-dim { color: rgba(255, 255, 255, 0.4); }
 
+/* ── Scene boundary preview ── */
+.vp-boundary-frames {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 4px;
+}
+
+.vp-boundary-frame {
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.05);
+  display: block;
+}
+
+.vp-boundary-divider {
+  width: 2px;
+  background: rgba(255, 160, 40, 0.7);
+  flex-shrink: 0;
+}
+
+.vp-boundary-loading {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 9px;
+}
+
 /* ── Segment Frames Modal ── */
 .vp-segment-frames-overlay {
   position: fixed;

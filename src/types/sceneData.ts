@@ -16,4 +16,7 @@ export interface SceneData {
   fps: number;
   /** Applied PTS offset (from B-frame CTO); prevents double-application */
   ptsOffset: number;
+  /** Original frame numbers from av1an — used to recompute boundaries from
+   *  scratch when FPS or PTS offset changes, avoiding cumulative drift */
+  originalFrames: number[];
 }

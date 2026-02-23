@@ -56,7 +56,7 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - GOP tooltip on hover over bitrate bars showing per-frame size bars and per-type stats
 - Save frame via right-click context menu with position-based frame targeting (see `docs/frame-pipeline.md`)
 - Color-coded frame borders: red=I, blue=P, green=B
-- Scene markers: dashed orange vertical lines (`rgba(255, 160, 40, 0.7)`) at scene boundaries spanning full canvas height, scene number labels ("S1", "S2", ...) in ruler area, hover tooltip when cursor is within ~3px of a boundary line
+- Scene markers: dashed orange vertical lines (`rgba(255, 160, 40, 0.7)`) at scene boundaries spanning full canvas height, scene number labels ("S1", "S2", ...) in ruler area, hover tooltip when cursor is within ~3px of a boundary line showing before/after frame previews decoded via the thumbnail worker using frame-number-based index lookup (see `docs/boundary-preview.md`)
 - Right-click context menu includes "Load scene data..." or "Clear scene data" (mutually exclusive, gated on `onLoadSceneData`/`onClearSceneData` props)
 
 **useThumbnailGenerator** (`src/hooks/useThumbnailGenerator.ts`) — Hook that manages the thumbnail worker lifecycle. Extracts segment URLs from Shaka's manifest, spawns the worker, and handles lazy-loading based on visible viewport. When `clearKey` is provided for encrypted streams, passes the hex key to the worker for self-decryption. Exposes:
@@ -66,6 +66,9 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - `intraTimestamps` — `Map<number, number[]>`: exact CTS seconds for each intra bitmap (from mp4box, includes composition time offsets)
 - `gopStructures` — `Map<number, GopFrame[]>`: frame types + byte sizes for GOP tooltip
 - `saveFrame(time, framePosition?)` — one-shot full-resolution frame decode from the active stream; `framePosition` (0..1) identifies the frame by display-order index to avoid cross-stream CTS mismatches
+- `boundaryPreviews` — `Map<number, BoundaryPreview>`: cached before/after ImageBitmaps for scene boundary hover tooltips, keyed by boundary time
+- `requestBoundaryPreview(boundaryTime, frameNumber)` — triggers decode of frames adjacent to a scene boundary using frame-number-based index lookup
+- `clearBoundaryPreviews()` — invalidates boundary preview cache when scene data changes (FPS correction)
 - Memory eviction: bitmaps outside 3× the visible viewport span are closed and removed
 
 **thumbnailWorker** (`src/workers/thumbnailWorker.ts`) — Web Worker that fetches media segments, extracts samples via mp4box, decodes frames with VideoDecoder, and posts back ImageBitmaps. For CENC-encrypted content, integrates with `cencDecrypt` to decrypt samples before decoding. Key subsystems:
@@ -76,6 +79,7 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - **Active stream frame types** (`getActiveFrameTypes`): classifies from the watched rendition (e.g. 1080p) rather than the lowest-quality thumbnail stream, since different renditions may have different GOP structures. Results are cached by segment URL
 - **Save frame** (`handleSaveFrame`): decodes all frames in the target segment at full resolution. When `framePosition` is provided (0..1), captures by display-order output index (`Math.round(position * (totalFrames - 1))`), which is immune to cross-stream CTS mismatches. Falls back to CTS-based timestamp matching when no position is given
 - **GOP structure** (`requestGop`): lightweight handler that classifies frame types without video decoding, used for the GOP tooltip on hover
+- **Boundary preview** (`handleBoundaryPreview`): decodes the last frame before and first frame after a scene boundary. Uses frame-number-based index lookup: receives the av1an frame number, computes `localIndex = frameNumber - segIdx * framesPerSeg`, reads exact CTS from `displayOrder[localIndex]`, then matches via `frame.timestamp`. This approach is immune to CTS/CTO/FPS mapping inaccuracies (see `docs/boundary-preview.md`)
 
 **useBitrateGraph** (`src/hooks/useBitrateGraph.ts`) — Hook that computes per-segment bitrate for the filmstrip graph. Data sources in priority order:
 1. Measured from network via Shaka's response filter (actual `response.data.byteLength`)
@@ -116,9 +120,9 @@ When activated, `configureSoftwareDecryption()` registers an async Shaka respons
 
 **PlayerModuleConfig** (`src/types/moduleConfig.ts`) — Interface with 10 boolean fields controlling which optional modules are active: `filmstrip`, `qualityCompare`, `statsPanel`, `audioLevels`, `segmentExport`, `subtitles`, `adaptationToast`, `keyboardShortcuts`, `sleepWakeRecovery`, `sceneMarkers`. `MODULE_DEFAULTS` has all fields `true`.
 
-**SceneData types** (`src/types/sceneData.ts`) — Types for av1an scene detection integration: `Av1anScene` (raw scene entry with `start_frame`/`end_frame`), `Av1anSceneJson` (top-level JSON shape with `frames` count and `scenes` array), `SceneData` (processed: `totalFrames`, `boundaries: number[]` in seconds, `fps`).
+**SceneData types** (`src/types/sceneData.ts`) — Types for av1an scene detection integration: `Av1anScene` (raw scene entry with `start_frame`/`end_frame`), `Av1anSceneJson` (top-level JSON shape with `frames` count and `scenes` array), `SceneData` (processed: `totalFrames`, `boundaries: number[]` in seconds, `fps`, `originalFrames: number[]` preserving raw frame numbers for index-based worker lookup).
 
-**parseSceneData** (`src/utils/parseSceneData.ts`) — Pure function `parseSceneData(json: unknown, fps: number): SceneData | null`. Validates av1an JSON structure, converts `start_frame > 0` to seconds via `frame / fps`, sorts and deduplicates boundaries. Returns null on invalid input or fps <= 0.
+**parseSceneData** (`src/utils/parseSceneData.ts`) — Pure function `parseSceneData(json: unknown, fps: number): SceneData | null`. Validates av1an JSON structure, converts `start_frame > 0` to seconds via `frame / fps`, sorts and deduplicates boundaries, preserves original frame numbers in `originalFrames`. Returns null on invalid input or fps <= 0.
 
 **detectCapabilities** (`src/utils/detectCapabilities.ts`) — Async function that probes browser APIs (`VideoDecoder`, `WebGL2`, `AudioContext`, `Worker`, `OffscreenCanvas`) and hardware (`hardwareConcurrency`, `deviceMemory`) to produce a `DeviceProfile`. Result is cached at module level. Classifies a `performanceTier` of `'low'`/`'mid'`/`'high'` used for soft-gating heavy modules.
 
@@ -152,3 +156,5 @@ E2E tests: Playwright across Chromium, Firefox, WebKit, Edge. Files in `e2e/`. U
 - `docs/stats-for-nerds.md` — Stats panel implementation
 - `docs/module-config.md` — Modular architecture: config-based feature toggling, build presets, capability detection
 - `docs/manifest-validator-spec.md` — Manifest & stream validation: industry landscape, validation rules, implementation phases
+- `docs/scene-boundary-timing.md` — Scene boundary CTO investigation: DASH composition time offset analysis
+- `docs/boundary-preview.md` — Boundary preview: frame-number-based scene boundary visualization, investigation history

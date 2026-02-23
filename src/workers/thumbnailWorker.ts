@@ -992,6 +992,259 @@ async function handleSaveFrame(msg: Extract<WorkerRequest, { type: "saveFrame" }
   }
 }
 
+/**
+ * Decode the last frame before and the first frame after a scene boundary.
+ * Uses frame-number-based index lookup to find the exact frames, immune to
+ * CTS/CTO/FPS mapping inaccuracies.
+ */
+async function handleBoundaryPreview(boundaryTime: number, frameNumber: number) {
+  if (!initData || !decoderConfig || segments.length === 0) {
+    post({ type: "boundaryPreview", boundaryTime, beforeBitmap: null, afterBitmap: null });
+    return;
+  }
+
+  const thumbW = offscreen?.width ?? 160;
+  const thumbH = offscreen?.height ?? 90;
+
+  try {
+    // Step 1: Find the segment containing frame `frameNumber` by counting
+    // frames across segments. Use the first segment's frame count as the
+    // per-segment estimate (accurate for uniform-duration DASH segments).
+    // We fetch the first segment we think contains the boundary to get
+    // the actual frame count.
+
+    // Approximate segment index from boundaryTime (works for segment lookup)
+    let approxSegIdx = -1;
+    for (let i = 0; i < segments.length; i++) {
+      if (boundaryTime >= segments[i].startTime - 0.5 && boundaryTime < segments[i].endTime + 0.5) {
+        approxSegIdx = i;
+        break;
+      }
+    }
+    if (approxSegIdx < 0) {
+      // Fallback: use proportional guess
+      approxSegIdx = Math.min(
+        segments.length - 1,
+        Math.max(0, Math.floor((boundaryTime - segments[0].startTime) / (segments[0].endTime - segments[0].startTime))),
+      );
+    }
+
+    // Fetch the approximate segment to get its frame count
+    const approxMediaData = await fetchBuffer(segments[approxSegIdx].url);
+    if (aborted) { post({ type: "boundaryPreview", boundaryTime, beforeBitmap: null, afterBitmap: null }); return; }
+    const approxSamples = await extractAllSamplesFromSegment(initData, approxMediaData);
+    if (aborted || approxSamples.length === 0) { post({ type: "boundaryPreview", boundaryTime, beforeBitmap: null, afterBitmap: null }); return; }
+
+    const framesPerSeg = approxSamples.length;
+
+    // Compute which segment the frameNumber falls in and the local index
+    let targetSegIdx = Math.floor(frameNumber / framesPerSeg);
+    let localIndex = frameNumber - targetSegIdx * framesPerSeg;
+
+    // Clamp to valid range
+    if (targetSegIdx >= segments.length) {
+      targetSegIdx = segments.length - 1;
+      localIndex = framesPerSeg; // will use last frame
+    }
+
+    // Step 2: Determine if both frames are in the same segment or straddling two
+    let beforeBitmap: ImageBitmap | null = null;
+    let afterBitmap: ImageBitmap | null = null;
+
+    if (localIndex > 0 && localIndex < framesPerSeg) {
+      // Both frames in the same segment (before = localIndex-1, after = localIndex)
+      // Reuse already-fetched data if it's the right segment
+      let mediaData: ArrayBuffer;
+      let allSamples: Awaited<ReturnType<typeof extractAllSamplesFromSegment>>;
+      if (targetSegIdx === approxSegIdx) {
+        mediaData = approxMediaData;
+        allSamples = approxSamples;
+      } else {
+        mediaData = await fetchBuffer(segments[targetSegIdx].url);
+        if (aborted) { post({ type: "boundaryPreview", boundaryTime, beforeBitmap: null, afterBitmap: null }); return; }
+        allSamples = await extractAllSamplesFromSegment(initData, mediaData);
+        if (aborted || allSamples.length === 0) { post({ type: "boundaryPreview", boundaryTime, beforeBitmap: null, afterBitmap: null }); return; }
+      }
+
+      // Sort by CTS → display order, then look up exact CTS by index
+      const displayOrder = [...allSamples]
+        .map((s) => ({ cts: s.cts, timescale: s.timescale }))
+        .sort((a, b) => a.cts - b.cts);
+
+      const beforeIdx = Math.max(0, Math.min(localIndex - 1, displayOrder.length - 1));
+      const afterIdx = Math.min(localIndex, displayOrder.length - 1);
+      const beforeCtsUs = (displayOrder[beforeIdx].cts / displayOrder[beforeIdx].timescale) * 1_000_000;
+      const afterCtsUs = (displayOrder[afterIdx].cts / displayOrder[afterIdx].timescale) * 1_000_000;
+
+      // Decode with timestamp matching
+      let sencSamples: Awaited<ReturnType<typeof parseSencFromSegment>> | null = null;
+      if (cryptoKey && tencInfo) {
+        try {
+          sencSamples = parseSencFromSegment(mediaData, tencInfo.defaultPerSampleIVSize);
+        } catch {
+          post({ type: "boundaryPreview", boundaryTime, beforeBitmap: null, afterBitmap: null });
+          return;
+        }
+      }
+
+      const frameDurUs = displayOrder.length > 1
+        ? Math.abs(displayOrder[1].cts - displayOrder[0].cts) / displayOrder[0].timescale * 1_000_000
+        : 20_000;
+      const toleranceUs = frameDurUs / 2;
+
+      const beforeCanvas = new OffscreenCanvas(thumbW, thumbH);
+      const beforeCtx = beforeCanvas.getContext("2d")!;
+      const afterCanvas = new OffscreenCanvas(thumbW, thumbH);
+      const afterCtx = afterCanvas.getContext("2d")!;
+      let gotBefore = false;
+      let gotAfter = false;
+
+      const dec = new VideoDecoder({
+        output: (frame: VideoFrame) => {
+          const ts = frame.timestamp;
+          if (!gotBefore && Math.abs(ts - beforeCtsUs) < toleranceUs) {
+            beforeCtx.drawImage(frame, 0, 0, thumbW, thumbH);
+            gotBefore = true;
+          }
+          if (!gotAfter && Math.abs(ts - afterCtsUs) < toleranceUs) {
+            afterCtx.drawImage(frame, 0, 0, thumbW, thumbH);
+            gotAfter = true;
+          }
+          frame.close();
+        },
+        error: () => {},
+      });
+
+      dec.configure(decoderConfig!);
+      for (const sample of allSamples) {
+        if (aborted) break;
+        let sampleBytes: Uint8Array = new Uint8Array(sample.data!);
+        if (cryptoKey && tencInfo && sencSamples && sencSamples.length > 0) {
+          try {
+            const sencIdx = sample.number_in_traf ?? sample.number;
+            const sencEntry = sencSamples[sencIdx];
+            if (sencEntry) {
+              const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
+              if (iv && iv.length > 0) {
+                sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
+              }
+            }
+          } catch { continue; }
+        }
+        dec.decode(new EncodedVideoChunk({
+          type: sample.is_sync ? "key" : "delta",
+          timestamp: (sample.cts / sample.timescale) * 1_000_000,
+          data: sampleBytes,
+        }));
+      }
+      if (!aborted) await dec.flush();
+      try { dec.close(); } catch { /* */ }
+
+      beforeBitmap = gotBefore ? await createImageBitmap(beforeCanvas) : null;
+      afterBitmap = gotAfter ? await createImageBitmap(afterCanvas) : null;
+
+    } else if (localIndex === 0 && targetSegIdx > 0) {
+      // Boundary at segment start — before frame is last in previous segment,
+      // after frame is first in this segment.
+      const [bResult, aResult] = await Promise.all([
+        decodeSingleFrame(targetSegIdx - 1, "last"),
+        decodeSingleFrame(targetSegIdx, "first"),
+      ]);
+      beforeBitmap = bResult;
+      afterBitmap = aResult;
+    } else {
+      // localIndex >= framesPerSeg or other edge case — try last/first of adjacent segments
+      const [bResult, aResult] = await Promise.all([
+        decodeSingleFrame(targetSegIdx, "last"),
+        decodeSingleFrame(targetSegIdx + 1 < segments.length ? targetSegIdx + 1 : targetSegIdx, "first"),
+      ]);
+      beforeBitmap = bResult;
+      afterBitmap = aResult;
+    }
+
+    const transfer: Transferable[] = [];
+    if (beforeBitmap) transfer.push(beforeBitmap);
+    if (afterBitmap) transfer.push(afterBitmap);
+    post({ type: "boundaryPreview", boundaryTime, beforeBitmap, afterBitmap }, transfer);
+  } catch {
+    post({ type: "boundaryPreview", boundaryTime, beforeBitmap: null, afterBitmap: null });
+  }
+}
+
+/** Decode a single frame (first or last in display order) from a segment. */
+async function decodeSingleFrame(
+  segIdx: number,
+  which: "first" | "last",
+): Promise<ImageBitmap | null> {
+  if (segIdx < 0 || segIdx >= segments.length || !initData || !decoderConfig) return null;
+  const thumbW = offscreen?.width ?? 160;
+  const thumbH = offscreen?.height ?? 90;
+
+  const mediaData = await fetchBuffer(segments[segIdx].url);
+  if (aborted) return null;
+  const allSamples = await extractAllSamplesFromSegment(initData, mediaData);
+  if (aborted || allSamples.length === 0) return null;
+
+  const displayOrder = [...allSamples]
+    .map((s) => ({ cts: s.cts, timescale: s.timescale }))
+    .sort((a, b) => a.cts - b.cts);
+
+  const target = which === "first" ? displayOrder[0] : displayOrder[displayOrder.length - 1];
+  const targetUs = (target.cts / target.timescale) * 1_000_000;
+
+  const frameDurUs = displayOrder.length > 1
+    ? Math.abs(displayOrder[1].cts - displayOrder[0].cts) / displayOrder[0].timescale * 1_000_000
+    : 20_000;
+  const toleranceUs = frameDurUs / 2;
+
+  let sencSamples: Awaited<ReturnType<typeof parseSencFromSegment>> | null = null;
+  if (cryptoKey && tencInfo) {
+    try {
+      sencSamples = parseSencFromSegment(mediaData, tencInfo.defaultPerSampleIVSize);
+    } catch { return null; }
+  }
+
+  const canvas = new OffscreenCanvas(thumbW, thumbH);
+  const ctx = canvas.getContext("2d")!;
+  let captured = false;
+
+  const dec = new VideoDecoder({
+    output: (frame: VideoFrame) => {
+      if (!captured && Math.abs(frame.timestamp - targetUs) < toleranceUs) {
+        ctx.drawImage(frame, 0, 0, thumbW, thumbH);
+        captured = true;
+      }
+      frame.close();
+    },
+    error: () => {},
+  });
+  dec.configure(decoderConfig);
+  for (const sample of allSamples) {
+    if (aborted) break;
+    let sampleBytes: Uint8Array = new Uint8Array(sample.data!);
+    if (cryptoKey && tencInfo && sencSamples && sencSamples.length > 0) {
+      try {
+        const sencIdx = sample.number_in_traf ?? sample.number;
+        const sencEntry = sencSamples[sencIdx];
+        if (sencEntry) {
+          const iv = sencEntry.iv.length > 0 ? sencEntry.iv : tencInfo.defaultConstantIV;
+          if (iv && iv.length > 0) {
+            sampleBytes = await decryptSample(cryptoKey, iv, sampleBytes, sencEntry.subsamples);
+          }
+        }
+      } catch { continue; }
+    }
+    dec.decode(new EncodedVideoChunk({
+      type: sample.is_sync ? "key" : "delta",
+      timestamp: (sample.cts / sample.timescale) * 1_000_000,
+      data: sampleBytes,
+    }));
+  }
+  if (!aborted) await dec.flush();
+  try { dec.close(); } catch { /* */ }
+  return captured ? await createImageBitmap(canvas) : null;
+}
+
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data;
 
@@ -1031,6 +1284,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
   if (msg.type === "cancelDecodeSegment") {
     cancelledDecodeRequests.add(msg.requestId);
+    return;
+  }
+
+  if (msg.type === "boundaryPreview") {
+    handleBoundaryPreview(msg.boundaryTime, msg.frameNumber).catch(() => {
+      post({ type: "boundaryPreview", boundaryTime: msg.boundaryTime, beforeBitmap: null, afterBitmap: null });
+    });
     return;
   }
 

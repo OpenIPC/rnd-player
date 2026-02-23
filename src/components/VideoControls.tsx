@@ -180,37 +180,26 @@ export default function VideoControls({
   // is mapped to the DASH player's presentation timeline:
   // 1. FPS mismatch: initial fps guess may differ from detected fps
   // 2. PTS offset: B-frame CTO shifts the video start (e.g. +93ms for HEVC)
-  // See docs/scene-boundary-timing.md for full analysis.
+  // Recomputes from originalFrames every time to avoid cumulative drift.
   useEffect(() => {
-    if (!sceneData || !onSceneDataChange) return;
+    if (!sceneData || !onSceneDataChange || !sceneData.originalFrames) return;
 
-    const fpsNeedsCorrection =
-      detectedFps != null && Math.abs(detectedFps - sceneData.fps) >= 0.01;
-    const currentPtsOffset = sceneData.ptsOffset ?? 0;
-    const ptsNeedsCorrection = Math.abs(startOffset - currentPtsOffset) >= 0.001;
+    const targetFps = detectedFps ?? sceneData.fps;
+    if (targetFps <= 0) return;
 
-    if (!fpsNeedsCorrection && !ptsNeedsCorrection) return;
+    const fpsChanged = Math.abs(targetFps - sceneData.fps) >= 0.01;
+    const ptsChanged = Math.abs(startOffset - (sceneData.ptsOffset ?? 0)) >= 0.001;
+    if (!fpsChanged && !ptsChanged) return;
 
-    let newBoundaries = sceneData.boundaries;
-    let newFps = sceneData.fps;
-
-    if (fpsNeedsCorrection && detectedFps) {
-      // Undo current PTS offset, scale to correct FPS, apply target offset
-      const ratio = sceneData.fps / detectedFps;
-      newBoundaries = newBoundaries.map(
-        (b) => (b - currentPtsOffset) * ratio + startOffset,
-      );
-      newFps = detectedFps;
-    } else if (ptsNeedsCorrection) {
-      // FPS is already correct — just shift by offset delta
-      const delta = startOffset - currentPtsOffset;
-      newBoundaries = newBoundaries.map((b) => b + delta);
-    }
+    // Always recompute from raw frame numbers — no cumulative corrections
+    const newBoundaries = sceneData.originalFrames.map(
+      (f) => f / targetFps + startOffset,
+    );
 
     onSceneDataChange({
       ...sceneData,
       boundaries: newBoundaries,
-      fps: newFps,
+      fps: targetFps,
       ptsOffset: startOffset,
     });
   }, [detectedFps, startOffset, sceneData, onSceneDataChange]);

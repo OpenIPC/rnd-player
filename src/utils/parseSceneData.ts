@@ -10,7 +10,7 @@ export function parseSceneData(json: unknown, fps: number): SceneData | null {
   const raw = obj as unknown as Av1anSceneJson;
   if (raw.scenes.length === 0) return null;
 
-  const boundarySet = new Set<number>();
+  const frameSet = new Set<number>();
 
   for (const scene of raw.scenes) {
     if (
@@ -20,16 +20,18 @@ export function parseSceneData(json: unknown, fps: number): SceneData | null {
       return null;
     }
     if (scene.start_frame > 0) {
-      boundarySet.add(scene.start_frame / fps);
+      frameSet.add(scene.start_frame);
     }
   }
 
-  const boundaries = Array.from(boundarySet).sort((a, b) => a - b);
+  const originalFrames = Array.from(frameSet).sort((a, b) => a - b);
+  const boundaries = originalFrames.map((f) => f / fps);
 
   return {
     totalFrames: raw.frames,
     boundaries,
     fps,
     ptsOffset: 0,
+    originalFrames,
   };
 }
