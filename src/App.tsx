@@ -258,14 +258,6 @@ function App() {
           >
             Demo
           </button>
-          <button
-            type="button"
-            className="url-scenes"
-            onClick={() => sceneFileRef.current?.click()}
-          >
-            Scenes
-            {sceneData && <span className="url-scenes-dot" />}
-          </button>
         </form>
         <span className="url-version">
           v{__APP_VERSION__} ({__BUILD_DATE__}, {__BUILD_COMMIT__})
