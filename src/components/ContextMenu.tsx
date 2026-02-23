@@ -5,6 +5,7 @@ import {
   OutPointIcon,
   ClearMarkersIcon,
   SaveSegmentIcon,
+  DownloadScriptIcon,
   SubtitleIcon,
   TranslateIcon,
   StatsNerdIcon,
@@ -21,6 +22,7 @@ interface ContextMenuProps {
 
   // Actions
   onCopyUrl: () => void;
+  onCopyDownloadScript: () => void;
   onSetInPoint: () => void;
   onSetOutPoint: () => void;
   onClearMarkers: () => void;
@@ -49,6 +51,7 @@ export default function ContextMenu({
   containerEl,
   moduleConfig,
   onCopyUrl,
+  onCopyDownloadScript,
   onSetInPoint,
   onSetOutPoint,
   onClearMarkers,
@@ -79,6 +82,12 @@ export default function ContextMenu({
         <CopyLinkIcon />
         Copy video URL at current time
       </div>
+      {moduleConfig.segmentExport && (
+        <div className="vp-context-menu-item" onClick={onCopyDownloadScript}>
+          <DownloadScriptIcon />
+          Copy stream download script
+        </div>
+      )}
       <div className="vp-context-menu-separator" />
       <div className="vp-context-menu-item" onClick={onSetInPoint}>
         <InPointIcon />

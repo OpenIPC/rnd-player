@@ -244,6 +244,31 @@ Key observations:
 
 **Conclusion**: The CTO is caused by B-frame reordering in the encoder, not by any specific packager. Any DASH stream encoded with B-frames will exhibit it. The ffmpeg-generated test fixtures don't have it because they use simple GOP structures without composition time offsets. Our `getBufferedInfo()` delta detection works across packagers (ISM, Kaltura) and codecs (HEVC, AVC).
 
+### Finding 10: Frame Count Discrepancy Is Cosmetic — Scene Alignment Correct
+
+After implementing the download script generator (AP-5), Stream A was downloaded using the player's "Copy stream download script" feature (2160p HEVC rendition, all 143 segments). av1an scene detection was run on the downloaded file and the resulting `scenes.json` loaded back into the player.
+
+**Results**:
+- av1an reports **10,722 frames** in the downloaded file
+- Player displays **10,719 frames** (derived from `Math.floor((duration - startOffset) × fps)`)
+- Difference: **3 frames**
+
+**Why the discrepancy exists**:
+
+The player's frame count is an *estimate* from the manifest's `mediaPresentationDuration` and the detected CTO:
+```
+Player: Math.floor((428.921 - startOffset) × 25)
+```
+This depends on the manifest's declared duration, which may not account for partial frames at segment boundaries, and on the CTO value which normalizes fractional frame offsets.
+
+av1an's frame count is the *actual* number of decoded video samples in the file — the ground truth.
+
+**Why it doesn't matter for scene alignment**:
+
+Scene boundaries are frame-indexed (e.g., "scene starts at frame 510"). The conversion to time is `frame / fps + startOffset`. This positions the marker at the correct MSE presentation time regardless of whether the total frame count estimate is exact. The boundaries were **visually confirmed to align with actual shot changes** in the player.
+
+The mismatch only affects the total duration display in "totalFrames" timecode mode — a cosmetic issue.
+
 ### Finding 5: Scene Boundary Conversion Error
 
 The current conversion `boundary_time = start_frame / fps` assumes frame 0 is at time 0.000s. But in the DASH player, frame 0 is at time ~0.093s.
@@ -340,9 +365,44 @@ Add a `sceneOffset` URL parameter (seconds) that shifts all boundaries. For case
 
 When scene data's `totalFrames` (10648) differs significantly from `duration × fps` (10723), show a console warning. Signals the source file doesn't match the stream exactly (e.g. missing last segment from ffmpeg download).
 
-### AP-5: Document ffmpeg best practices
+### AP-5: Stream download script generator ✅
 
-Add a note about the last-segment download issue. Recommend `yt-dlp` or `shaka-packager` as alternatives for full segment enumeration.
+**Problem**: To evaluate av1an scene detection accuracy, we need the exact same video frames the browser decodes. Three obstacles with `ffmpeg -i manifest.mpd -codec copy`:
+
+1. **Last-segment bug** — ffmpeg's DASH demuxer can miss the final segment (see Finding 2: 75 frames / 2.92s gap)
+2. **Representation selection** — ffmpeg picks a representation implicitly; no guarantee it matches what the browser is playing
+3. **Timestamp normalization** — ffmpeg remuxes to regular MP4 with different container timestamps than the DASH segments
+
+**Solution**: The player now has a "Copy stream download script" context menu item (gated on `moduleConfig.segmentExport`). It generates a bash script that:
+
+1. Reads the currently playing rendition from `player.getVariantTracks()`
+2. Enumerates all segment URLs via `stream.createSegmentIndex()`
+3. Outputs curl commands for init + all media segments
+4. Concatenates into fragmented MP4 (`cat init.m4s seg_*.m4s > stream.fmp4`)
+5. Remuxes to regular MP4 via ffmpeg (`ffmpeg -i stream.fmp4 -codec copy stream.mp4`)
+6. Includes a commented av1an command
+
+This guarantees:
+- **Same rendition** as the browser (exact width/height/codec/bitrate match)
+- **All segments** including the last (no ffmpeg DASH demuxer involved)
+- **Same frame sequence** — the fMP4 contains identical bytes to what the MSE SourceBuffer received
+
+**Workflow**:
+```bash
+# 1. Play stream in browser, right-click → "Copy stream download script"
+# 2. Paste and run:
+bash download.sh
+# 3. Run scene detection:
+av1an --sc-only -i stream_1080p/stream.mp4 --scenes stream_1080p/scenes.json -x 0
+# 4. Load scenes.json in the player (drag-and-drop or URL param)
+```
+
+**Timing alignment**: av1an numbers frames sequentially (0, 1, 2...) regardless of container PTS. The CTO auto-detection (AP-1) applies the correct offset when loading results back into the player. No manual calibration needed.
+
+**Limitations**:
+- CDN auth tokens in segment URLs expire — run the script promptly after copying
+- Some CDNs block direct curl requests (CORS) — the in-browser segment export (Save MP4) bypasses this
+- Encrypted streams need the ClearKey for decryption — not included in the script
 
 ## Potential Solutions (Research)
 
