@@ -35,6 +35,7 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - Clean destruction on unmount via a `destroyed` safety flag
 - Module config gating: FilmstripTimeline render gated on `moduleConfig.filmstrip`, QualityCompare on `moduleConfig.qualityCompare`
 - Passes scene data through to VideoControls and FilmstripTimeline
+- Spawns `useBoundaryPreviews` hook for progress bar boundary preview images (independent of filmstrip panel), passes `boundaryPreviews`/`requestBoundaryPreview`/`clearBoundaryPreviews` to VideoControls
 
 **VideoControls** (`src/components/VideoControls.tsx`) — Custom overlay UI with 20+ state variables managing:
 - Play/pause, seek bar, volume slider, quality/speed/audio/subtitle popups
@@ -42,7 +43,7 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - Fullscreen API integration
 - Module config gating: each optional feature (stats, audio levels, adaptation toast, subtitles, segment export, keyboard shortcuts, sleep/wake, scene markers) is conditionally rendered or enabled based on `moduleConfig` props
 - Delegates right-click menu to `ContextMenu`, export picker to `ExportPicker`, sleep/wake to `useSleepWakeRecovery`
-- Scene markers: renders orange tick marks on progress bar at scene boundaries, scene-aware hover tooltip ("01:23.456 · Scene 3"), next/prev scene navigation via `goToNextScene`/`goToPrevScene` (mapped to PageDown/PageUp), drag-and-drop `.json` scene files onto the player (delegates to `onLoadSceneFile`), FPS correction when detected FPS differs from initial, `scenes=` param in shareable URL
+- Scene markers: renders orange tick marks on progress bar at scene boundaries, scene-aware hover tooltip ("01:23.456 · Scene 3") with boundary preview images (4 frames showing before/after at left and right scene boundaries), next/prev scene navigation via `goToNextScene`/`goToPrevScene` (mapped to PageDown/PageUp), drag-and-drop `.json` scene files onto the player (delegates to `onLoadSceneFile`), FPS correction when detected FPS differs from initial, `scenes=` param in shareable URL
 
 **ContextMenu** (`src/components/ContextMenu.tsx`) — Right-click context menu extracted from VideoControls. Renders via `createPortal` into the container element. Accepts `moduleConfig` and conditionally shows menu items: stats (`statsPanel`), audio levels (`audioLevels`), quality compare (`qualityCompare`), filmstrip (`filmstrip`), save MP4 (`segmentExport`). Always shows copy URL, in/out point controls, and subtitle-related items.
 
@@ -70,6 +71,11 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - `requestBoundaryPreview(boundaryTime, frameNumber)` — triggers decode of frames adjacent to a scene boundary using frame-number-based index lookup
 - `clearBoundaryPreviews()` — invalidates boundary preview cache when scene data changes (FPS correction)
 - Memory eviction: bitmaps outside 3× the visible viewport span are closed and removed
+
+**useBoundaryPreviews** (`src/hooks/useBoundaryPreviews.ts`) — Lightweight hook that spawns a dedicated `thumbnailWorker` instance purely for boundary preview decoding in the progress bar tooltip. Works independently of the filmstrip panel so boundary previews are available even when the filmstrip is closed. The worker is initialized with segment info via `generate` but receives no `updateQueue` messages, so it sits idle except when handling `boundaryPreview` requests. Overhead is minimal (one extra idle Worker thread, browser-cached init segment fetch). Enabled when `playerReady && !!sceneData && moduleConfig.sceneMarkers`. Exposes:
+- `boundaryPreviews` — `Map<number, BoundaryPreview>`: cached before/after ImageBitmaps keyed by boundary time
+- `requestBoundaryPreview(boundaryTime, frameNumber)` — triggers decode of frames adjacent to a scene boundary
+- `clearBoundaryPreviews()` — invalidates cache when scene data changes (FPS correction)
 
 **thumbnailWorker** (`src/workers/thumbnailWorker.ts`) — Web Worker that fetches media segments, extracts samples via mp4box, decodes frames with VideoDecoder, and posts back ImageBitmaps. For CENC-encrypted content, integrates with `cencDecrypt` to decrypt samples before decoding. Key subsystems:
 
