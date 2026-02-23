@@ -238,6 +238,29 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
             if (destroyed) return;
             const bi = player.getBufferedInfo();
             let offset = 0;
+
+            // --- CTO diagnostic logging (temporary) ---
+            console.group("[CTO diagnostic]");
+            console.log("loadStartTime:", loadStartTime);
+            console.log("video.currentTime:", video.currentTime);
+            console.log("video.readyState:", video.readyState);
+            console.log("video.buffered.length:", video.buffered.length);
+            if (video.buffered.length > 0) {
+              console.log(`video.buffered[0]: ${video.buffered.start(0)} – ${video.buffered.end(0)}`);
+            }
+            console.log("shaka bufferedInfo.audio:", JSON.stringify(bi.audio));
+            console.log("shaka bufferedInfo.video:", JSON.stringify(bi.video));
+            if (bi.audio.length > 0 && bi.video.length > 0) {
+              console.log("audio/video delta:", bi.video[0].start - bi.audio[0].start);
+            }
+            const timeline = player.getManifest()?.presentationTimeline;
+            if (timeline) {
+              console.log("seekRangeStart:", timeline.getSeekRangeStart());
+              console.log("seekRangeEnd:", timeline.getSeekRangeEnd());
+            }
+            console.groupEnd();
+            // --- end diagnostic ---
+
             if (bi.audio.length > 0 && bi.video.length > 0) {
               const delta = bi.video[0].start - bi.audio[0].start;
               // CTO is typically 1–3 frames (40–120ms at 25fps).
@@ -254,6 +277,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
                   ? video.buffered.start(0)
                   : video.currentTime;
             }
+            console.log("[CTO diagnostic] final startOffset:", offset);
             setStartOffset(offset);
           };
           if (video.readyState >= 3) {
