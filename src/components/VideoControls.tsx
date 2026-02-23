@@ -1086,6 +1086,7 @@ export default function VideoControls({
               ref={tooltipRef}
               className={`vp-progress-tooltip${hasPreviewImages ? " vp-progress-tooltip-interactive" : ""}`}
               style={{ left: `${hoverInfo.pct}%` }}
+              onMouseMove={hasPreviewImages ? e => e.stopPropagation() : undefined}
               onMouseLeave={onTooltipMouseLeave}
             >
               <div className="vp-progress-tooltip-text">
