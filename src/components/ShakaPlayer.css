@@ -258,6 +258,15 @@ video::-webkit-media-text-track-container {
   display: flex;
   flex-direction: column;
   align-items: center;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 3px;
+  margin: -3px;
+}
+
+.vp-progress-boundary-pair:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .vp-progress-boundary-label {

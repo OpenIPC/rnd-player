@@ -1074,10 +1074,19 @@ export default function VideoControls({
 
                 if (!leftPreview && !rightPreview) return null;
 
+                const seekToBoundary = (boundaryTime: number) => (e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  videoEl.currentTime = boundaryTime;
+                  setHoverInfo(null);
+                };
+
                 return (
                   <div className="vp-progress-boundary-row">
                     {leftPreview && (
-                      <div className="vp-progress-boundary-pair">
+                      <div
+                        className="vp-progress-boundary-pair"
+                        onClick={seekToBoundary(sceneData.boundaries[leftIdx])}
+                      >
                         <div className="vp-progress-boundary-label">S{sceneNum - 1} → S{sceneNum}</div>
                         <div className="vp-boundary-frames">
                           <BoundaryCanvas bitmap={leftPreview.before} width={100} />
@@ -1087,7 +1096,10 @@ export default function VideoControls({
                       </div>
                     )}
                     {rightPreview && (
-                      <div className="vp-progress-boundary-pair">
+                      <div
+                        className="vp-progress-boundary-pair"
+                        onClick={seekToBoundary(sceneData.boundaries[rightIdx])}
+                      >
                         <div className="vp-progress-boundary-label">S{sceneNum} → S{sceneNum + 1}</div>
                         <div className="vp-boundary-frames">
                           <BoundaryCanvas bitmap={rightPreview.before} width={100} />
