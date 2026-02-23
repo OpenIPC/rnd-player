@@ -221,12 +221,40 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
         await player.load(src, loadStartTime);
         if (destroyed) return;
 
-        // Detect B-frame composition time offset: after loading from
-        // the beginning, the browser settles on the first displayable
-        // frame which may be > 0 due to B-frame reordering.
-        if (loadStartTime == null) {
+        // Detect B-frame composition time offset (CTO).
+        // Compare Shaka's per-track buffer ranges: the video
+        // SourceBuffer starts later than audio when HEVC B-frame
+        // reordering pushes the first sample's CTS forward (common
+        // with ISM-repackaged DASH). This works regardless of
+        // whether we loaded from a saved position or from the
+        // beginning, because the CTO is constant across segments.
+        // Previous approach (video.currentTime at canplay) failed
+        // because: (a) it was gated on loadStartTime==null, so
+        // repeated loads with sessionStorage-saved position skipped
+        // detection entirely; (b) video.currentTime returns the seek
+        // target, not the CTO, when loading from a non-zero position.
+        {
           const onCanPlay = () => {
-            if (!destroyed) setStartOffset(video.currentTime);
+            if (destroyed) return;
+            const bi = player.getBufferedInfo();
+            let offset = 0;
+            if (bi.audio.length > 0 && bi.video.length > 0) {
+              const delta = bi.video[0].start - bi.audio[0].start;
+              // CTO is typically 1–3 frames (40–120ms at 25fps).
+              // Reject negative deltas (audio starts after video)
+              // and implausibly large ones (> 500ms) that indicate
+              // segment boundary misalignment rather than CTO.
+              if (delta > 0.001 && delta < 0.5) {
+                offset = delta;
+              }
+            } else if (loadStartTime == null) {
+              // Video-only or audio-only: fall back to buffered start
+              offset =
+                video.buffered.length > 0
+                  ? video.buffered.start(0)
+                  : video.currentTime;
+            }
+            setStartOffset(offset);
           };
           if (video.readyState >= 3) {
             onCanPlay();
