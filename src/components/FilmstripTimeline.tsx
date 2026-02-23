@@ -971,9 +971,9 @@ export default function FilmstripTimeline({
       const x = clientX - rect.left;
       const time = (x + scrollLeftRef.current) / pxPerSecRef.current;
       const dur = durationRef.current;
-      videoEl.currentTime = Math.max(0, Math.min(dur, time));
+      videoEl.currentTime = Math.max(startOffset, Math.min(dur, time));
     },
-    [videoEl],
+    [videoEl, startOffset],
   );
 
   useEffect(() => {

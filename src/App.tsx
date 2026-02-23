@@ -108,8 +108,14 @@ const DEMO_STREAMS = [
   {
     name: "Frame Counter",
     description:
-      "60 s, 5 renditions (240p\u20131080p), 30 fps with 4-digit frame counter overlay. Built-in test fixture.",
+      "60 s, 5 renditions (240p\u20131080p), 30 fps AVC with 4-digit frame counter overlay. Built-in test fixture.",
     url: "https://openipc.github.io/rnd-player/fixtures/frames/manifest.mpd",
+  },
+  {
+    name: "Frame Counter (HEVC)",
+    description:
+      "60 s, 2 renditions (480p\u20131080p), 30 fps HEVC with B-frames and frame counter overlay. Tests HEVC-specific seek behavior.",
+    url: "https://openipc.github.io/rnd-player/fixtures/frames/hevc/manifest.mpd",
   },
 ];
 

@@ -174,19 +174,45 @@ export default function VideoControls({
     moduleConfig.sleepWakeRecovery,
   );
 
-  // ── Scene data: FPS correction ──
+  // ── Scene data: FPS + PTS offset correction ──
+  // Corrects two independent errors when av1an scene data (frame-based)
+  // is mapped to the DASH player's presentation timeline:
+  // 1. FPS mismatch: initial fps guess may differ from detected fps
+  // 2. PTS offset: B-frame CTO shifts the video start (e.g. +93ms for HEVC)
+  // See docs/scene-boundary-timing.md for full analysis.
   useEffect(() => {
-    if (!sceneData || !detectedFps || !onSceneDataChange) return;
-    if (Math.abs(detectedFps - sceneData.fps) < 0.01) return;
-    // Recalculate boundaries with corrected FPS
-    const ratio = sceneData.fps / detectedFps;
-    const corrected: SceneData = {
+    if (!sceneData || !onSceneDataChange) return;
+
+    const fpsNeedsCorrection =
+      detectedFps != null && Math.abs(detectedFps - sceneData.fps) >= 0.01;
+    const currentPtsOffset = sceneData.ptsOffset ?? 0;
+    const ptsNeedsCorrection = Math.abs(startOffset - currentPtsOffset) >= 0.001;
+
+    if (!fpsNeedsCorrection && !ptsNeedsCorrection) return;
+
+    let newBoundaries = sceneData.boundaries;
+    let newFps = sceneData.fps;
+
+    if (fpsNeedsCorrection && detectedFps) {
+      // Undo current PTS offset, scale to correct FPS, apply target offset
+      const ratio = sceneData.fps / detectedFps;
+      newBoundaries = newBoundaries.map(
+        (b) => (b - currentPtsOffset) * ratio + startOffset,
+      );
+      newFps = detectedFps;
+    } else if (ptsNeedsCorrection) {
+      // FPS is already correct — just shift by offset delta
+      const delta = startOffset - currentPtsOffset;
+      newBoundaries = newBoundaries.map((b) => b + delta);
+    }
+
+    onSceneDataChange({
       ...sceneData,
-      boundaries: sceneData.boundaries.map((b) => b * ratio),
-      fps: detectedFps,
-    };
-    onSceneDataChange(corrected);
-  }, [detectedFps, sceneData, onSceneDataChange]);
+      boundaries: newBoundaries,
+      fps: newFps,
+      ptsOffset: startOffset,
+    });
+  }, [detectedFps, startOffset, sceneData, onSceneDataChange]);
 
   // ── Scene navigation ──
   const SCENE_EPSILON = 0.05;
@@ -210,8 +236,8 @@ export default function VideoControls({
       }
     }
     if (prev != null) videoEl.currentTime = prev;
-    else videoEl.currentTime = 0;
-  }, [sceneData, videoEl]);
+    else videoEl.currentTime = startOffset;
+  }, [sceneData, videoEl, startOffset]);
 
   // ── Drag-and-drop scene JSON onto player ──
   useEffect(() => {
@@ -563,7 +589,7 @@ export default function VideoControls({
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    videoEl.currentTime = Number(e.target.value);
+    videoEl.currentTime = Math.max(startOffset, Number(e.target.value));
   };
 
   const toggleMute = () => {
