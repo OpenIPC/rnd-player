@@ -368,12 +368,17 @@ export default function FilmstripTimeline({
       const pxPerSec = pxPerSecRef.current;
       const scrollLeft = scrollLeftRef.current;
 
+      // B-frame CTO pixel offset: frame slots use segment-relative
+      // positions (no CTO shift), so overlays, playhead, ruler, and
+      // seek must subtract CTO to align with frame positions.
+      const ctoPx = startOffsetRef.current * pxPerSec;
+
       // Auto-follow playhead
       if (followModeRef.current && !isDraggingRef.current) {
-        const playheadX = time * pxPerSec - scrollLeft;
+        const playheadX = time * pxPerSec - ctoPx - scrollLeft;
         const margin = w * 0.15;
         if (playheadX < margin || playheadX > w - margin) {
-          scrollLeftRef.current = clampScroll(time * pxPerSec - w / 2, w);
+          scrollLeftRef.current = clampScroll(time * pxPerSec - ctoPx - w / 2, w);
         }
       }
 
@@ -421,14 +426,12 @@ export default function FilmstripTimeline({
       const sOff = startOffsetRef.current;
       let startTick: number;
       let endTick: number;
-      if (tickInterval < 1) {
-        // Anchor from startOffset so ticks land on frame boundaries
-        startTick = sOff + Math.floor((sl / pxPerSec - sOff) / tickInterval) * tickInterval;
-        endTick = sOff + Math.ceil(((sl + w) / pxPerSec - sOff) / tickInterval) * tickInterval;
-      } else {
-        startTick = Math.floor(sl / pxPerSec / tickInterval) * tickInterval;
-        endTick = Math.ceil((sl + w) / pxPerSec / tickInterval) * tickInterval;
-      }
+      // Anchor ALL ticks from startOffset so they align with frame
+      // boundaries. For sub-second: frame-exact alignment. For
+      // whole-second: ticks at sOff, sOff+1, sOff+2, ... so that
+      // after the CTO pixel shift they land at round video-time seconds.
+      startTick = sOff + Math.floor(((sl + ctoPx) / pxPerSec - sOff) / tickInterval) * tickInterval;
+      endTick = sOff + Math.ceil(((sl + ctoPx + w) / pxPerSec - sOff) / tickInterval) * tickInterval;
 
       ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
       ctx.font = FONT;
@@ -442,7 +445,7 @@ export default function FilmstripTimeline({
 
       for (let t = startTick; t <= endTick; t += tickInterval) {
         if (t < 0) continue;
-        const x = t * pxPerSec - sl;
+        const x = t * pxPerSec - sl - ctoPx;
         if (x < -50 || x > w + 50) continue;
 
         // Major tick
@@ -453,15 +456,15 @@ export default function FilmstripTimeline({
         ctx.lineTo(x, RULER_HEIGHT);
         ctx.stroke();
 
+        // Labels use video time (DASH time minus CTO)
+        const videoTime = Math.max(0, t - sOff);
         let label: string;
         if (tickInterval < 1) {
-          // Sub-second: show milliseconds (frame numbers are already on thumbnails)
-          const adjusted = Math.max(0, t - sOff);
-          label = formatTimecode(adjusted, "milliseconds");
+          label = formatTimecode(videoTime, "milliseconds");
         } else if (pxPerSec > 30 && timecodeModeRef.current) {
-          label = formatTimecode(t, timecodeModeRef.current, curFps);
+          label = formatTimecode(videoTime, timecodeModeRef.current, curFps);
         } else {
-          label = formatTime(t);
+          label = formatTime(videoTime);
         }
         ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
         ctx.fillText(label, x, RULER_HEIGHT - 7);
@@ -469,7 +472,7 @@ export default function FilmstripTimeline({
         // Minor ticks
         const subInterval = tickInterval / subCount;
         for (let s = 1; s < subCount; s++) {
-          const sx = (t + s * subInterval) * pxPerSec - sl;
+          const sx = (t + s * subInterval) * pxPerSec - sl - ctoPx;
           if (sx < 0 || sx > w) continue;
           ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
           ctx.beginPath();
@@ -555,9 +558,10 @@ export default function FilmstripTimeline({
             ctx.strokeRect(x1, drawY, drawW, thumbH);
           }
         } else {
-          // Gap mode: tile thumbnails edge-to-edge within equal-width slots
-          // so the first thumbnail starts at the segment boundary, aligning
-          // with the bitrate bar below.
+          // Gap mode: tile thumbnails edge-to-edge within equal-width slots.
+          // Frame slots are positioned at segment-relative times (no CTO
+          // offset). The playhead, ruler, and overlays are shifted by -CTO
+          // to align with frame positions (see ctoPx below).
           const count = Math.max(2, Math.ceil(segWidth / thumbW));
           const slotW = segWidth / count;
           const intraArr = intraFramesMapRef.current.get(thumbSegIdx) ?? [];
@@ -620,7 +624,7 @@ export default function FilmstripTimeline({
 
             // Frame number at max zoom
             if (atMaxZoom) {
-              const frameNum = Math.round((segStart - startOffsetRef.current) * fpsRef.current) + j;
+              const frameNum = Math.round(segStart * fpsRef.current) + j;
               ctx.font = "9px monospace";
               ctx.textAlign = "left";
               ctx.textBaseline = "top";
@@ -835,14 +839,14 @@ export default function FilmstripTimeline({
       const outPt = outPointRef.current;
 
       if (inPt != null && outPt != null) {
-        const inX = inPt * pxPerSec - sl;
-        const outX = outPt * pxPerSec - sl;
+        const inX = inPt * pxPerSec - sl - ctoPx;
+        const outX = outPt * pxPerSec - sl - ctoPx;
         ctx.fillStyle = "rgba(245, 197, 24, 0.1)";
         ctx.fillRect(inX, 0, outX - inX, h);
       }
 
       if (inPt != null) {
-        const inX = inPt * pxPerSec - sl;
+        const inX = inPt * pxPerSec - sl - ctoPx;
         if (inX >= -2 && inX <= w + 2) {
           ctx.strokeStyle = MARKER_COLOR;
           ctx.lineWidth = 2;
@@ -867,7 +871,7 @@ export default function FilmstripTimeline({
       }
 
       if (outPt != null) {
-        const outX = outPt * pxPerSec - sl;
+        const outX = outPt * pxPerSec - sl - ctoPx;
         if (outX >= -2 && outX <= w + 2) {
           ctx.strokeStyle = MARKER_COLOR;
           ctx.lineWidth = 2;
@@ -899,7 +903,7 @@ export default function FilmstripTimeline({
         ctx.setLineDash([4, 3]);
 
         for (const boundary of sd.boundaries) {
-          const bx = boundary * pxPerSec - sl;
+          const bx = boundary * pxPerSec - sl - ctoPx;
           if (bx < -2 || bx > w + 2) continue;
           ctx.beginPath();
           ctx.moveTo(bx, 0);
@@ -914,14 +918,14 @@ export default function FilmstripTimeline({
         ctx.textAlign = "left";
         ctx.textBaseline = "top";
 
-        // S1 at position 0
-        const s1x = 0 * pxPerSec - sl;
+        // S1 at position 0 (video start)
+        const s1x = 0 * pxPerSec - sl - ctoPx;
         if (s1x >= -30 && s1x <= w + 2) {
           ctx.fillText("S1", s1x + 3, 2);
         }
         // S2, S3, ... at each boundary
         for (let i = 0; i < sd.boundaries.length; i++) {
-          const bx = sd.boundaries[i] * pxPerSec - sl;
+          const bx = sd.boundaries[i] * pxPerSec - sl - ctoPx;
           if (bx < -30 || bx > w + 2) continue;
           ctx.fillText(`S${i + 2}`, bx + 3, 2);
         }
@@ -932,7 +936,7 @@ export default function FilmstripTimeline({
       }
 
       // ── Playhead ──
-      const playheadX = time * pxPerSec - sl;
+      const playheadX = time * pxPerSec - sl - ctoPx;
       if (playheadX >= -2 && playheadX <= w + 2) {
         ctx.strokeStyle = PLAYHEAD_COLOR_CANVAS;
         ctx.lineWidth = 2;
@@ -969,9 +973,12 @@ export default function FilmstripTimeline({
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       const x = clientX - rect.left;
-      const time = (x + scrollLeftRef.current) / pxPerSecRef.current;
+      // Canvas x-axis uses video time (DASH time - CTO). Convert back
+      // to DASH time by adding startOffset for the seek target.
+      const videoTime = (x + scrollLeftRef.current) / pxPerSecRef.current;
+      const dashTime = videoTime + startOffset;
       const dur = durationRef.current;
-      videoEl.currentTime = Math.max(startOffset, Math.min(dur, time));
+      videoEl.currentTime = Math.max(startOffset, Math.min(dur, dashTime));
     },
     [videoEl, startOffset],
   );
@@ -1029,7 +1036,8 @@ export default function FilmstripTimeline({
       if (sd && sd.boundaries.length > 0) {
         const rect2 = canvas.getBoundingClientRect();
         const localX2 = e.clientX - rect2.left;
-        const hoverTime = (localX2 + scrollLeftRef.current) / pxPerSecRef.current;
+        // Convert pixel to DASH time (canvas uses video time, add CTO)
+        const hoverTime = (localX2 + scrollLeftRef.current) / pxPerSecRef.current + startOffsetRef.current;
         const proximityPx = 3;
         const proximityTime = proximityPx / pxPerSecRef.current;
 
@@ -1199,9 +1207,10 @@ export default function FilmstripTimeline({
       const w = containerWidthRef.current;
       const zoomFactor = isZoomIn ? 1.15 : 1 / 1.15;
 
-      // Anchor zoom on the playhead position
+      // Anchor zoom on the playhead position (video time = DASH - CTO)
       const time = currentTimeRef.current;
-      const playheadScreenX = time * pxPerSecRef.current - scrollLeftRef.current;
+      const cto = startOffsetRef.current;
+      const playheadScreenX = time * pxPerSecRef.current - cto * pxPerSecRef.current - scrollLeftRef.current;
       const anchorX = Math.max(0, Math.min(w, playheadScreenX));
 
       const timeBefore = (anchorX + scrollLeftRef.current) / pxPerSecRef.current;
