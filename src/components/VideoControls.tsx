@@ -980,6 +980,7 @@ export default function VideoControls({
   // ── Progress bar hover tooltip ──
   const [hoverInfo, setHoverInfo] = useState<{ pct: number; time: number } | null>(null);
   const progressRowRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
 
   const onProgressMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -992,7 +993,17 @@ export default function VideoControls({
     [duration],
   );
 
-  const onProgressMouseLeave = useCallback(() => {
+  const onProgressMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    // Don't dismiss if cursor moved into the tooltip (boundary preview click targets)
+    const related = e.relatedTarget as Node | null;
+    if (related && tooltipRef.current?.contains(related)) return;
+    setHoverInfo(null);
+  }, []);
+
+  const onTooltipMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    // Dismiss unless cursor moved back into the progress row
+    const related = e.relatedTarget as Node | null;
+    if (related && progressRowRef.current?.contains(related)) return;
     setHoverInfo(null);
   }, []);
 
@@ -1046,8 +1057,10 @@ export default function VideoControls({
         >
           {hoverInfo && (
             <div
+              ref={tooltipRef}
               className="vp-progress-tooltip"
               style={{ left: `${hoverInfo.pct}%` }}
+              onMouseLeave={onTooltipMouseLeave}
             >
               <div className="vp-progress-tooltip-text">
                 {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
