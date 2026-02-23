@@ -986,6 +986,13 @@ export default function VideoControls({
     (e: React.MouseEvent<HTMLDivElement>) => {
       const row = progressRowRef.current;
       if (!row || !duration) return;
+      // When the interactive tooltip is open, ignore moves above the track
+      // so diagonal cursor travel toward the tooltip doesn't shift the scene
+      if (tooltipRef.current) {
+        const rect = row.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+        if (e.clientY < midY) return;
+      }
       const rect = row.getBoundingClientRect();
       const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       setHoverInfo({ pct: pct * 100, time: pct * duration });
