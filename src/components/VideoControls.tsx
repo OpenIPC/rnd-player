@@ -35,6 +35,7 @@ import { loadSettings } from "../hooks/useSettings";
 import type { CompareViewState } from "./ShakaPlayer";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 import type { SceneData } from "../types/sceneData";
+import { copyToClipboard } from "../utils/copyToClipboard";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { BoundaryPreview, RequestBoundaryPreviewFn } from "../hooks/useBoundaryPreviews";
 
@@ -775,7 +776,7 @@ export default function VideoControls({
   }, []);
 
   const handleSubtitleCopy = useCallback((text: string, toast?: string) => {
-    navigator.clipboard.writeText(text).then(() => showCopiedToast(toast ?? "Subtitle copied"));
+    copyToClipboard(text).then(() => showCopiedToast(toast ?? "Subtitle copied"));
   }, [showCopiedToast]);
 
   // ── Ctrl+C / Cmd+C copies visible subtitle text ──
@@ -803,7 +804,7 @@ export default function VideoControls({
       }
       if (texts.length === 0) return;
       e.preventDefault();
-      navigator.clipboard.writeText(texts.join("\n\n")).then(() => showCopiedToast("Subtitle copied"));
+      copyToClipboard(texts.join("\n\n")).then(() => showCopiedToast("Subtitle copied"));
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -859,7 +860,7 @@ export default function VideoControls({
         params.set("vmodel", cv.vmafModel);
       }
     }
-    navigator.clipboard.writeText(`${base}?${params.toString()}`).then(() => {
+    copyToClipboard(`${base}?${params.toString()}`).then(() => {
       showCopiedToast("URL copied");
     });
     setContextMenu(null);
@@ -958,7 +959,7 @@ export default function VideoControls({
     );
 
     const script = lines.join("\n");
-    await navigator.clipboard.writeText(script);
+    await copyToClipboard(script);
     showCopiedToast("Download script copied");
     setContextMenu(null);
   };
