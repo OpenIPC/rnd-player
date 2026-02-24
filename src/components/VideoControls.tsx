@@ -817,7 +817,7 @@ export default function VideoControls({
     params.set("t", `${parseFloat(videoEl.currentTime.toFixed(3))}s`);
     if (clearKey) params.set("key", clearKey);
     if (scenesUrl) params.set("scenes", scenesUrl);
-    if (compareSrc) params.set("compare", compareSrc);
+    if (showCompare) params.set("compare", compareSrc || src);
     if (compareHeightA) params.set("qa", String(compareHeightA));
     if (compareHeightB) params.set("qb", String(compareHeightB));
     const cv = compareViewRef?.current;
