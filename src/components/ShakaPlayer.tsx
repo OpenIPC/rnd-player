@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, lazy, Suspense } from "react";
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from "react";
 import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
@@ -98,6 +98,14 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const [compareHeightB, setCompareHeightB] = useState<number | null>(null);
   const [inPoint, setInPoint] = useState<number | null>(null);
   const [outPoint, setOutPoint] = useState<number | null>(null);
+  const handleInPointChange = useCallback((time: number | null) => {
+    setInPoint(time);
+    if (time != null) setOutPoint((prev) => (prev != null && prev <= time ? null : prev));
+  }, []);
+  const handleOutPointChange = useCallback((time: number | null) => {
+    setOutPoint(time);
+    if (time != null) setInPoint((prev) => (prev != null && prev >= time ? null : prev));
+  }, []);
   const [startOffset, setStartOffset] = useState(0);
   const psnrHistoryRef = useRef<Map<number, number>>(new Map());
   const ssimHistoryRef = useRef<Map<number, number>>(new Map());
@@ -525,8 +533,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               clearSleepGuardRef={clearSleepGuardRef}
               inPoint={inPoint}
               outPoint={outPoint}
-              onInPointChange={setInPoint}
-              onOutPointChange={setOutPoint}
+              onInPointChange={handleInPointChange}
+              onOutPointChange={handleOutPointChange}
               startOffset={startOffset}
               moduleConfig={moduleConfig}
               deviceProfile={deviceProfile}
