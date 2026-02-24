@@ -1088,44 +1088,19 @@ export default function VideoControls({
               setHoverInfo(null);
             };
 
-            // Non-interactive: simple inline tooltip
-            if (!hasPreviewImages) {
-              return (
-                <div
-                  className="vp-progress-tooltip"
-                  style={{ left: `${hoverInfo.pct}%` }}
-                >
-                  <div className="vp-progress-tooltip-text">
-                    {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
-                    {sceneNum > 0 && ` \u00b7 Scene ${sceneNum}`}
-                  </div>
-                </div>
-              );
-            }
-
-            // Interactive: portal into container so it escapes the controls-wrapper stacking context
-            const rowRect = progressRowRef.current?.getBoundingClientRect();
-            const containerRect = containerEl.getBoundingClientRect();
-            const tooltipLeft = rowRect
-              ? rowRect.left + (hoverInfo.pct / 100) * rowRect.width - containerRect.left
-              : 0;
-            const tooltipBottom = rowRect
-              ? containerRect.bottom - rowRect.top
-              : 0;
-
-            return createPortal(
-              <div
-                ref={tooltipRef}
-                className="vp-progress-tooltip vp-progress-tooltip-interactive"
-                style={{ left: tooltipLeft, bottom: tooltipBottom, transform: "translateX(-50%)" }}
-                onMouseMove={e => e.stopPropagation()}
-                onMouseLeave={onTooltipMouseLeave}
-              >
-                <div className="vp-progress-tooltip-text">
-                  {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
-                  {sceneNum > 0 && ` \u00b7 Scene ${sceneNum}`}
-                </div>
-                {sceneData && (
+            return (
+            <div
+              ref={tooltipRef}
+              className={`vp-progress-tooltip${hasPreviewImages ? " vp-progress-tooltip-interactive" : ""}`}
+              style={{ left: `${hoverInfo.pct}%` }}
+              onMouseMove={hasPreviewImages ? e => e.stopPropagation() : undefined}
+              onMouseLeave={onTooltipMouseLeave}
+            >
+              <div className="vp-progress-tooltip-text">
+                {formatTimecode(Math.max(0, hoverInfo.time - startOffset), timecodeMode, fps)}
+                {sceneNum > 0 && ` \u00b7 Scene ${sceneNum}`}
+              </div>
+              {hasPreviewImages && sceneData && (
                   <div className="vp-progress-boundary-row">
                     {leftPreview && (
                       <div
@@ -1154,9 +1129,8 @@ export default function VideoControls({
                       </div>
                     )}
                   </div>
-                )}
-              </div>,
-              containerEl,
+              )}
+            </div>
             );
           })()}
           <div className="vp-progress-track">
