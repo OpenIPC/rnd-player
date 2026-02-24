@@ -632,7 +632,31 @@ export function useDiffRenderer({
     /** Issue the GL draw call (textures must already be bound/uploaded) */
     const drawQuad = () => {
       if (!canvas) return;
-      gl.viewport(0, 0, canvas.width, canvas.height);
+
+      // Clear entire canvas to black (provides letterbox bars when
+      // the video aspect ratio differs from the canvas aspect ratio)
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      // Compute letterboxed viewport matching video's object-fit: contain
+      const vw = videoB.videoWidth;
+      const vh = videoB.videoHeight;
+      let vpX = 0, vpY = 0, vpW = canvas.width, vpH = canvas.height;
+      if (vw > 0 && vh > 0) {
+        const videoAspect = vw / vh;
+        const canvasAspect = canvas.width / canvas.height;
+        if (videoAspect > canvasAspect) {
+          // Video wider than canvas → letterbox top/bottom
+          vpH = Math.round(canvas.width / videoAspect);
+          vpY = Math.round((canvas.height - vpH) / 2);
+        } else if (videoAspect < canvasAspect) {
+          // Video taller than canvas → pillarbox left/right
+          vpW = Math.round(canvas.height * videoAspect);
+          vpX = Math.round((canvas.width - vpW) / 2);
+        }
+      }
+      gl.viewport(vpX, vpY, vpW, vpH);
+
       gl.useProgram(program);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, texSsim);
