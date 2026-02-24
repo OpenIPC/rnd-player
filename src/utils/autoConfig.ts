@@ -13,7 +13,7 @@ export function autoConfig(
   if (!profile.webCodecs || !profile.offscreenCanvas) {
     config.filmstrip = false;
   }
-  if (!profile.webCodecs || !profile.webGL2) {
+  if (!profile.webGL2) {
     config.qualityCompare = false;
   }
   if (!profile.webAudio) {

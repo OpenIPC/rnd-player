@@ -143,7 +143,7 @@ function App() {
       const merged = { ...config, ...overrides };
       // Re-apply hard gates to ensure user overrides can't enable unsupported features
       if (!profile.webCodecs || !profile.offscreenCanvas) merged.filmstrip = false;
-      if (!profile.webCodecs || !profile.webGL2) merged.qualityCompare = false;
+      if (!profile.webGL2) merged.qualityCompare = false;
       if (!profile.webAudio) merged.audioLevels = false;
       if (!profile.workers) merged.segmentExport = false;
       setModuleConfig(merged);
