@@ -110,6 +110,7 @@ interface QualityCompareProps {
   initialPalette?: string;
   initialVmafModel?: string;
   viewStateRef?: React.RefObject<CompareViewState | null>;
+  clearSleepGuardRef?: React.MutableRefObject<() => void>;
   psnrHistoryRef?: React.MutableRefObject<Map<number, number>>;
   ssimHistoryRef?: React.MutableRefObject<Map<number, number>>;
   msSsimHistoryRef?: React.MutableRefObject<Map<number, number>>;
@@ -238,6 +239,7 @@ export default function QualityCompare({
   initialPalette,
   initialVmafModel,
   viewStateRef,
+  clearSleepGuardRef,
   psnrHistoryRef,
   ssimHistoryRef,
   msSsimHistoryRef,
@@ -1331,6 +1333,7 @@ export default function QualityCompare({
     // Only primary (left) button toggles play/pause
     if (e.button !== 0) return;
     if (dx * dx + dy * dy < 25) {
+      clearSleepGuardRef?.current();          // user intent — bypass sleep/wake guard
       masterVideo.play().catch(() => {});
       return;
     }

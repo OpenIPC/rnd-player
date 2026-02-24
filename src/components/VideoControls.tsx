@@ -52,6 +52,7 @@ interface VideoControlsProps {
   compareHeightA?: number | null;
   compareHeightB?: number | null;
   compareViewRef?: React.RefObject<CompareViewState | null>;
+  clearSleepGuardRef?: React.MutableRefObject<() => void>;
   inPoint: number | null;
   outPoint: number | null;
   onInPointChange: (time: number | null) => void;
@@ -140,6 +141,7 @@ export default function VideoControls({
   compareHeightA,
   compareHeightB,
   compareViewRef,
+  clearSleepGuardRef,
   inPoint,
   outPoint,
   onInPointChange,
@@ -206,6 +208,11 @@ export default function VideoControls({
     videoEl,
     moduleConfig.sleepWakeRecovery,
   );
+
+  // Expose guard-clearing to sibling components (e.g. QualityCompare)
+  if (clearSleepGuardRef) {
+    clearSleepGuardRef.current = () => { guardUntilRef.current = 0; };
+  }
 
   // ── Scene data: FPS + PTS offset correction ──
   // Corrects two independent errors when av1an scene data (frame-based)
