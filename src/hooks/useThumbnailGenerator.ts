@@ -3,8 +3,12 @@ import type shaka from "shaka-player";
 import type { WorkerRequest, WorkerResponse, FrameType, GopFrame } from "../types/thumbnailWorker.types";
 import { extractInitSegmentUrl } from "../utils/extractInitSegmentUrl";
 
-declare const __CORS_PROXY_URL__: string;
-declare const __CORS_PROXY_HMAC_KEY__: string;
+const CORS_PROXY_URL: string =
+  (typeof __CORS_PROXY_URL__ !== "undefined" && __CORS_PROXY_URL__) ||
+  import.meta.env.VITE_CORS_PROXY_URL || "";
+const CORS_PROXY_HMAC_KEY: string =
+  (typeof __CORS_PROXY_HMAC_KEY__ !== "undefined" && __CORS_PROXY_HMAC_KEY__) ||
+  import.meta.env.VITE_CORS_PROXY_HMAC_KEY || "";
 
 const THUMBNAIL_WIDTH = 160;
 const THROTTLE_MS = 200;
@@ -650,8 +654,8 @@ export function useThumbnailGenerator(
           clearKeyHex: streamEncrypted ? clearKey : undefined,
           activeInitSegmentUrl,
           activeSegments: activeStreamSegments,
-          corsProxyUrl: __CORS_PROXY_URL__ || undefined,
-          corsProxyHmacKey: __CORS_PROXY_HMAC_KEY__ || undefined,
+          corsProxyUrl: CORS_PROXY_URL || undefined,
+          corsProxyHmacKey: CORS_PROXY_HMAC_KEY || undefined,
         };
         worker.postMessage(payload satisfies WorkerRequest);
       } catch {
