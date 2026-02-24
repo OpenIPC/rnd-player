@@ -1009,15 +1009,15 @@ export default function VideoControls({
 
   const onProgressMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     // Don't dismiss if cursor moved into the tooltip (boundary preview click targets)
-    const related = e.relatedTarget as Node | null;
-    if (related && tooltipRef.current?.contains(related)) return;
+    const related = e.relatedTarget;
+    if (related instanceof Node && tooltipRef.current?.contains(related)) return;
     setHoverInfo(null);
   }, []);
 
   const onTooltipMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     // Dismiss unless cursor moved back into the progress row
-    const related = e.relatedTarget as Node | null;
-    if (related && progressRowRef.current?.contains(related)) return;
+    const related = e.relatedTarget;
+    if (related instanceof Node && progressRowRef.current?.contains(related)) return;
     setHoverInfo(null);
   }, []);
 
