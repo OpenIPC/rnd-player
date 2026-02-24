@@ -184,7 +184,7 @@ export default function VideoControls({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showAudioLevels, setShowAudioLevels] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; time?: number } | null>(null);
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("milliseconds");
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
   const [showExportPicker, setShowExportPicker] = useState(false);
@@ -595,7 +595,14 @@ export default function VideoControls({
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      setContextMenu({ x: e.clientX, y: e.clientY });
+      let time: number | undefined;
+      const row = progressRowRef.current;
+      if (row && duration && row.contains(e.target as Node)) {
+        const rect = row.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        time = pct * duration;
+      }
+      setContextMenu({ x: e.clientX, y: e.clientY, time });
     };
     const dismissContextMenu = () => {
       if (contextMenu) contextMenuDismissedRef.current = true;
@@ -608,7 +615,7 @@ export default function VideoControls({
       containerEl.removeEventListener("contextmenu", onContextMenu);
       document.removeEventListener("click", dismissContextMenu);
     };
-  }, [containerEl, contextMenu]);
+  }, [containerEl, contextMenu, duration]);
 
   // ── Handlers ──
   const togglePlay = () => {
@@ -1426,11 +1433,11 @@ export default function VideoControls({
           onCopyUrl={copyVideoUrl}
           onCopyDownloadScript={copyDownloadScript}
           onSetInPoint={() => {
-            onInPointChange(videoEl.currentTime);
+            onInPointChange(contextMenu?.time ?? videoEl.currentTime);
             setContextMenu(null);
           }}
           onSetOutPoint={() => {
-            onOutPointChange(videoEl.currentTime);
+            onOutPointChange(contextMenu?.time ?? videoEl.currentTime);
             setContextMenu(null);
           }}
           onClearMarkers={() => {
