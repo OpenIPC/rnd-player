@@ -297,6 +297,31 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
             }
             console.log("[CTO diagnostic] final startOffset:", offset);
             setStartOffset(offset);
+
+            // When CTO is not detected (offset=0), it may be because the
+            // audio/video buffer delta is ambiguous at the load position
+            // (e.g. loading at t=326s where segment boundaries align).
+            // Re-check on seeked/progress events — especially effective
+            // when the user seeks near position 0 where the delta between
+            // audio start (0) and video start (CTO) is unambiguous.
+            if (offset === 0) {
+              const redetectCTO = () => {
+                if (destroyed) return;
+                let bi2: shaka.extern.BufferedInfo;
+                try { bi2 = player.getBufferedInfo(); } catch { return; }
+                if (bi2.audio.length > 0 && bi2.video.length > 0) {
+                  const d = bi2.video[0].start - bi2.audio[0].start;
+                  if (d > 0.001 && d < 0.5) {
+                    console.log("[CTO re-detect] found CTO:", d);
+                    setStartOffset(d);
+                    video.removeEventListener("seeked", redetectCTO);
+                    video.removeEventListener("progress", redetectCTO);
+                  }
+                }
+              };
+              video.addEventListener("seeked", redetectCTO);
+              video.addEventListener("progress", redetectCTO);
+            }
           };
           if (video.readyState >= 3) {
             onCanPlay();
