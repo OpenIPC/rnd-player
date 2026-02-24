@@ -1247,15 +1247,7 @@ export default function QualityCompare({
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     if (interactRef.current) interactRef.current.style.cursor = "grab";
 
-    // Minimal movement → click → play (which resets zoom via onPlay handler)
-    // Only primary (left) button toggles play/pause
-    if (e.button !== 0) return;
-    const dx = e.clientX - panStartRef.current.x;
-    const dy = e.clientY - panStartRef.current.y;
-    if (dx * dx + dy * dy < 25) {
-      masterVideo.play().catch(() => {});
-    }
-  }, [masterVideo]);
+  }, []);
 
   const onPanDoubleClick = useCallback(() => {
     if (highlightRef.current) {
