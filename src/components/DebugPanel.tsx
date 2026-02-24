@@ -116,7 +116,7 @@ const panelStyle: React.CSSProperties = {
   position: "absolute",
   bottom: 76,
   right: 4,
-  zIndex: 9999,
+  zIndex: 1,
   background: "rgba(0, 0, 0, 0.8)",
   color: "#ccc",
   fontSize: 10,
