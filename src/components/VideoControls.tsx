@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, lazy, Suspense } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import shaka from "shaka-player";
 import {
@@ -1041,6 +1041,31 @@ export default function VideoControls({
   useEffect(() => {
     if (clearBoundaryPreviews) clearBoundaryPreviews();
   }, [sceneData, clearBoundaryPreviews]);
+
+  // ── Clamp tooltip so it doesn't overflow the container edges ──
+  useLayoutEffect(() => {
+    const tip = tooltipRef.current;
+    const row = progressRowRef.current;
+    if (!tip || !row || !hoverInfo) return;
+    // Reset to default centered position to measure natural placement
+    tip.style.left = `${hoverInfo.pct}%`;
+    tip.style.transform = "translateX(-50%)";
+    const tipRect = tip.getBoundingClientRect();
+    const containerRect = containerEl.getBoundingClientRect();
+    const overflowLeft = containerRect.left - tipRect.left;
+    const overflowRight = tipRect.right - containerRect.right;
+    if (overflowLeft > 0) {
+      // Pin left edge of tooltip to container left edge
+      const rowRect = row.getBoundingClientRect();
+      tip.style.transform = "none";
+      tip.style.left = `${containerRect.left - rowRect.left}px`;
+    } else if (overflowRight > 0) {
+      // Pin right edge of tooltip to container right edge
+      const rowRect = row.getBoundingClientRect();
+      tip.style.transform = "none";
+      tip.style.left = `${containerRect.right - rowRect.left - tipRect.width}px`;
+    }
+  }, [hoverInfo, containerEl]);
 
   return (
     <div
