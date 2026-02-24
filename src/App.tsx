@@ -311,7 +311,7 @@ function App() {
       {sceneFileInput}
       <ShakaPlayer
         src={src}
-        autoPlay
+        autoPlay={!initial.compare}
         clearKey={clearKey ?? undefined}
         startTime={startTime ?? undefined}
         compareSrc={compareSrc ?? undefined}

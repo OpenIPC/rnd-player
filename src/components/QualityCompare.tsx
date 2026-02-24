@@ -1092,8 +1092,13 @@ export default function QualityCompare({
     apply();
     if (!initialPanApplied.current) {
       const raf = requestAnimationFrame(apply);
-      return () => cancelAnimationFrame(raf);
+      return () => {
+        cancelAnimationFrame(raf);
+        initialPanApplied.current = false;
+      };
     }
+    // Reset guard on cleanup so StrictMode re-invocation can re-apply
+    return () => { initialPanApplied.current = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time initialization
   }, []);
 
