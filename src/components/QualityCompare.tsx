@@ -68,6 +68,7 @@ import { useDiffRenderer } from "../hooks/useDiffRenderer";
 import type { DiffPalette, DiffAmplification } from "../hooks/useDiffRenderer";
 import type { VmafModelId } from "../utils/vmafCore";
 import type { CompareViewState } from "./ShakaPlayer";
+import { copyToClipboard } from "../utils/copyToClipboard";
 
 const FRAME_TYPE_COLORS: Record<FrameType, string> = {
   I: "rgb(255, 50, 50)",
@@ -356,7 +357,7 @@ export default function QualityCompare({
   const isDualManifest = slaveSrc !== src;
 
   const copyUrl = useCallback((url: string) => {
-    navigator.clipboard.writeText(url).then(() => {
+    copyToClipboard(url).then(() => {
       setCopiedMsg("URL copied");
       clearTimeout(copiedTimerRef.current);
       copiedTimerRef.current = setTimeout(() => setCopiedMsg(null), 2000);
