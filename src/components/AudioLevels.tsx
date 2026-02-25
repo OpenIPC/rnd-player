@@ -136,7 +136,7 @@ export default function AudioLevels({
         sparklineCountRef.current = Math.min(sparklineCountRef.current + 1, SPARKLINE_BUFFER_SIZE);
       }
 
-      const rect = canvas.getBoundingClientRect();
+      const rect = canvas!.getBoundingClientRect();
       const w = rect.width;
       const h = rect.height;
 
