@@ -152,10 +152,8 @@ export function useLoudnessMeter(
         try { a.disconnect(); } catch { /* */ }
       }
       try { splitter.disconnect(); } catch { /* */ }
-      // Disconnect source from our splitter (source.disconnect() drops ALL)
-      try { source.disconnect(); } catch { /* */ }
-      entry.connectedToDestination = false;
-      ensureDestinationConnected(entry);
+      // Don't call source.disconnect(splitter) — Safari's selective disconnect
+      // severs ALL source connections, breaking the audio graph on reconnect.
       kAnalysersRef.current = [];
       rawAnalysersRef.current = [];
     };
