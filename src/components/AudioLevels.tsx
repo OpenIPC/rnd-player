@@ -86,6 +86,9 @@ export default function AudioLevels({
   const { readLevels } = useAudioAnalyser(videoEl, true);
   const { readLoudness, resetIntegrated } = useLoudnessMeter(videoEl, true);
 
+  // Track channel count to compute dynamic panel width
+  const [channelCount, setChannelCount] = useState(2);
+
   // Loudness display data — updated from RAF at ~4 Hz to avoid 60fps re-renders
   const [loudnessDisplay, setLoudnessDisplay] = useState<LoudnessData | null>(null);
   const lastDisplayUpdateRef = useRef(0);
@@ -121,6 +124,10 @@ export default function AudioLevels({
 
       const { levels, error } = readLevels();
       const loudness = readLoudness();
+      // Track channel count for dynamic panel width
+      if (levels.length > 0 && levels.length !== channelCount) {
+        setChannelCount(levels.length);
+      }
       // Update DOM readouts at ~4 Hz (avoid 60fps re-renders)
       if (loudness && timestamp - lastDisplayUpdateRef.current >= 250) {
         lastDisplayUpdateRef.current = timestamp;
@@ -154,22 +161,25 @@ export default function AudioLevels({
       }
 
       const target = targetRef.current;
-      const halfW = Math.floor(w / 2);
+      // Give dBFS side exactly what it needs, LUFS gets the rest (min 70px)
+      const chCount = levels.length;
+      const dbfsNeeded = TICK_LABEL_WIDTH + 4 + chCount * (BAR_MIN_WIDTH + METER_GAP) + 4;
+      const splitX = Math.min(dbfsNeeded, w - 70);
 
       // Draw separator line
       ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(halfW, 0);
-      ctx.lineTo(halfW, h - SPARKLINE_HEIGHT);
+      ctx.moveTo(splitX, 0);
+      ctx.lineTo(splitX, h - SPARKLINE_HEIGHT);
       ctx.stroke();
 
-      // Left half: dBFS meters
-      drawDbfsMeters(ctx, 0, halfW, h - SPARKLINE_HEIGHT, levels, dt);
+      // Left: dBFS meters
+      drawDbfsMeters(ctx, 0, splitX, h - SPARKLINE_HEIGHT, levels, dt);
 
-      // Right half: LUFS meters
+      // Right: LUFS meters
       if (loudness) {
-        drawLufsMeters(ctx, halfW, w - halfW, h - SPARKLINE_HEIGHT, loudness, target);
+        drawLufsMeters(ctx, splitX, w - splitX, h - SPARKLINE_HEIGHT, loudness, target);
       }
 
       // Sparkline
@@ -222,7 +232,7 @@ export default function AudioLevels({
         Math.min(BAR_MAX_WIDTH, (availableWidth - (chCount - 1) * METER_GAP) / chCount),
       );
       const totalBarsWidth = chCount * barWidth + (chCount - 1) * METER_GAP;
-      const barsStartX = Math.round(x0 + TICK_LABEL_WIDTH + (availableWidth - totalBarsWidth) / 2);
+      const barsStartX = Math.round(x0 + TICK_LABEL_WIDTH + Math.max(0, (availableWidth - totalBarsWidth) / 2));
 
       if (peaksRef.current.length !== chCount) {
         peaksRef.current = levels.map((l) => l.dB);
@@ -481,9 +491,21 @@ export default function AudioLevels({
 
   const ld = loudnessDisplay;
 
+  // Dynamic width: dBFS side scales with channel count, LUFS side is fixed ~80px
+  const dbfsSideWidth = TICK_LABEL_WIDTH + 4 + channelCount * (BAR_MIN_WIDTH + METER_GAP) + 8;
+  const lufsSideWidth = 80;
+  const panelWidth = Math.max(160, dbfsSideWidth + lufsSideWidth);
+
+  // Set CSS variable on container so stats panel offset can follow
+  useEffect(() => {
+    containerEl.style.setProperty("--audio-levels-width", `${panelWidth}px`);
+    return () => { containerEl.style.removeProperty("--audio-levels-width"); };
+  }, [panelWidth, containerEl]);
+
   return createPortal(
     <div
       className="vp-audio-levels"
+      style={{ width: panelWidth }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()}
     >
