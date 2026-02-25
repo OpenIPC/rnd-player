@@ -251,13 +251,6 @@ export default function AudioLevels({
         ctx.stroke();
       }
 
-      // "dBFS" section label
-      ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
-      ctx.font = "8px monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      ctx.fillText("dBFS", x0 + width / 2, 1);
-
       for (let i = 0; i < chCount; i++) {
         const level = levels[i];
         const x = Math.round(barsStartX + i * (barWidth + METER_GAP));
@@ -330,13 +323,6 @@ export default function AudioLevels({
 
       const lufsMin = target - LUFS_RANGE_BELOW;
       const lufsMax = target + LUFS_RANGE_ABOVE;
-
-      // "LUFS" section label
-      ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
-      ctx.font = "8px monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      ctx.fillText("LUFS", x0 + width / 2, 1);
 
       // Scale ticks on the right side
       const tickX = barsStartX + totalBarsWidth + 3;
