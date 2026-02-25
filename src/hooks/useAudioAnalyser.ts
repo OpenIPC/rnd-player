@@ -17,6 +17,16 @@ import { getOrCreateAudioSource, ensureDestinationConnected } from "../utils/aud
 
 const ZERO_FRAMES_THRESHOLD = 10;
 
+/** Safari doesn't route MSE/HLS audio through createMediaElementSource
+ *  (WebKit bugs #266922, #180696 — open since 2017). Detect early so we
+ *  can show an accurate error instead of the misleading "cross-origin" one. */
+const isSafariMSE = (videoEl: HTMLVideoElement): boolean => {
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  // MSE-backed video has no src attribute — Shaka sets MediaSource via srcObject/URL
+  const isMSE = !videoEl.src || videoEl.src === "";
+  return isSafari && isMSE;
+};
+
 export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: boolean) {
   const analysersRef = useRef<AnalyserNode[]>([]);
   const channelCountRef = useRef(2);
@@ -24,6 +34,7 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
   const errorRef = useRef<string | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const videoElRef = useRef(videoEl);
+  const safariMSERef = useRef(false);
 
   videoElRef.current = videoEl;
 
@@ -36,8 +47,11 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
       analysersRef.current = [];
       zeroFrameCountRef.current = 0;
       errorRef.current = null;
+      safariMSERef.current = false;
       return;
     }
+
+    safariMSERef.current = isSafariMSE(videoEl);
 
     const entry = getOrCreateAudioSource(videoEl);
     const { context, source } = entry;
@@ -85,16 +99,14 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
     errorRef.current = null;
 
     return () => {
-      // Disconnect splitter and analysers, but keep source alive in cache
       for (const a of analysers) {
         try { a.disconnect(); } catch { /* already disconnected */ }
       }
       try { splitter.disconnect(); } catch { /* already disconnected */ }
-      // Disconnect source from splitter but keep source→destination alive
-      // source.disconnect() drops ALL connections, so reset the flag and reconnect
-      try { source.disconnect(); } catch { /* already disconnected */ }
-      entry.connectedToDestination = false;
-      ensureDestinationConnected(entry);
+      // Don't call source.disconnect(splitter) — Safari's selective disconnect
+      // severs ALL source connections (including source→destination), causing
+      // the MediaElementAudioSourceNode to produce silence on reconnect.
+      // The orphaned source→splitter link is harmless (dead-end, no processing).
       analysersRef.current = [];
     };
   }, [videoEl, enabled]);
@@ -131,12 +143,18 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
       levels.push({ rms, peak, dB, label: labels[i] ?? `${i + 1}` });
     }
 
-    // CORS detection: only count zero frames while video is actively playing
+    // Silence detection: count zero frames while video is actively playing
     const isPlaying = videoElRef.current != null && !videoElRef.current.paused;
     if (allZero && isPlaying) {
       zeroFrameCountRef.current++;
       if (zeroFrameCountRef.current >= ZERO_FRAMES_THRESHOLD) {
-        errorRef.current = "Audio levels unavailable (cross-origin media)";
+        // Safari doesn't route MSE/HLS audio into Web Audio graph
+        // (WebKit bugs #266922, #180696). Show an accurate message.
+        if (safariMSERef.current) {
+          errorRef.current = "Audio metering unavailable in Safari with streaming";
+        } else {
+          errorRef.current = "Audio levels unavailable (cross-origin media)";
+        }
       }
     } else if (!allZero) {
       zeroFrameCountRef.current = 0;
