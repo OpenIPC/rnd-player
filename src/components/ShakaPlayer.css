@@ -1215,7 +1215,7 @@ video::-webkit-media-text-track-container {
   top: 0;
   left: 0;
   bottom: 48px;
-  width: 80px;
+  width: 160px;
   z-index: 3;
   display: flex;
   flex-direction: column;
@@ -1223,7 +1223,8 @@ video::-webkit-media-text-track-container {
 
 .vp-audio-levels canvas {
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 .vp-audio-levels-close {
@@ -1246,9 +1247,72 @@ video::-webkit-media-text-track-container {
   background: rgba(0, 0, 0, 0.7);
 }
 
+/* ── Loudness controls (bottom of audio panel) ── */
+.vp-loudness-controls {
+  flex-shrink: 0;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.5);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font: 9px monospace;
+  color: rgba(255, 255, 255, 0.8);
+  line-height: 1.6;
+}
+
+.vp-loudness-readouts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+}
+
+.vp-loudness-readout {
+  white-space: nowrap;
+}
+
+.vp-loudness-readout strong {
+  color: #fff;
+}
+
+.vp-loudness-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.vp-loudness-target-select {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  color: #fff;
+  font: 8px monospace;
+  padding: 2px 3px;
+  cursor: pointer;
+}
+
+.vp-loudness-target-select:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.vp-loudness-reset {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.8);
+  font: 8px monospace;
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.vp-loudness-reset:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
 /* Shift stats panel right when audio levels are visible */
 .vp-container:has(.vp-audio-levels) .vp-stats-panel {
-  left: 88px;
+  left: 168px;
 }
 
 /* ── Filmstrip timeline panel ── */

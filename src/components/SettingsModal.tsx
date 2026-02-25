@@ -42,8 +42,8 @@ const MODULE_INFO: ModuleInfo[] = [
   },
   {
     key: "audioLevels",
-    label: "Audio levels",
-    description: "Real-time audio level meter",
+    label: "Audio levels & loudness",
+    description: "Real-time dBFS level meter and EBU R128 loudness meter (LUFS, True Peak, LRA)",
     hardGate: (p) => !p.webAudio ? "Requires Web Audio API" : null,
   },
   {

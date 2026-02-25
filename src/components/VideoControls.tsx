@@ -185,6 +185,12 @@ export default function VideoControls({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showAudioLevels, setShowAudioLevels] = useState(false);
+  const [loudnessTarget, setLoudnessTarget] = useState(() => {
+    try {
+      const stored = localStorage.getItem("vp_loudness_target");
+      return stored ? Number(stored) : -14;
+    } catch { return -14; }
+  });
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; time?: number } | null>(null);
   const [timecodeMode, setTimecodeMode] = useState<TimecodeMode>("milliseconds");
   const [detectedFps, setDetectedFps] = useState<number | null>(null);
@@ -1549,6 +1555,11 @@ export default function VideoControls({
             videoEl={videoEl}
             containerEl={containerEl}
             onClose={() => setShowAudioLevels(false)}
+            loudnessTarget={loudnessTarget}
+            onLoudnessTargetChange={(target) => {
+              setLoudnessTarget(target);
+              try { localStorage.setItem("vp_loudness_target", String(target)); } catch { /* */ }
+            }}
           />
         </Suspense>
       )}

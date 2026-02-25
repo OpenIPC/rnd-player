@@ -13,11 +13,7 @@ const CHANNEL_LABELS: Record<number, string[]> = {
   6: ["FL", "FR", "C", "LFE", "SL", "SR"],
 };
 
-/** Prevent double-calling createMediaElementSource (throws on repeat). */
-const sourceCache = new WeakMap<
-  HTMLVideoElement,
-  { context: AudioContext; source: MediaElementAudioSourceNode }
->();
+import { getOrCreateAudioSource, ensureDestinationConnected } from "../utils/audioSourceCache";
 
 const ZERO_FRAMES_THRESHOLD = 10;
 
@@ -43,18 +39,8 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
       return;
     }
 
-    const cached = sourceCache.get(videoEl);
-    let context: AudioContext;
-    let source: MediaElementAudioSourceNode;
-
-    if (cached) {
-      context = cached.context;
-      source = cached.source;
-    } else {
-      context = new AudioContext();
-      source = context.createMediaElementSource(videoEl);
-      sourceCache.set(videoEl, { context, source });
-    }
+    const entry = getOrCreateAudioSource(videoEl);
+    const { context, source } = entry;
 
     contextRef.current = context;
 
@@ -92,7 +78,7 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
     }
 
     source.connect(splitter);
-    source.connect(context.destination);
+    ensureDestinationConnected(entry);
 
     analysersRef.current = analysers;
     zeroFrameCountRef.current = 0;
@@ -105,9 +91,10 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
       }
       try { splitter.disconnect(); } catch { /* already disconnected */ }
       // Disconnect source from splitter but keep source→destination alive
-      // We need to reconnect source directly to destination
+      // source.disconnect() drops ALL connections, so reset the flag and reconnect
       try { source.disconnect(); } catch { /* already disconnected */ }
-      source.connect(context.destination);
+      entry.connectedToDestination = false;
+      ensureDestinationConnected(entry);
       analysersRef.current = [];
     };
   }, [videoEl, enabled]);
