@@ -111,6 +111,27 @@ jobs:
         env:
           DASH_FIXTURE_DIR: ${{ runner.temp }}/dash-fixture
 
+      - name: Check for fully-skipped test suites
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = 'test-results/report.json';
+            if (!fs.existsSync(path)) { console.log('No JSON report found, skipping check'); process.exit(0); }
+            const report = JSON.parse(fs.readFileSync(path, 'utf8'));
+            function check(suite, parent) {
+              const name = parent ? parent + ' > ' + suite.title : suite.title;
+              const specs = suite.specs || [];
+              if (specs.length > 0) {
+                const allSkipped = specs.every(s => s.tests.every(t => t.results.every(r => r.status === 'skipped')));
+                if (allSkipped) console.log('::warning::All tests skipped in suite: ' + name);
+              }
+              for (const child of suite.suites || []) check(child, name);
+            }
+            for (const s of report.suites || []) check(s, '');
+          "
+
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:

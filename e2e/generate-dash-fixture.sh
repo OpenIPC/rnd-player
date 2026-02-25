@@ -16,6 +16,28 @@ OUT_DIR="${OUT_DIR//\\//}"
 
 mkdir -p "$OUT_DIR"
 
+# Validate that a manifest contains no bare codec strings that browsers reject.
+# ffmpeg's DASH muxer writes bare "hvc1"/"hev1" without profile/level, which
+# causes isTypeSupported() to return false. AV1 and H.264 are written correctly.
+validate_manifest_codecs() {
+  local mpd="$1"
+  local errors=0
+  while IFS= read -r codec; do
+    case "$codec" in
+      'codecs="hvc1"' | 'codecs="hev1"')
+        echo "ERROR: bare HEVC codec string in $mpd (no profile/level suffix): $codec" >&2
+        errors=$((errors + 1)) ;;
+      'codecs="av01"')
+        echo "ERROR: bare AV1 codec string in $mpd (no profile suffix): $codec" >&2
+        errors=$((errors + 1)) ;;
+    esac
+  done < <(grep -oP 'codecs="[^"]*"' "$mpd" 2>/dev/null || true)
+  if [ "$errors" -gt 0 ]; then
+    echo "Manifest validation failed: $mpd" >&2
+    exit 1
+  fi
+}
+
 DURATION=60
 FPS=30
 SOURCE="$OUT_DIR/source_1080p.mp4"
@@ -75,6 +97,7 @@ ffmpeg -y -loglevel error \
 # Cleanup intermediate source
 rm -f "$SOURCE"
 
+validate_manifest_codecs "$OUT_DIR/manifest.mpd"
 echo "==> Plaintext DASH fixture ready in $OUT_DIR"
 ls -lh "$OUT_DIR"
 
@@ -217,6 +240,7 @@ for init in "$HEVC_DIR"/init-stream*.m4s; do
 done
 rm -f "$HEVC_DIR/manifest.mpd.bak"
 
+validate_manifest_codecs "$HEVC_DIR/manifest.mpd"
 echo "==> HEVC DASH fixture ready in $HEVC_DIR"
 ls -lh "$HEVC_DIR"
 
@@ -274,5 +298,6 @@ ffmpeg -y -loglevel error \
 # Cleanup intermediate source
 rm -f "$AV1_SOURCE"
 
+validate_manifest_codecs "$AV1_DIR/manifest.mpd"
 echo "==> AV1 DASH fixture ready in $AV1_DIR"
 ls -lh "$AV1_DIR"
