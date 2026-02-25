@@ -1219,6 +1219,7 @@ video::-webkit-media-text-track-container {
   z-index: 3;
   display: flex;
   flex-direction: column;
+  background: rgba(0, 0, 0, 0.75);
 }
 
 .vp-audio-levels canvas {
