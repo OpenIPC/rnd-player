@@ -1289,6 +1289,7 @@ video::-webkit-media-text-track-container {
   font: 8px monospace;
   padding: 2px 3px;
   cursor: pointer;
+  outline: none;
 }
 
 .vp-loudness-target-select:hover {
@@ -1313,7 +1314,7 @@ video::-webkit-media-text-track-container {
 
 /* Shift stats panel right when audio levels are visible */
 .vp-container:has(.vp-audio-levels) .vp-stats-panel {
-  left: 168px;
+  left: calc(var(--audio-levels-width, 160px) + 8px);
 }
 
 /* ── Filmstrip timeline panel ── */
