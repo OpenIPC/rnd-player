@@ -1,5 +1,4 @@
 import { test, expect } from "@playwright/test";
-import type { Page } from "@playwright/test";
 import { createWorker, PSM } from "tesseract.js";
 import {
   isHevcDashFixtureAvailable,
@@ -33,20 +32,6 @@ test.afterAll(async () => {
   await ocr?.terminate();
 });
 
-/**
- * Try to load the HEVC DASH stream. Returns true if the player loaded
- * successfully, false if the controls didn't appear (browser reports HEVC
- * MSE support via isTypeSupported but actual playback fails).
- */
-async function tryLoadHevcDash(page: Page): Promise<boolean> {
-  try {
-    await loadPlayerWithHevcDash(page);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // ── Capability probe (always runs) ────────────────────────────────────
 
 test.describe("HEVC capability probe", () => {
@@ -76,14 +61,17 @@ test.describe("HEVC capability probe", () => {
 // ── HEVC playback ─────────────────────────────────────────────────────
 
 test.describe("HEVC playback", () => {
-  // HEVC tests may need to wait for a 30s load timeout on browsers where
-  // isTypeSupported returns true but actual playback fails (e.g. Firefox).
-  // 90s allows the 30s load timeout + retries within the test budget.
   test.setTimeout(90_000);
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, browserName }) => {
     const supported = await probeHevcMseSupport(page);
     test.skip(!supported, "Browser does not support HEVC via MSE");
+
+    // Firefox reports isTypeSupported=true for HEVC on some platforms but
+    // actual MSE playback fails (bugs 1928484, 1945371). Skip at the suite
+    // level by browser identity rather than catching load failures generically
+    // — the latter would also mask fixture bugs and player regressions.
+    test.skip(browserName === "firefox", "Firefox HEVC MSE probe is unreliable on Linux/macOS");
   });
 
   for (const [seekTime, expectedFrame] of [
@@ -93,10 +81,9 @@ test.describe("HEVC playback", () => {
     test(`displays frame ~${String(expectedFrame).padStart(4, "0")} at t=${seekTime}s`, async ({
       page,
     }) => {
-      const loaded = await tryLoadHevcDash(page);
-      // isTypeSupported can return true on browsers that can't actually
-      // play HEVC (e.g. Firefox on macOS/Linux). Skip gracefully.
-      test.skip(!loaded, "HEVC MSE reported but player failed to load");
+      // Hard failure here: if the probe passed and the fixture doesn't load,
+      // that's a fixture or player regression, not a browser limitation.
+      await loadPlayerWithHevcDash(page);
       await seekTo(page, seekTime);
       const frame = await readFrameNumber(page, ocr);
       const actual = parseInt(frame, 10);
@@ -110,8 +97,7 @@ test.describe("HEVC playback", () => {
   }
 
   test("ArrowRight steps forward one frame", async ({ page }) => {
-    const loaded = await tryLoadHevcDash(page);
-    test.skip(!loaded, "HEVC MSE reported but player failed to load");
+    await loadPlayerWithHevcDash(page);
     await seekTo(page, 0);
     await pressKeyAndSettle(page, "ArrowRight");
     const frame = await readFrameNumber(page, ocr);
@@ -125,8 +111,7 @@ test.describe("HEVC playback", () => {
   });
 
   test("playing advances frames", async ({ page }) => {
-    const loaded = await tryLoadHevcDash(page);
-    test.skip(!loaded, "HEVC MSE reported but player failed to load");
+    await loadPlayerWithHevcDash(page);
     await seekTo(page, 0);
 
     // Play for ~1 s then pause
@@ -151,12 +136,14 @@ test.describe("HEVC playback", () => {
 test.describe("HEVC filmstrip", () => {
   test.setTimeout(90_000);
 
-  test("thumbnails render after loading", async ({ page }) => {
-    const mseSupport = await probeHevcMseSupport(page);
-    test.skip(!mseSupport, "Browser does not support HEVC via MSE");
+  test.beforeEach(async ({ page, browserName }) => {
+    const supported = await probeHevcMseSupport(page);
+    test.skip(!supported, "Browser does not support HEVC via MSE");
+    test.skip(browserName === "firefox", "Firefox HEVC MSE probe is unreliable on Linux/macOS");
+  });
 
-    const loaded = await tryLoadHevcDash(page);
-    test.skip(!loaded, "HEVC MSE reported but player failed to load");
+  test("thumbnails render after loading", async ({ page }) => {
+    await loadPlayerWithHevcDash(page);
 
     // Check WebCodecs AFTER loading — VideoDecoder.isConfigSupported
     // requires a proper page context (not about:blank) for reliable results.
