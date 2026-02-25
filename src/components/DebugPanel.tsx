@@ -39,13 +39,7 @@ export default function DebugPanel() {
 
   if (closed) return null;
 
-  if (!mem) {
-    return (
-      <div className="vp-debug-panel" style={panelStyle}>
-        <span style={labelStyle}>performance.memory not available (Chrome only)</span>
-      </div>
-    );
-  }
+  if (!mem) return null;
 
   if (collapsed) {
     return (
