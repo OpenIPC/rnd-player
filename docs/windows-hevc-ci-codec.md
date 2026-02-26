@@ -57,6 +57,7 @@ GitHub Actions Windows VMs (both `windows-latest` / Windows Server 2025 and
 | 22434770678 | a50a10a | skipped | rg-adguard.net returned HTTP 403; windows-2022 also skips |
 | 22435846854 | 6aa96ac | skipped | **Codec installed** (`HEVC installed: 2.4.43.0`) but probe still false |
 | 22436504853 | 4f175f3 | skipped | `--enable-features=PlatformHEVCDecoderSupport` added — no effect without GPU |
+| 22440964659 | 2f15f1f | skipped | **Final state** — all other CI jobs green; HEVC skips accepted |
 
 The one passing run (`22411917878`) had no codec install step at all. It passed because
 that specific Azure runner VM happened to have GPU passthrough enabled. The runner pool
