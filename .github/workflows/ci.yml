@@ -40,8 +40,6 @@ jobs:
             browser: firefox
           - os: windows-latest
             browser: edge
-          - os: windows-2022
-            browser: edge
 
     steps:
       - uses: actions/checkout@v4
