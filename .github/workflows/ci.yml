@@ -83,19 +83,12 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y
 
-      - name: Install HEVC Video Extensions (Windows, AP-W2)
+      - name: Install HEVC Video Extensions (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: powershell
         run: |
-          # Fetch a time-limited CDN URL from store.rg-adguard.net
-          $body = "type=ProductId&value=9n4wgh0z6vhq&ring=Retail&lang=en-US"
-          $response = Invoke-WebRequest -Uri "https://store.rg-adguard.net/api/GetFiles" `
-            -Method POST -ContentType "application/x-www-form-urlencoded" `
-            -Body $body -UseBasicParsing
-          $url = [regex]::Match($response.Content, 'href="(https://[^"]*\.appxbundle[^"]*)"').Groups[1].Value
-          if (-not $url) { Write-Host "rg-adguard: no appxbundle URL found"; exit 0 }
-          Write-Host "Downloading: $url"
+          $url = "https://github.com/OpenIPC/rnd-player/releases/download/ci-assets/Microsoft.HEVCVideoExtension_2.4.43.0_neutral_._8wekyb3d8bbwe.AppxBundle"
           Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\hevc.appxbundle" -UseBasicParsing
           Add-AppxPackage -Path "$env:TEMP\hevc.appxbundle" `
             -DependencyPath "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
