@@ -74,6 +74,24 @@ Automatically tested on every commit:
 |:---:|:---:|
 | ![Safari on macOS](https://openipc.github.io/rnd-player/screenshots/webkit-macos.png) | ![Edge on Windows](https://openipc.github.io/rnd-player/screenshots/edge-windows.png) |
 
+### Codec support matrix
+
+Results reflect what passes the E2E test suite on CI. Filmstrip column covers WebCodecs decode (required for frame thumbnails).
+
+| Browser | OS | H.264 | HEVC | AV1 | Filmstrip | ClearKey DRM |
+|---------|-----|:-----:|:----:|:---:|:---------:|:------------:|
+| Chromium | Linux | ✅ | ❌ | ✅ | ✅ | ✅ |
+| Firefox | Linux | ✅ | ❌¹ | ✅ | ✅ | ✅ |
+| WebKit (GTK) | Linux | ✅ | ✅ | ✅² | ✅ | ✅³ |
+| Safari | macOS | ✅ | ✅ | ❌ | ✅ | ✅³ |
+| Firefox | macOS | ✅ | ❌¹ | ✅ | ✅ | ✅ |
+| Edge | Windows | ✅ | ⚠️⁴ | ✅ | ⚠️⁴ | ✅ |
+
+¹ Firefox reports HEVC MSE support via `isTypeSupported` on some platforms but playback silently fails; tests are skipped on Firefox everywhere.
+² AV1 MSE playback works in WebKitGTK; WebCodecs AV1 is unavailable so AV1 content shows H.264 thumbnails in the filmstrip.
+³ EME is absent (Linux WebKitGTK) or silently fails (macOS Safari) — the player falls back to software AES-128-CTR decryption transparently.
+⁴ Requires GPU hardware decode. Standard CI VMs have no GPU so these tests skip; works on real Windows machines with any modern integrated or discrete GPU.
+
 ## Getting Started
 
 ```sh
