@@ -95,7 +95,7 @@ jobs:
             --silent
           $pkg = Get-AppxPackage -Name "Microsoft.HEVCVideoExtension*" -ErrorAction SilentlyContinue
           if ($pkg) { Write-Host "HEVC installed: $($pkg.Version)" }
-          else       { Write-Host "HEVC not available on this runner — filmstrip will skip" }
+          else       { Write-Host "HEVC not available on this runner - filmstrip will skip" }
 
       - name: Install Shaka Packager
         shell: bash
