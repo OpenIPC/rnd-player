@@ -27,7 +27,13 @@ export default defineConfig({
     },
     {
       name: "edge",
-      use: { ...devices["Desktop Edge"], channel: "msedge" },
+      use: {
+        ...devices["Desktop Edge"],
+        channel: "msedge",
+        launchOptions: {
+          args: ["--enable-features=PlatformHEVCDecoderSupport"],
+        },
+      },
     },
   ],
   webServer: {
