@@ -35,5 +35,8 @@ blob-report/
 playwright/.cache/
 e2e/screenshots/
 
+# Claude Code
+.claude/
+
 # WASM build artifacts (FFmpeg source + object files)
 wasm/build/
