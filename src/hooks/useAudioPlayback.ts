@@ -138,6 +138,12 @@ export function useAudioPlayback(
         continue;
       }
 
+      // Mute native audio on first scheduled source (avoids silence gap)
+      if (!mutedByUsRef.current && videoEl) {
+        videoEl.volume = 0;
+        mutedByUsRef.current = true;
+      }
+
       const endAt = startAt + chunk.duration / videoEl.playbackRate;
       scheduled.push({
         source,
@@ -208,10 +214,10 @@ export function useAudioPlayback(
     const ctx = getAudioContext();
     if (!ctx) return;
 
-    // Mute native audio
+    // Save current volume — muting is deferred until first chunk is scheduled
+    // to avoid a silence gap while segments are being fetched and decoded
     prevVolumeRef.current = videoEl.volume;
-    videoEl.volume = 0;
-    mutedByUsRef.current = true;
+    mutedByUsRef.current = false;
 
     const onPlay = () => {
       isPlayingRef.current = true;
