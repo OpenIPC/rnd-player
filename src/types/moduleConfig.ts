@@ -3,6 +3,7 @@ export interface PlayerModuleConfig {
   qualityCompare: boolean;
   statsPanel: boolean;
   audioLevels: boolean;
+  audioCompare: boolean;
   segmentExport: boolean;
   subtitles: boolean;
   adaptationToast: boolean;
@@ -16,6 +17,7 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   qualityCompare: true,
   statsPanel: true,
   audioLevels: true,
+  audioCompare: true,
   segmentExport: true,
   subtitles: true,
   adaptationToast: true,

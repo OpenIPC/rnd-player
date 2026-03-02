@@ -18,6 +18,7 @@ export function autoConfig(
   }
   if (!profile.webAudio) {
     config.audioLevels = false;
+    config.audioCompare = false;
   }
   if (!profile.workers) {
     config.segmentExport = false;

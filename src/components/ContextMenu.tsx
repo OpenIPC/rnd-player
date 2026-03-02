@@ -10,6 +10,7 @@ import {
   TranslateIcon,
   StatsNerdIcon,
   AudioLevelsIcon,
+  AudioCompareIcon,
   CompareIcon,
   FilmstripIcon,
 } from "./icons";
@@ -31,6 +32,7 @@ interface ContextMenuProps {
   onTranslationSettings: () => void;
   onToggleStats: () => void;
   onToggleAudioLevels: () => void;
+  onToggleAudioCompare: (() => void) | undefined;
   onToggleCompare: (() => void) | undefined;
   onToggleFilmstrip: (() => void) | undefined;
 
@@ -42,6 +44,7 @@ interface ContextMenuProps {
   hasTranslateConfig: boolean;
   showStats: boolean;
   showAudioLevels: boolean;
+  showAudioCompare: boolean;
   showCompare: boolean;
   showFilmstrip: boolean;
 }
@@ -60,6 +63,7 @@ export default function ContextMenu({
   onTranslationSettings,
   onToggleStats,
   onToggleAudioLevels,
+  onToggleAudioCompare,
   onToggleCompare,
   onToggleFilmstrip,
   hasMarkers,
@@ -69,6 +73,7 @@ export default function ContextMenu({
   hasTranslateConfig,
   showStats,
   showAudioLevels,
+  showAudioCompare,
   showCompare,
   showFilmstrip,
 }: ContextMenuProps) {
@@ -132,6 +137,12 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleAudioLevels}>
           <AudioLevelsIcon />
           {showAudioLevels ? "Hide audio levels" : "Audio levels"}
+        </div>
+      )}
+      {moduleConfig.audioCompare && onToggleAudioCompare && (
+        <div className="vp-context-menu-item" onClick={onToggleAudioCompare}>
+          <AudioCompareIcon />
+          {showAudioCompare ? "Hide audio compare" : "Compare audio tracks"}
         </div>
       )}
       {moduleConfig.qualityCompare && onToggleCompare && (

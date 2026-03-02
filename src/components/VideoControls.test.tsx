@@ -14,6 +14,13 @@ import { MODULE_DEFAULTS } from "../types/moduleConfig";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 
 vi.mock("shaka-player");
+vi.mock("../hooks/useTrackAMeter", () => ({
+  useTrackAMeter: () => ({
+    readLevels: () => ({ levels: [], error: null }),
+    readLoudness: () => null,
+    resetIntegrated: () => {},
+  }),
+}));
 
 const defaultDeviceProfile: DeviceProfile = {
   cpuCores: 8,

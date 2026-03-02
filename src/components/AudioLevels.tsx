@@ -1,53 +1,31 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import shaka from "shaka-player";
-import { useAudioAnalyser } from "../hooks/useAudioAnalyser";
 import type { ChannelLevel } from "../hooks/useAudioAnalyser";
-import { useLoudnessMeter } from "../hooks/useLoudnessMeter";
 import type { LoudnessData } from "../hooks/useLoudnessMeter";
-import { useAudioMeterFallback } from "../hooks/useAudioMeterFallback";
+import {
+  drawDbfsMeters,
+  drawLufsMeters,
+  drawSparkline,
+  drawSparklineBackground,
+  formatLufs,
+  TICK_LABEL_WIDTH,
+  BAR_MIN_WIDTH,
+  METER_GAP,
+  SPARKLINE_HEIGHT,
+} from "../utils/audioMeterDraw";
 
-interface Ec3MeterReader {
+interface AudioLevelsProps {
+  containerEl: HTMLDivElement;
   readLevels: () => { levels: ChannelLevel[]; error: string | null };
   readLoudness: () => LoudnessData | null;
   resetIntegrated: () => void;
-}
-
-interface AudioLevelsProps {
-  videoEl: HTMLVideoElement;
-  containerEl: HTMLDivElement;
-  player: shaka.Player;
   onClose: () => void;
   loudnessTarget: number;
   onLoudnessTargetChange: (target: number) => void;
-  /** When true, use worker-based metering instead of Web Audio (Safari MSE). */
-  fallbackMode?: boolean;
-  /** When provided (EC-3 active), use this for metering instead of Web Audio. */
-  ec3Meter?: Ec3MeterReader;
 }
 
-/** dB scale tick marks to draw */
-const DB_TICKS = [-6, -12, -24, -48];
-const DB_MIN = -60;
-const DB_MAX = 0;
-const PEAK_DECAY_DB_PER_SEC = 10;
-const METER_GAP = 4;
-const LABEL_HEIGHT = 16;
-const DB_READOUT_HEIGHT = 16;
-const TICK_LABEL_WIDTH = 24;
-const BAR_MIN_WIDTH = 14;
-const BAR_MAX_WIDTH = 24;
-const PADDING_TOP = 6;
-const PADDING_BOTTOM = 6;
-
-// LUFS scale constants (EBU +9 scale relative to target)
-const LUFS_RANGE_BELOW = 18; // Show from target - 18
-const LUFS_RANGE_ABOVE = 9;  // Show to target + 9
-
-// Sparkline constants
-const SPARKLINE_HEIGHT = 32;
 const SPARKLINE_SECONDS = 60;
-const SPARKLINE_SAMPLES_PER_SEC = 10; // 10 Hz sampling for sparkline
+const SPARKLINE_SAMPLES_PER_SEC = 10;
 const SPARKLINE_BUFFER_SIZE = SPARKLINE_SECONDS * SPARKLINE_SAMPLES_PER_SEC;
 
 const TARGET_PRESETS = [
@@ -58,64 +36,19 @@ const TARGET_PRESETS = [
   { value: -27, label: "-27 LUFS", desc: "Cinema" },
 ];
 
-function dbToY(dB: number, meterTop: number, meterHeight: number): number {
-  const clamped = Math.max(DB_MIN, Math.min(DB_MAX, dB));
-  const ratio = (clamped - DB_MIN) / (DB_MAX - DB_MIN);
-  return meterTop + meterHeight * (1 - ratio);
-}
-
-function lufsToY(lufs: number, target: number, meterTop: number, meterHeight: number): number {
-  const min = target - LUFS_RANGE_BELOW;
-  const max = target + LUFS_RANGE_ABOVE;
-  const clamped = Math.max(min, Math.min(max, lufs));
-  const ratio = (clamped - min) / (max - min);
-  return meterTop + meterHeight * (1 - ratio);
-}
-
-/** Color for LUFS bar based on distance from target. */
-function lufsColor(lufs: number, target: number): string {
-  const diff = lufs - target;
-  if (diff > 2) return "#cc3300";      // Red — too loud
-  if (diff > -2) return "#ccaa00";     // Yellow — near target
-  return "#00cc88";                     // Green — below target
-}
-
-function formatLufs(val: number): string {
-  if (!isFinite(val)) return "---";
-  return val.toFixed(1);
-}
-
 export default function AudioLevels({
-  videoEl,
   containerEl,
-  player,
+  readLevels,
+  readLoudness,
+  resetIntegrated,
   onClose,
   loudnessTarget,
   onLoudnessTargetChange,
-  fallbackMode = false,
-  ec3Meter,
 }: AudioLevelsProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
   const peaksRef = useRef<number[]>([]);
   const lastTimeRef = useRef(0);
-
-  // Both hooks are always called (React rules), but only one is active.
-  // When ec3Meter is provided, disable both Web Audio and fallback hooks.
-  const hooksDisabled = !!ec3Meter;
-  const webAudio = useAudioAnalyser(videoEl, !fallbackMode && !hooksDisabled);
-  const webLoudness = useLoudnessMeter(videoEl, !fallbackMode && !hooksDisabled);
-  const fallback = useAudioMeterFallback(videoEl, player, fallbackMode && !hooksDisabled);
-
-  const readLevels = ec3Meter
-    ? ec3Meter.readLevels
-    : fallbackMode ? fallback.readLevels : webAudio.readLevels;
-  const readLoudness = ec3Meter
-    ? ec3Meter.readLoudness
-    : fallbackMode ? fallback.readLoudness : webLoudness.readLoudness;
-  const resetIntegrated = ec3Meter
-    ? ec3Meter.resetIntegrated
-    : fallbackMode ? fallback.resetIntegrated : webLoudness.resetIntegrated;
 
   // Track channel count to compute dynamic panel width
   const [channelCount, setChannelCount] = useState(2);
@@ -206,7 +139,7 @@ export default function AudioLevels({
       ctx.stroke();
 
       // Left: dBFS meters
-      drawDbfsMeters(ctx, 0, splitX, h - SPARKLINE_HEIGHT, levels, dt);
+      drawDbfsMeters(ctx, 0, splitX, h - SPARKLINE_HEIGHT, levels, dt, peaksRef.current);
 
       // Right: LUFS meters
       if (loudness) {
@@ -214,7 +147,12 @@ export default function AudioLevels({
       }
 
       // Sparkline
-      drawSparkline(ctx, 0, w, h - SPARKLINE_HEIGHT, SPARKLINE_HEIGHT, target);
+      drawSparklineBackground(ctx, 0, w, h - SPARKLINE_HEIGHT, SPARKLINE_HEIGHT, target);
+      drawSparkline(
+        ctx, 0, w, h - SPARKLINE_HEIGHT, SPARKLINE_HEIGHT, target,
+        sparklineRef.current, sparklineCountRef.current, sparklineIdxRef.current,
+        SPARKLINE_BUFFER_SIZE, "#00cccc",
+      );
 
       rafRef.current = requestAnimationFrame(paint);
     }
@@ -242,273 +180,6 @@ export default function AudioLevels({
       for (let i = 0; i < lines.length; i++) {
         ctx.fillText(lines[i], w / 2, startY + i * lineHeight);
       }
-    }
-
-    function drawDbfsMeters(
-      ctx: CanvasRenderingContext2D,
-      x0: number,
-      width: number,
-      height: number,
-      levels: ChannelLevel[],
-      dt: number,
-    ) {
-      const chCount = levels.length;
-      const meterTop = PADDING_TOP + DB_READOUT_HEIGHT;
-      const meterHeight = height - meterTop - LABEL_HEIGHT - PADDING_BOTTOM;
-      if (meterHeight <= 0) return;
-
-      const availableWidth = width - TICK_LABEL_WIDTH - 4;
-      const barWidth = Math.max(
-        BAR_MIN_WIDTH,
-        Math.min(BAR_MAX_WIDTH, (availableWidth - (chCount - 1) * METER_GAP) / chCount),
-      );
-      const totalBarsWidth = chCount * barWidth + (chCount - 1) * METER_GAP;
-      const barsStartX = Math.round(x0 + TICK_LABEL_WIDTH + Math.max(0, (availableWidth - totalBarsWidth) / 2));
-
-      if (peaksRef.current.length !== chCount) {
-        peaksRef.current = levels.map((l) => l.dB);
-      }
-
-      const grad = ctx.createLinearGradient(0, meterTop + meterHeight, 0, meterTop);
-      grad.addColorStop(0, "#006666");
-      grad.addColorStop(0.5, "#00cccc");
-      grad.addColorStop(0.8, "#ccaa00");
-      grad.addColorStop(0.95, "#cc3300");
-      grad.addColorStop(1, "#ff2200");
-
-      // Tick labels
-      ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
-      ctx.font = "8px monospace";
-      ctx.textAlign = "right";
-      ctx.textBaseline = "middle";
-      for (const tick of DB_TICKS) {
-        const y = dbToY(tick, meterTop, meterHeight);
-        ctx.fillText(`${tick}`, x0 + TICK_LABEL_WIDTH - 3, y);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(x0 + TICK_LABEL_WIDTH, y);
-        ctx.lineTo(x0 + TICK_LABEL_WIDTH + totalBarsWidth + 2, y);
-        ctx.stroke();
-      }
-
-      for (let i = 0; i < chCount; i++) {
-        const level = levels[i];
-        const x = Math.round(barsStartX + i * (barWidth + METER_GAP));
-
-        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-        ctx.fillRect(x, meterTop, barWidth, meterHeight);
-
-        const fillY = dbToY(level.dB, meterTop, meterHeight);
-        const fillHeight = meterTop + meterHeight - fillY;
-        if (fillHeight > 0) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(x, fillY, barWidth, fillHeight);
-          ctx.clip();
-          ctx.fillStyle = grad;
-          ctx.fillRect(x, meterTop, barWidth, meterHeight);
-          ctx.restore();
-        }
-
-        // Peak hold
-        const peakDb = level.dB > peaksRef.current[i]
-          ? level.dB
-          : peaksRef.current[i] - PEAK_DECAY_DB_PER_SEC * dt;
-        peaksRef.current[i] = Math.max(level.dB, peakDb);
-
-        if (peaksRef.current[i] > DB_MIN + 1) {
-          const peakY = dbToY(peaksRef.current[i], meterTop, meterHeight);
-          ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(x, peakY);
-          ctx.lineTo(x + barWidth, peakY);
-          ctx.stroke();
-        }
-
-        // dB readout at top
-        if (level.dB > DB_MIN) {
-          ctx.fillStyle = level.dB > -3 ? "#ff4444" : "rgba(255, 255, 255, 0.8)";
-          ctx.font = "8px monospace";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(Math.round(level.dB).toString(), x + barWidth / 2, PADDING_TOP);
-        }
-
-        // Channel label
-        ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
-        ctx.font = "8px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        ctx.fillText(level.label, x + barWidth / 2, meterTop + meterHeight + 2);
-      }
-    }
-
-    function drawLufsMeters(
-      ctx: CanvasRenderingContext2D,
-      x0: number,
-      width: number,
-      height: number,
-      loudness: LoudnessData,
-      target: number,
-    ) {
-      const meterTop = PADDING_TOP + DB_READOUT_HEIGHT;
-      const meterHeight = height - meterTop - LABEL_HEIGHT - PADDING_BOTTOM;
-      if (meterHeight <= 0) return;
-
-      const barWidth = 20;
-      const gap = 6;
-      const totalBarsWidth = 2 * barWidth + gap;
-      const barsStartX = Math.round(x0 + (width - totalBarsWidth) / 2);
-
-      const lufsMin = target - LUFS_RANGE_BELOW;
-      const lufsMax = target + LUFS_RANGE_ABOVE;
-
-      // Scale ticks on the right side
-      const tickX = barsStartX + totalBarsWidth + 3;
-      ctx.font = "7px monospace";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      const tickValues = [target + 9, target, target - 9, target - 18];
-      for (const tv of tickValues) {
-        if (tv < lufsMin || tv > lufsMax) continue;
-        const y = lufsToY(tv, target, meterTop, meterHeight);
-        ctx.fillStyle = tv === target ? "rgba(255, 200, 60, 0.6)" : "rgba(255, 255, 255, 0.3)";
-        ctx.fillText(`${tv}`, tickX, y);
-        ctx.strokeStyle = tv === target ? "rgba(255, 200, 60, 0.3)" : "rgba(255, 255, 255, 0.06)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(barsStartX - 2, y);
-        ctx.lineTo(barsStartX + totalBarsWidth + 2, y);
-        ctx.stroke();
-      }
-
-      // Target line
-      const targetY = lufsToY(target, target, meterTop, meterHeight);
-      ctx.strokeStyle = "rgba(255, 200, 60, 0.7)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 2]);
-      ctx.beginPath();
-      ctx.moveTo(barsStartX - 2, targetY);
-      ctx.lineTo(barsStartX + totalBarsWidth + 2, targetY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Draw M and S bars
-      const bars = [
-        { label: "M", value: loudness.momentary },
-        { label: "S", value: loudness.shortTerm },
-      ];
-
-      for (let i = 0; i < bars.length; i++) {
-        const bar = bars[i];
-        const x = barsStartX + i * (barWidth + gap);
-
-        // Background
-        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-        ctx.fillRect(x, meterTop, barWidth, meterHeight);
-
-        // Fill bar
-        if (isFinite(bar.value)) {
-          const fillY = lufsToY(bar.value, target, meterTop, meterHeight);
-          const fillHeight = meterTop + meterHeight - fillY;
-          if (fillHeight > 0) {
-            ctx.fillStyle = lufsColor(bar.value, target);
-            ctx.globalAlpha = 0.85;
-            ctx.fillRect(x, fillY, barWidth, fillHeight);
-            ctx.globalAlpha = 1;
-          }
-
-          // Readout at top
-          ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
-          ctx.font = "8px monospace";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(formatLufs(bar.value), x + barWidth / 2, PADDING_TOP);
-        }
-
-        // Label
-        ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
-        ctx.font = "8px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        ctx.fillText(bar.label, x + barWidth / 2, meterTop + meterHeight + 2);
-      }
-    }
-
-    function drawSparkline(
-      ctx: CanvasRenderingContext2D,
-      x0: number,
-      width: number,
-      top: number,
-      height: number,
-      target: number,
-    ) {
-      const buf = sparklineRef.current;
-      const count = sparklineCountRef.current;
-      if (count < 2) return;
-
-      const padding = 4;
-      const graphLeft = x0 + padding;
-      const graphWidth = width - padding * 2;
-      const graphTop = top + 2;
-      const graphHeight = height - 4;
-
-      // Background
-      ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
-      ctx.fillRect(x0, top, width, height);
-
-      // Top separator
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x0, top);
-      ctx.lineTo(x0 + width, top);
-      ctx.stroke();
-
-      // LUFS range for sparkline: target-18 to target+9
-      const lufsMin = target - LUFS_RANGE_BELOW;
-      const lufsMax = target + LUFS_RANGE_ABOVE;
-
-      // Target line
-      const targetRatio = (target - lufsMin) / (lufsMax - lufsMin);
-      const targetLineY = graphTop + graphHeight * (1 - targetRatio);
-      ctx.strokeStyle = "rgba(255, 200, 60, 0.3)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([2, 2]);
-      ctx.beginPath();
-      ctx.moveTo(graphLeft, targetLineY);
-      ctx.lineTo(graphLeft + graphWidth, targetLineY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Draw momentary loudness line
-      ctx.strokeStyle = "#00cccc";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-
-      const startIdx = sparklineIdxRef.current;
-      const total = Math.min(count, SPARKLINE_BUFFER_SIZE);
-      let first = true;
-
-      for (let i = 0; i < total; i++) {
-        const bufIdx = (startIdx - total + i + SPARKLINE_BUFFER_SIZE) % SPARKLINE_BUFFER_SIZE;
-        const val = buf[bufIdx];
-        if (!isFinite(val)) continue;
-
-        const xPos = graphLeft + (i / (total - 1)) * graphWidth;
-        const ratio = Math.max(0, Math.min(1, (val - lufsMin) / (lufsMax - lufsMin)));
-        const yPos = graphTop + graphHeight * (1 - ratio);
-
-        if (first) {
-          ctx.moveTo(xPos, yPos);
-          first = false;
-        } else {
-          ctx.lineTo(xPos, yPos);
-        }
-      }
-      ctx.stroke();
     }
 
     rafRef.current = requestAnimationFrame(paint);

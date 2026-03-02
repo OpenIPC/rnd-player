@@ -25,6 +25,7 @@ import ContextMenu from "./ContextMenu";
 import ExportPicker from "./ExportPicker";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
+const AudioCompare = lazy(() => import("./AudioCompare"));
 const SettingsModal = lazy(() => import("./SettingsModal"));
 import AdaptationToast from "./AdaptationToast";
 import { formatTimecode } from "../utils/formatTime";
@@ -40,6 +41,7 @@ import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { BoundaryPreview, RequestBoundaryPreviewFn } from "../hooks/useBoundaryPreviews";
 import type { Ec3TrackInfo } from "../utils/dashAudioParser";
 import type { UseEc3AudioResult } from "../hooks/useEc3Audio";
+import { useTrackAMeter } from "../hooks/useTrackAMeter";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -77,6 +79,8 @@ interface VideoControlsProps {
   ec3Tracks?: Ec3TrackInfo[];
   /** EC-3 software decode playback controller. */
   ec3Audio?: UseEc3AudioResult;
+  /** All audio tracks parsed from manifest (for AudioCompare). */
+  allAudioTracks?: Ec3TrackInfo[];
 }
 
 interface QualityOption {
@@ -169,6 +173,7 @@ export default function VideoControls({
   safariMSE,
   ec3Tracks,
   ec3Audio,
+  allAudioTracks,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -196,6 +201,7 @@ export default function VideoControls({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showAudioLevels, setShowAudioLevels] = useState(false);
+  const [showAudioCompare, setShowAudioCompare] = useState(false);
   const [loudnessTarget, setLoudnessTarget] = useState(() => {
     try {
       const stored = localStorage.getItem("vp_loudness_target");
@@ -231,6 +237,9 @@ export default function VideoControls({
   if (clearSleepGuardRef) {
     clearSleepGuardRef.current = () => { guardUntilRef.current = 0; };
   }
+
+  // ── Unified Track A metering (shared by AudioLevels and AudioCompare) ──
+  const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio);
 
   // ── Scene data: FPS + PTS offset correction ──
   // Corrects two independent errors when av1an scene data (frame-based)
@@ -569,7 +578,7 @@ export default function VideoControls({
       // Skip programmatic .click() on file inputs (e.g. context menu "Load scene data...")
       if (target.tagName === "INPUT" && (target as HTMLInputElement).type === "file") return;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop") || target.closest(".vp-adaptation-toast")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-audio-compare") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop") || target.closest(".vp-adaptation-toast")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
@@ -1504,9 +1513,19 @@ export default function VideoControls({
             setContextMenu(null);
           }}
           onToggleAudioLevels={() => {
-            setShowAudioLevels((s) => !s);
+            setShowAudioLevels((s) => {
+              if (!s) setShowAudioCompare(false); // Mutual exclusion
+              return !s;
+            });
             setContextMenu(null);
           }}
+          onToggleAudioCompare={moduleConfig.audioCompare && allAudioTracks && allAudioTracks.length >= 2 ? () => {
+            setShowAudioCompare((s) => {
+              if (!s) setShowAudioLevels(false); // Mutual exclusion
+              return !s;
+            });
+            setContextMenu(null);
+          } : undefined}
           onToggleCompare={onToggleCompare ? () => {
             onToggleCompare();
             setContextMenu(null);
@@ -1522,6 +1541,7 @@ export default function VideoControls({
           hasTranslateConfig={(() => { try { const raw = localStorage.getItem("vp_translate_settings"); if (!raw) return false; const s = JSON.parse(raw); return !!(s.apiKey || s.endpoint); } catch { return false; } })()}
           showStats={showStats}
           showAudioLevels={showAudioLevels}
+          showAudioCompare={showAudioCompare}
           showCompare={!!showCompare}
           showFilmstrip={!!showFilmstrip}
         />
@@ -1587,17 +1607,37 @@ export default function VideoControls({
       {moduleConfig.audioLevels && showAudioLevels && (
         <Suspense fallback={null}>
           <AudioLevels
-            videoEl={videoEl}
             containerEl={containerEl}
-            player={player}
+            readLevels={trackAMeter.readLevels}
+            readLoudness={trackAMeter.readLoudness}
+            resetIntegrated={trackAMeter.resetIntegrated}
             onClose={() => setShowAudioLevels(false)}
             loudnessTarget={loudnessTarget}
             onLoudnessTargetChange={(target) => {
               setLoudnessTarget(target);
               try { localStorage.setItem("vp_loudness_target", String(target)); } catch { /* */ }
             }}
-            fallbackMode={safariMSE}
-            ec3Meter={ec3Audio?.active ? ec3Audio : undefined}
+          />
+        </Suspense>
+      )}
+
+      {/* Audio compare — side-by-side track metering */}
+      {moduleConfig.audioCompare && showAudioCompare && allAudioTracks && allAudioTracks.length >= 2 && (
+        <Suspense fallback={null}>
+          <AudioCompare
+            videoEl={videoEl}
+            containerEl={containerEl}
+            allAudioTracks={allAudioTracks}
+            trackAReadLevels={trackAMeter.readLevels}
+            trackAReadLoudness={trackAMeter.readLoudness}
+            trackAResetIntegrated={trackAMeter.resetIntegrated}
+            trackALabel={audioTracks[activeAudioIndex]?.label ?? "Track A"}
+            loudnessTarget={loudnessTarget}
+            onLoudnessTargetChange={(target) => {
+              setLoudnessTarget(target);
+              try { localStorage.setItem("vp_loudness_target", String(target)); } catch { /* */ }
+            }}
+            onClose={() => setShowAudioCompare(false)}
           />
         </Suspense>
       )}
