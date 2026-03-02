@@ -142,13 +142,13 @@ export default function ContextMenu({
       {moduleConfig.audioCompare && onToggleAudioCompare && (
         <div className="vp-context-menu-item" onClick={onToggleAudioCompare}>
           <AudioCompareIcon />
-          {showAudioCompare ? "Hide audio compare" : "Compare audio tracks"}
+          {showAudioCompare ? "Hide audio comparison" : "Audio comparison"}
         </div>
       )}
       {moduleConfig.qualityCompare && onToggleCompare && (
         <div className="vp-context-menu-item" onClick={onToggleCompare}>
           <CompareIcon />
-          {showCompare ? "Hide quality compare" : "Quality compare"}
+          {showCompare ? "Hide quality comparison" : "Quality comparison"}
         </div>
       )}
       {moduleConfig.filmstrip && onToggleFilmstrip && (
