@@ -320,6 +320,18 @@ export function useEc3Audio(
       return { levels: [], error: null };
     }
 
+    // When paused, show silent bars (no signal flowing)
+    if (videoEl.paused) {
+      const chCount = activeTrackRef.current?.channelCount ?? 2;
+      const labels = CHANNEL_LABELS[chCount] ?? Array.from({ length: chCount }, (_, i) => `${i + 1}`);
+      return {
+        levels: Array.from({ length: chCount }, (_, i) => ({
+          rms: 0, peak: 0, dB: -60, label: labels[i] ?? `${i + 1}`,
+        })),
+        error: null,
+      };
+    }
+
     const block = readMeterBlocks();
     if (!block) {
       return { levels: [], error: error };
@@ -339,7 +351,7 @@ export function useEc3Audio(
   }, [active, videoEl, readMeterBlocks, error]);
 
   const readLoudness = useCallback((): LoudnessData | null => {
-    if (!active || !videoEl) return null;
+    if (!active || !videoEl || videoEl.paused) return null;
 
     const block = readMeterBlocks();
     if (!block) return null;
