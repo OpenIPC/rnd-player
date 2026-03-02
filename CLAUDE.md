@@ -149,6 +149,10 @@ When activated, `configureSoftwareDecryption()` registers an async Shaka respons
 
 **useEc3Audio** (`src/hooks/useEc3Audio.ts`) — Orchestrates EC-3 software decode playback. When activated: fetches EC-3 segments independently (15s prefetch), sends to `audioMeterWorker` for decode, feeds PCM to `useAudioPlayback`, provides metering blocks. Handles seek (flush + re-fetch), memory eviction (±30s). Exposes `activate(track)`, `deactivate()`, `readMeterBlocks()`.
 
+**useTrackAMeter** (`src/hooks/useTrackAMeter.ts`) — Unified Track A metering selector shared by AudioLevels and AudioCompare. Wraps three backends (Web Audio, Safari fallback, EC-3) and dispatches by priority: EC-3 → fallback (Safari or `preferPrecomputed`) → Web Audio. The `preferPrecomputed` flag is `showAudioCompare` — when AudioCompare is open, Track A uses the same pre-computed pipeline as Track B to eliminate metering discrepancy. The fallback always runs (when not EC-3) so blocks are pre-populated. Web Audio stays enabled even when fallback output is selected to keep the `AudioContext` alive. See `docs/audio-compare.md`.
+
+**useAudioCompareMeter** (`src/hooks/useAudioCompareMeter.ts`) — Independent Track B metering for AudioCompare. Fetches and decodes audio segments via a dedicated `audioMeterWorker` instance (no native playback). 3-stage decode fallback: `OfflineAudioContext` on fMP4 → ADTS-wrapped AAC → WASM EC-3 decoder. Prefetches 15s ahead, evicts ±30s. Exposes `activate(track)`, `deactivate()`, `readLevels()`, `readLoudness()`.
+
 **Utilities** in `src/utils/`: `formatTime`, `formatTrackRes`, `safeNum`, `formatBitrate`, `parseSceneData` — small pure functions.
 
 ## Testing
@@ -179,3 +183,4 @@ E2E tests: Playwright across Chromium, Firefox, WebKit, Edge. Files in `e2e/`. U
 - `docs/manifest-validator-spec.md` — Manifest & stream validation: industry landscape, validation rules, implementation phases
 - `docs/scene-boundary-timing.md` — Scene boundary CTO investigation: DASH composition time offset analysis
 - `docs/boundary-preview.md` — Boundary preview: frame-number-based scene boundary visualization, investigation history
+- `docs/audio-compare.md` — AudioCompare: side-by-side track metering, Track A/B pipeline, pause behavior, extending
