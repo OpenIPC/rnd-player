@@ -47,6 +47,12 @@ const MODULE_INFO: ModuleInfo[] = [
     hardGate: (p) => !p.webAudio ? "Requires Web Audio API" : null,
   },
   {
+    key: "audioCompare",
+    label: "Audio compare",
+    description: "Side-by-side audio track metering (loudness, dynamic range, channel energy)",
+    hardGate: (p) => !p.webAudio ? "Requires Web Audio API" : null,
+  },
+  {
     key: "segmentExport",
     label: "Segment export",
     description: "Export MP4 segments from in/out points",

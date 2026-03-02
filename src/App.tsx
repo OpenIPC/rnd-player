@@ -144,7 +144,7 @@ function App() {
       // Re-apply hard gates to ensure user overrides can't enable unsupported features
       if (!profile.webCodecs || !profile.offscreenCanvas) merged.filmstrip = false;
       if (!profile.webGL2) merged.qualityCompare = false;
-      if (!profile.webAudio) merged.audioLevels = false;
+      if (!profile.webAudio) { merged.audioLevels = false; merged.audioCompare = false; }
       if (!profile.workers) merged.segmentExport = false;
       setModuleConfig(merged);
     });

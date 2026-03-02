@@ -6,7 +6,7 @@ import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin,
 import { isSafariMSE } from "../hooks/useAudioAnalyser";
 import { useBoundaryPreviews } from "../hooks/useBoundaryPreviews";
 import { useEc3Audio } from "../hooks/useEc3Audio";
-import { parseEc3Tracks, stripEc3FromManifest, type Ec3TrackInfo } from "../utils/dashAudioParser";
+import { parseEc3Tracks, parseAllAudioTracks, stripEc3FromManifest, type Ec3TrackInfo } from "../utils/dashAudioParser";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
@@ -92,6 +92,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const [playerReady, setPlayerReady] = useState(false);
   const [safariMSE, setSafariMSE] = useState(false);
   const [ec3Tracks, setEc3Tracks] = useState<Ec3TrackInfo[]>([]);
+  const [allAudioTracks, setAllAudioTracks] = useState<Ec3TrackInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
@@ -229,6 +230,9 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
         const cp = doc.querySelector("[*|default_KID]");
         defaultKID =
           cp?.getAttribute("cenc:default_KID")?.replaceAll("-", "") ?? null;
+
+        // Parse all audio tracks (for AudioCompare)
+        setAllAudioTracks(parseAllAudioTracks(manifestText, src));
 
         // Detect EC-3/AC-3 audio tracks that the browser can't decode natively
         const detectedEc3 = parseEc3Tracks(manifestText, src);
@@ -607,6 +611,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               safariMSE={safariMSE}
               ec3Tracks={ec3Tracks}
               ec3Audio={ec3Audio}
+              allAudioTracks={allAudioTracks}
             />
           )}
         {moduleConfig.qualityCompare &&

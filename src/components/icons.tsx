@@ -128,6 +128,19 @@ export function AudioLevelsIcon() {
   );
 }
 
+export function AudioCompareIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="currentColor">
+      <rect x="1" y="10" width="2" height="6" rx="0.8" />
+      <rect x="4" y="7" width="2" height="9" rx="0.8" />
+      <rect x="7" y="4" width="2" height="12" rx="0.8" />
+      <rect x="11" y="4" width="2" height="12" rx="0.8" />
+      <rect x="14" y="7" width="2" height="9" rx="0.8" />
+      <rect x="17" y="10" width="2" height="6" rx="0.8" />
+    </svg>
+  );
+}
+
 export function FilmstripIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="currentColor">

@@ -18,6 +18,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     filmstrip: false,
     qualityCompare: false,
     audioLevels: false,
+    audioCompare: false,
     segmentExport: false,
   },
   minimal: {
@@ -25,6 +26,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     qualityCompare: false,
     statsPanel: false,
     audioLevels: false,
+    audioCompare: false,
     segmentExport: false,
     subtitles: false,
     adaptationToast: false,

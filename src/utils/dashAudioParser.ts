@@ -56,14 +56,14 @@ export interface TimelineEntry {
 }
 
 /**
- * Parse a DASH MPD document and extract EC-3/AC-3 audio tracks
- * that the browser cannot natively decode.
+ * Parse a DASH MPD document and extract ALL audio tracks (any codec).
+ * Returns every audio AdaptationSet/Representation without codec or native-support filtering.
  *
  * @param manifestText Raw MPD XML string
  * @param manifestUrl The URL the manifest was loaded from (for relative URL resolution)
- * @returns Array of EC-3 track info objects, empty if none found or all natively supported
+ * @returns Array of track info objects for every audio representation
  */
-export function parseEc3Tracks(manifestText: string, manifestUrl: string): Ec3TrackInfo[] {
+export function parseAllAudioTracks(manifestText: string, manifestUrl: string): Ec3TrackInfo[] {
   const doc = new DOMParser().parseFromString(manifestText, "text/xml");
   const tracks: Ec3TrackInfo[] = [];
 
@@ -107,21 +107,14 @@ export function parseEc3Tracks(manifestText: string, manifestUrl: string): Ec3Tr
       for (const rep of representations) {
         const codec = rep.getAttribute("codecs") ?? asCodecs;
 
-        // Only interested in EC-3 and AC-3
-        if (!isEc3Codec(codec)) continue;
-
-        // Check if browser supports this codec natively
-        const mimeForCheck = rep.getAttribute("mimeType") ?? mimeType ?? "audio/mp4";
-        if (isNativelySupported(mimeForCheck, codec)) continue;
-
         const repBaseUrl = getBaseUrl(rep, asBaseUrl);
         const bandwidth = parseInt(rep.getAttribute("bandwidth") ?? "0", 10);
         const sampleRate = parseInt(
           rep.getAttribute("audioSamplingRate") ?? as.getAttribute("audioSamplingRate") ?? "48000",
           10,
         );
-        const channelCount = parseChannelConfig(rep) || asChannels || 6;
-        const repId = rep.getAttribute("id") ?? `ec3_${tracks.length}`;
+        const channelCount = parseChannelConfig(rep) || asChannels || 2;
+        const repId = rep.getAttribute("id") ?? `audio_${tracks.length}`;
 
         // Get SegmentTemplate (Representation-level overrides AdaptationSet-level)
         const repSegTemplate = rep.querySelector(":scope > SegmentTemplate") ?? asSegTemplate;
@@ -130,7 +123,7 @@ export function parseEc3Tracks(manifestText: string, manifestUrl: string): Ec3Tr
         const segments = parseSegmentTemplate(repSegTemplate, repBaseUrl, repId, presentationDuration);
         if (!segments) continue;
 
-        const label = buildLabel(asLabel, asLang, channelCount, codec);
+        const label = buildLabel(asLabel, asLang, channelCount, codec, false);
 
         tracks.push({
           id: repId,
@@ -147,6 +140,25 @@ export function parseEc3Tracks(manifestText: string, manifestUrl: string): Ec3Tr
   }
 
   return tracks;
+}
+
+/**
+ * Parse a DASH MPD document and extract EC-3/AC-3 audio tracks
+ * that the browser cannot natively decode.
+ *
+ * @param manifestText Raw MPD XML string
+ * @param manifestUrl The URL the manifest was loaded from (for relative URL resolution)
+ * @returns Array of EC-3 track info objects, empty if none found or all natively supported
+ */
+export function parseEc3Tracks(manifestText: string, manifestUrl: string): Ec3TrackInfo[] {
+  return parseAllAudioTracks(manifestText, manifestUrl).filter((t) => {
+    if (!isEc3Codec(t.codec)) return false;
+    const mime = "audio/mp4";
+    return !isNativelySupported(mime, t.codec);
+  }).map((t) => ({
+    ...t,
+    label: buildLabel("", t.language, t.channelCount, t.codec, true),
+  }));
 }
 
 /**
@@ -379,7 +391,7 @@ function parseDuration(iso: string): number {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-function buildLabel(label: string, lang: string, channels: number, codec: string): string {
+function buildLabel(label: string, lang: string, channels: number, codec: string, includeSuffix = true): string {
   const parts: string[] = [];
 
   // Language display name
@@ -402,7 +414,7 @@ function buildLabel(label: string, lang: string, channels: number, codec: string
 
   // Codec
   parts.push(codec.toUpperCase());
-  parts.push("(SW)");
+  if (includeSuffix) parts.push("(SW)");
 
   return parts.join(" · ");
 }
