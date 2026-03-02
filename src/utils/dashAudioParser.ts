@@ -263,7 +263,7 @@ function parseChannelConfig(el: Element): number {
   const value = acc.getAttribute("value") ?? "";
   const scheme = acc.getAttribute("schemeIdUri") ?? "";
 
-  // MPEG-DASH scheme: value is a hex bitmask
+  // MPEG-DASH scheme: value is a hex bitmask (23003-3)
   if (scheme.includes("23003-3")) {
     const bitmask = parseInt(value, 16);
     if (!isNaN(bitmask)) {
@@ -275,6 +275,21 @@ function parseChannelConfig(el: Element): number {
         n >>= 1;
       }
       return count || parseInt(value, 10) || 0;
+    }
+  }
+
+  // Dolby scheme (tag:dolby.com): value is a hex channel bitmask
+  // e.g. "f801" for 5.1 (L, R, C, LFE, Ls, Rs)
+  if (scheme.includes("dolby.com")) {
+    const bitmask = parseInt(value, 16);
+    if (!isNaN(bitmask)) {
+      let count = 0;
+      let n = bitmask;
+      while (n) {
+        count += n & 1;
+        n >>= 1;
+      }
+      if (count > 0) return count;
     }
   }
 

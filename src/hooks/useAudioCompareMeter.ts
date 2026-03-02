@@ -19,8 +19,8 @@ import type { LoudnessData } from "./useLoudnessMeter";
 import type {
   MeterBlock,
   Ec3DecodeResponse,
-  AudioMeterResponse,
   AudioMeterError,
+  NeedsMainDecodeResponse,
 } from "../workers/audioMeterWorker";
 import {
   windowedLufs,
@@ -32,9 +32,19 @@ import {
   addLraBlock,
   computeLra,
   resetLraState,
+  blockMeanSquare,
   type GatingState,
   type LraState,
 } from "../utils/loudnessCompute";
+import { getKWeightCoeffs } from "../utils/kWeighting";
+import {
+  createBiquadState,
+  applyKWeighting,
+} from "../utils/biquadProcess";
+import {
+  createTruePeakState,
+  processTruePeak,
+} from "../utils/truePeakFilter";
 
 const PREFETCH_AHEAD = 15;
 const PREFETCH_INTERVAL = 2000;
@@ -46,11 +56,6 @@ const CHANNEL_LABELS: Record<number, string[]> = {
   2: ["L", "R"],
   6: ["FL", "FR", "C", "LFE", "SL", "SR"],
 };
-
-function isEc3Codec(codec: string): boolean {
-  const lower = codec.toLowerCase();
-  return lower.startsWith("ec-3") || lower.startsWith("ac-3") || lower === "eac3" || lower === "ac3";
-}
 
 export interface UseAudioCompareMeterResult {
   active: boolean;
@@ -137,8 +142,8 @@ export function useAudioCompareMeter(
     );
     workerRef.current = worker;
 
-    worker.onmessage = (e: MessageEvent<Ec3DecodeResponse | AudioMeterResponse | AudioMeterError>) => {
-      if (e.data.type === "ec3Decoded" || e.data.type === "meterBlocks") {
+    worker.onmessage = async (e: MessageEvent<Ec3DecodeResponse | AudioMeterError | NeedsMainDecodeResponse>) => {
+      if (e.data.type === "ec3Decoded") {
         const { blocks, segmentStartTime } = e.data;
 
         // Store metering blocks
@@ -152,6 +157,32 @@ export function useAudioCompareMeter(
         }
 
         setError(null);
+      } else if (e.data.type === "needsMainDecode") {
+        // Worker doesn't have OfflineAudioContext — decode ADTS on main thread
+        const { adtsData, segmentStartTime, channels: ch, sampleRate: sr } = e.data;
+        try {
+          const duration = Math.max(30, adtsData.byteLength / (sr * 2) + 1);
+          const ctx = new OfflineAudioContext(ch, Math.ceil(duration * sr), sr);
+          const audioBuffer = await ctx.decodeAudioData(adtsData);
+
+          const pcmChannels: Float32Array[] = [];
+          for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
+            pcmChannels.push(audioBuffer.getChannelData(c));
+          }
+
+          const blocks = computeMainThreadMeterBlocks(pcmChannels, audioBuffer.sampleRate, segmentStartTime);
+          const existing = meterBlocksRef.current;
+          const insertIdx = binarySearchInsertIdx(existing, blocks[0]?.time ?? segmentStartTime);
+          existing.splice(insertIdx, 0, ...blocks);
+
+          if (videoEl) {
+            evictBlocks(existing, videoEl.currentTime);
+          }
+          setError(null);
+        } catch (err) {
+          console.warn("[useAudioCompareMeter] Main thread ADTS decode failed:", err);
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } else if (e.data.type === "error") {
         console.warn("[useAudioCompareMeter] Decode error:", e.data.message);
         setError(e.data.message);
@@ -231,26 +262,18 @@ export function useAudioCompareMeter(
         .then((mediaData) => {
           if (!workerRef.current) return;
 
-          if (isEc3Codec(track.codec)) {
-            // EC-3/AC-3: use decodeEc3 message
-            workerRef.current.postMessage({
-              type: "decodeEc3",
-              initData: initData.slice(0),
-              mediaData,
-              segmentStartTime: seg.startTime,
-              channels: track.channelCount,
-              sampleRate: track.sampleRate,
-            });
-          } else {
-            // AAC or other: use decode message (OfflineAudioContext)
-            workerRef.current.postMessage({
-              type: "decode",
-              initData: initData.slice(0),
-              mediaData,
-              segmentStartTime: seg.startTime,
-              trackId: 0,
-            });
-          }
+          // Always use "decodeEc3" — it has a 3-stage fallback:
+          // 1. OfflineAudioContext on raw fMP4 (Safari)
+          // 2. mp4box demux → ADTS wrap → OfflineAudioContext (AAC in all browsers)
+          // 3. mp4box demux → WASM decoder (EC-3/AC-3)
+          workerRef.current.postMessage({
+            type: "decodeEc3",
+            initData: initData.slice(0),
+            mediaData,
+            segmentStartTime: seg.startTime,
+            channels: track.channelCount,
+            sampleRate: track.sampleRate,
+          });
         })
         .catch((err) => {
           console.warn("[useAudioCompareMeter] Segment fetch failed:", seg.url, err);
@@ -378,6 +401,56 @@ export function useAudioCompareMeter(
 }
 
 // ── Helpers ──
+
+const METER_BLOCK_SIZE = 2048;
+
+/** Compute metering blocks from PCM on the main thread (when worker lacks OfflineAudioContext) */
+function computeMainThreadMeterBlocks(
+  channels: Float32Array[],
+  sampleRate: number,
+  segmentStartTime: number,
+): MeterBlock[] {
+  const channelCount = channels.length;
+  const totalSamples = channels[0]?.length ?? 0;
+  const kCoeffs = getKWeightCoeffs(sampleRate);
+
+  const shelfStates = Array.from({ length: channelCount }, () => createBiquadState());
+  const hpfStates = Array.from({ length: channelCount }, () => createBiquadState());
+  const tpStates = Array.from({ length: channelCount }, () => createTruePeakState());
+
+  const blocks: MeterBlock[] = [];
+
+  for (let offset = 0; offset + METER_BLOCK_SIZE <= totalSamples; offset += METER_BLOCK_SIZE) {
+    const time = segmentStartTime + (offset / sampleRate);
+    const levels: { rms: number; peak: number; dB: number }[] = [];
+    const kMeanSq: number[] = [];
+    const truePeaks: number[] = [];
+
+    for (let ch = 0; ch < channelCount; ch++) {
+      const samples = channels[ch].subarray(offset, offset + METER_BLOCK_SIZE);
+
+      let sumSq = 0;
+      let peak = 0;
+      for (let j = 0; j < samples.length; j++) {
+        const s = samples[j];
+        sumSq += s * s;
+        const abs = Math.abs(s);
+        if (abs > peak) peak = abs;
+      }
+      const rms = Math.sqrt(sumSq / samples.length);
+      const dB = rms > 0 ? Math.max(-60, 20 * Math.log10(rms)) : -60;
+      levels.push({ rms, peak, dB });
+
+      const kWeighted = applyKWeighting(samples, kCoeffs, shelfStates[ch], hpfStates[ch]);
+      kMeanSq.push(blockMeanSquare(kWeighted));
+      truePeaks.push(processTruePeak(tpStates[ch], samples));
+    }
+
+    blocks.push({ time, levels, kMeanSq, truePeaks });
+  }
+
+  return blocks;
+}
 
 function findBlock(
   blocks: MeterBlock[],
