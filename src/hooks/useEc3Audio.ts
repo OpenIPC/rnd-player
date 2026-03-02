@@ -15,6 +15,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import type { Ec3TrackInfo } from "../utils/dashAudioParser";
 import { resolveSegmentUrls } from "../utils/dashAudioParser";
+import { corsFetch } from "../utils/corsProxy";
 import { useAudioPlayback } from "./useAudioPlayback";
 import type { ChannelLevel } from "./useAudioAnalyser";
 import type { LoudnessData } from "./useLoudnessMeter";
@@ -213,10 +214,10 @@ export function useEc3Audio(
 
     const { segments: segInfo } = track;
 
-    // Fetch init segment if not cached
+    // Fetch init segment if not cached (via CORS-aware fetch)
     if (!initCacheRef.current && segInfo.initUrl) {
       try {
-        const resp = await fetch(segInfo.initUrl);
+        const resp = await corsFetch(segInfo.initUrl);
         if (resp.ok) {
           initCacheRef.current = await resp.arrayBuffer();
         }
@@ -239,7 +240,7 @@ export function useEc3Audio(
       fetchedSegmentsRef.current.add(key);
 
       // Fetch in the background (don't await — allow parallel fetches)
-      fetch(seg.url)
+      corsFetch(seg.url)
         .then((resp) => {
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           return resp.arrayBuffer();
