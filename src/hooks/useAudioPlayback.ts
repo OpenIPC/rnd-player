@@ -35,7 +35,7 @@ interface ScheduledSource {
   pcmTime: number;   // Video timeline time of this chunk
 }
 
-const DRIFT_THRESHOLD = 0.05; // 50ms
+const DRIFT_THRESHOLD = 0.15; // 150ms — below perceptible A/V sync threshold (~80ms ITU-R)
 const SCHEDULE_AHEAD = 0.3;   // Schedule 300ms ahead of current time
 
 export function useAudioPlayback(
@@ -58,6 +58,8 @@ export function useAudioPlayback(
   const isPlayingRef = useRef(false);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  // Grace period after resume — skip drift detection while ctx/video stabilize
+  const resumeAtRef = useRef(0);
 
   // Mute native audio when EC-3 playback is active
   const prevVolumeRef = useRef(1);
@@ -71,6 +73,7 @@ export function useAudioPlayback(
   }, [enabled]);
 
   const cancelAllScheduled = useCallback(() => {
+    if (scheduledRef.current.length > 0) console.log("[playback] cancelAll: %d sources", scheduledRef.current.length);
     for (const s of scheduledRef.current) {
       try {
         s.source.stop();
@@ -83,6 +86,7 @@ export function useAudioPlayback(
   }, []);
 
   const flush = useCallback(() => {
+    console.log("[playback] flush: queue=%d scheduled=%d", queueRef.current.length, scheduledRef.current.length);
     cancelAllScheduled();
     queueRef.current = [];
   }, [cancelAllScheduled]);
@@ -108,6 +112,7 @@ export function useAudioPlayback(
       : now;
 
     // Schedule more chunks from the queue
+    const videoTime = videoEl.currentTime;
     let scheduleAt = lastScheduledEnd;
     while (queue.length > 0 && scheduleAt - now < SCHEDULE_AHEAD) {
       const chunk = queue.shift()!;
@@ -115,6 +120,24 @@ export function useAudioPlayback(
       const samplesPerChannel = chunk.channels[0].length;
 
       if (samplesPerChannel === 0) continue;
+
+      // How much of this chunk has already passed? Skip into it.
+      const skipSeconds = Math.max(0, videoTime - chunk.time);
+      const remainingDuration = chunk.duration - skipSeconds;
+
+      // Fully stale — entire chunk is behind current playback
+      if (remainingDuration <= 0) {
+        console.log("[playback] skip stale chunk t=%.2f dur=%.2f (videoT=%.2f)", chunk.time, chunk.duration, videoTime);
+        continue;
+      }
+
+      // Don't schedule chunks too far ahead — wait for closer ones to arrive
+      const effectiveTime = chunk.time + skipSeconds;
+      if (effectiveTime - videoTime > 1.5) {
+        console.log("[playback] defer far-ahead chunk t=%.2f (videoT=%.2f, ahead=%.1f)", effectiveTime, videoTime, effectiveTime - videoTime);
+        queue.unshift(chunk);
+        break;
+      }
 
       const audioBuffer = ctx.createBuffer(channelCount, samplesPerChannel, chunk.sampleRate);
       for (let ch = 0; ch < channelCount; ch++) {
@@ -126,30 +149,27 @@ export function useAudioPlayback(
       source.playbackRate.value = videoEl.playbackRate;
       source.connect(ctx.destination);
 
-      // Compute when this chunk should play relative to AudioContext time.
-      // The key mapping: audioCtxTime = audioCtx.currentTime + (chunkVideoTime - video.currentTime)
-      const desiredCtxTime = now + (chunk.time - videoEl.currentTime);
+      // Schedule from the effective position (skipping already-passed audio).
+      // source.start(when, offset) skips into the buffer so audio aligns with video.
+      const desiredCtxTime = now + (effectiveTime - videoTime);
       const startAt = Math.max(desiredCtxTime, scheduleAt);
 
       try {
-        source.start(startAt);
-      } catch {
-        // If start time is in the past, skip this chunk
+        source.start(startAt, skipSeconds);
+        console.log("[playback] scheduled: t=%.2f skip=%.2f startAt=%.3f ctxNow=%.3f videoT=%.2f", chunk.time, skipSeconds, startAt, now, videoTime);
+      } catch (e) {
+        console.log("[playback] skip chunk t=%.2f (start failed: %s)", chunk.time, e);
         continue;
       }
 
-      // Mute native audio on first scheduled source (avoids silence gap)
-      if (!mutedByUsRef.current && videoEl) {
-        videoEl.volume = 0;
-        mutedByUsRef.current = true;
-      }
+      // Muting is handled in tick() when a source is actually playing
 
-      const endAt = startAt + chunk.duration / videoEl.playbackRate;
+      const endAt = startAt + remainingDuration / videoEl.playbackRate;
       scheduled.push({
         source,
         startTime: startAt,
         endTime: endAt,
-        pcmTime: chunk.time,
+        pcmTime: effectiveTime,
       });
       scheduleAt = endAt;
     }
@@ -162,8 +182,9 @@ export function useAudioPlayback(
     const ctx = audioCtxRef.current;
     const scheduled = scheduledRef.current;
 
-    // Check for drift between video and audio
-    if (scheduled.length > 0 && !videoEl.paused) {
+    // Check for drift between video and audio (skip during 500ms grace after resume)
+    const sinceResume = performance.now() - resumeAtRef.current;
+    if (scheduled.length > 0 && !videoEl.paused && sinceResume > 500) {
       // Find the source that should be playing now
       const ctxNow = ctx.currentTime;
       const currentSource = scheduled.find(
@@ -176,17 +197,40 @@ export function useAudioPlayback(
         const drift = Math.abs(expectedVideoTime - videoEl.currentTime);
 
         if (drift > DRIFT_THRESHOLD) {
+          console.log("[playback] drift=%.3f, re-syncing (expected=%.2f actual=%.2f)", drift, expectedVideoTime, videoEl.currentTime);
           // Re-sync: cancel everything and let scheduleNext recompute
           cancelAllScheduled();
+          // Unmute native audio so it fills the gap until a good chunk plays
+          if (mutedByUsRef.current && videoEl) {
+            console.log("[playback] drift: unmuting native audio during re-sync");
+            videoEl.volume = prevVolumeRef.current;
+            mutedByUsRef.current = false;
+          }
         }
       }
     }
 
     scheduleNext();
+
+    // Mute native audio only when an EC-3 source is actually producing audio
+    // (not at schedule time — avoids premature mute before playback starts)
+    if (!mutedByUsRef.current && videoEl && scheduledRef.current.length > 0) {
+      const ctxNow = audioCtxRef.current!.currentTime;
+      const playing = scheduledRef.current.find(
+        (s) => s.startTime <= ctxNow && s.endTime > ctxNow,
+      );
+      if (playing) {
+        console.log("[playback] muting native audio (source playing at ctx=%.3f)", ctxNow);
+        videoEl.volume = 0;
+        mutedByUsRef.current = true;
+      }
+    }
+
     rafRef.current = requestAnimationFrame(tick);
   }, [videoEl, scheduleNext, cancelAllScheduled]);
 
   const enqueueChunk = useCallback((chunk: PcmChunk) => {
+    console.log("[playback] enqueue: t=%.2f dur=%.2f ch=%d queueLen=%d", chunk.time, chunk.duration, chunk.channels.length, queueRef.current.length + 1);
     queueRef.current.push(chunk);
     // Sort by time to handle out-of-order arrivals
     queueRef.current.sort((a, b) => a.time - b.time);
@@ -194,7 +238,9 @@ export function useAudioPlayback(
 
   // Event handlers
   useEffect(() => {
+    console.log("[playback] effect: enabled=%s videoEl=%s", enabled, !!videoEl);
     if (!videoEl || !enabled) {
+      console.log("[playback] effect: disabled, cleaning up (mutedByUs=%s)", mutedByUsRef.current);
       // Cleanup
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       cancelAllScheduled();
@@ -204,6 +250,7 @@ export function useAudioPlayback(
       }
       // Restore video volume
       if (mutedByUsRef.current && videoEl) {
+        console.log("[playback] restoring volume to", prevVolumeRef.current);
         videoEl.volume = prevVolumeRef.current;
         mutedByUsRef.current = false;
       }
@@ -214,27 +261,45 @@ export function useAudioPlayback(
     const ctx = getAudioContext();
     if (!ctx) return;
 
+    console.log("[playback] effect: setup, ctx.state=%s videoEl.paused=%s volume=%s", ctx.state, videoEl.paused, videoEl.volume);
     // Save current volume — muting is deferred until first chunk is scheduled
     // to avoid a silence gap while segments are being fetched and decoded
     prevVolumeRef.current = videoEl.volume;
     mutedByUsRef.current = false;
 
     const onPlay = () => {
+      console.log("[playback] onPlay, ctx.state=%s", ctx.state);
       isPlayingRef.current = true;
-      ctx.resume();
-      rafRef.current = requestAnimationFrame(tick);
+      // Await resume before starting RAF — prevents drift detection from
+      // firing while ctx.currentTime is still frozen but video has advanced
+      resumeAtRef.current = performance.now();
+      ctx.resume().then(() => {
+        console.log("[playback] ctx resumed, starting RAF");
+        if (isPlayingRef.current && enabledRef.current) {
+          rafRef.current = requestAnimationFrame(tick);
+        }
+      });
     };
 
     const onPause = () => {
+      console.log("[playback] onPause");
       isPlayingRef.current = false;
       cancelAnimationFrame(rafRef.current);
+      // Only suspend context — don't cancel sources. ctx.suspend() freezes
+      // AudioContext time so scheduled sources stay valid and resume seamlessly.
       ctx.suspend();
-      cancelAllScheduled();
     };
 
     const onSeeked = () => {
+      console.log("[playback] onSeeked, mutedByUs=%s", mutedByUsRef.current);
       flush();
-      // New chunks will arrive from the EC-3 fetcher at the new position
+      // Unmute native audio during seek recovery — deferred mute will
+      // re-mute when the first new EC-3 chunk is scheduled for playback
+      if (mutedByUsRef.current && videoEl) {
+        console.log("[playback] onSeeked: restoring native volume during seek recovery");
+        videoEl.volume = prevVolumeRef.current;
+        mutedByUsRef.current = false;
+      }
     };
 
     const onRateChange = () => {
@@ -255,6 +320,7 @@ export function useAudioPlayback(
     }
 
     return () => {
+      console.log("[playback] effect cleanup (mutedByUs=%s)", mutedByUsRef.current);
       videoEl.removeEventListener("play", onPlay);
       videoEl.removeEventListener("pause", onPause);
       videoEl.removeEventListener("seeked", onSeeked);
@@ -264,6 +330,7 @@ export function useAudioPlayback(
 
       // Restore video volume
       if (mutedByUsRef.current) {
+        console.log("[playback] cleanup: restoring volume to", prevVolumeRef.current);
         videoEl.volume = prevVolumeRef.current;
         mutedByUsRef.current = false;
       }
