@@ -87,8 +87,17 @@ export interface AudioMeterError {
   segmentStartTime: number;
 }
 
+/** Worker can't decode AAC (no OfflineAudioContext) — sends ADTS back for main-thread decode */
+export interface NeedsMainDecodeResponse {
+  type: "needsMainDecode";
+  adtsData: ArrayBuffer;
+  segmentStartTime: number;
+  channels: number;
+  sampleRate: number;
+}
+
 type InMessage = AudioMeterRequest | Ec3DecodeRequest;
-type OutMessage = AudioMeterResponse | Ec3DecodeResponse | AudioMeterError;
+type OutMessage = AudioMeterResponse | Ec3DecodeResponse | AudioMeterError | NeedsMainDecodeResponse;
 
 const BLOCK_SIZE = 2048;
 
@@ -144,16 +153,16 @@ async function handleDecodeEc3(msg: Ec3DecodeRequest): Promise<void> {
   const { initData, mediaData, segmentStartTime, channels, sampleRate } = msg;
 
   try {
-    // Try OfflineAudioContext first (works in Safari for EC-3)
+    // Stage 1: Try OfflineAudioContext on raw fMP4 (works in Safari for most codecs)
     const combined = new Uint8Array(initData.byteLength + mediaData.byteLength);
     combined.set(new Uint8Array(initData), 0);
     combined.set(new Uint8Array(mediaData), initData.byteLength);
 
     let audioBuffer: AudioBuffer | null = null;
     try {
-      audioBuffer = await decodeAudioBuffer(combined.buffer);
+      audioBuffer = await decodeAudioBuffer(combined.buffer, channels, sampleRate);
     } catch {
-      // OfflineAudioContext can't decode EC-3 — fall back to WASM
+      // Expected in Chrome/Firefox — OfflineAudioContext not in worker or fMP4 not supported
     }
 
     if (audioBuffer) {
@@ -161,18 +170,71 @@ async function handleDecodeEc3(msg: Ec3DecodeRequest): Promise<void> {
       return;
     }
 
-    // WASM fallback: demux fMP4 with mp4box, decode EC-3 frames
-    const decoder = await getWasmDecoder(channels, sampleRate);
-    if (!decoder) {
+    // Stage 2: Demux fMP4 via mp4box — needed for both ADTS and WASM fallbacks
+    let trackInfo: Fmp4TrackInfo;
+    try {
+      trackInfo = await extractSamplesWithInfo(initData, mediaData);
+    } catch (extractErr) {
       post({
         type: "error",
-        message: "EC-3 WASM decoder not available. Build with: cd wasm && ./build-ec3.sh",
+        message: `mp4box extraction failed: ${(extractErr as Error).message}`,
         segmentStartTime,
       });
       return;
     }
 
-    const samples = await extractSamplesFromFmp4(initData, mediaData);
+    // Stage 2a: ADTS fallback — works for AAC in all browsers
+    const adtsStream = buildAdtsStream(
+      trackInfo.samples, trackInfo.codec, trackInfo.sampleRate, trackInfo.channelCount,
+    );
+
+    if (adtsStream) {
+      if (typeof OfflineAudioContext !== "undefined") {
+        // Decode in worker
+        const adtsPcm = await decodeAdtsStream(
+          adtsStream, trackInfo.samples.length, trackInfo.sampleRate, trackInfo.channelCount,
+        );
+        if (adtsPcm) {
+          const blocks = computeMeterBlocksFromPcm(adtsPcm, trackInfo.sampleRate, segmentStartTime);
+          const duration = (adtsPcm[0]?.length ?? 0) / trackInfo.sampleRate;
+          const response: Ec3DecodeResponse = {
+            type: "ec3Decoded",
+            pcmChannels: adtsPcm,
+            blocks,
+            segmentStartTime,
+            duration,
+            sampleRate: trackInfo.sampleRate,
+          };
+          const transfer = adtsPcm.map((ch) => ch.buffer);
+          self.postMessage(response, { transfer });
+          return;
+        }
+      } else {
+        // OfflineAudioContext not available in worker — send ADTS back to main thread
+        const response: NeedsMainDecodeResponse = {
+          type: "needsMainDecode",
+          adtsData: adtsStream.buffer as ArrayBuffer,
+          segmentStartTime,
+          channels: trackInfo.channelCount,
+          sampleRate: trackInfo.sampleRate,
+        };
+        self.postMessage(response, { transfer: [adtsStream.buffer as ArrayBuffer] });
+        return;
+      }
+    }
+
+    // Stage 3: WASM EC-3/AC-3 decoder fallback
+    const decoder = await getWasmDecoder(channels, sampleRate);
+    if (!decoder) {
+      post({
+        type: "error",
+        message: "Audio decode failed: no ADTS or WASM decoder available for this codec",
+        segmentStartTime,
+      });
+      return;
+    }
+
+    const samples = trackInfo.samples;
     if (samples.length === 0) {
       post({
         type: "error",
@@ -302,62 +364,6 @@ async function getWasmDecoder(channels: number, sampleRate: number): Promise<Ec3
   return wasmDecoderPromise;
 }
 
-// ── fMP4 demuxing via mp4box ──
-
-function extractSamplesFromFmp4(
-  initData: ArrayBuffer,
-  mediaData: ArrayBuffer,
-): Promise<Sample[]> {
-  return new Promise((resolve, reject) => {
-    const mp4 = createFile();
-    const samples: Sample[] = [];
-
-    mp4.onReady = (info) => {
-      const audioTrack = info.audioTracks[0];
-      if (!audioTrack) {
-        reject(new Error("No audio track in fMP4"));
-        return;
-      }
-      mp4.setExtractionOptions(audioTrack.id, null, {
-        nbSamples: Infinity,
-      });
-      mp4.start();
-    };
-
-    mp4.onSamples = (_trackId: number, _user: unknown, sampleArr: Sample[]) => {
-      for (const s of sampleArr) {
-        if (!s.data) continue;
-        // Eagerly copy sample data — mp4box reuses internal buffers
-        const src = s.data instanceof Uint8Array ? s.data : new Uint8Array(s.data as ArrayBuffer);
-        const copy = new Uint8Array(s.size);
-        copy.set(src.subarray(0, s.size));
-        samples.push({ ...s, data: copy });
-      }
-    };
-
-    mp4.onError = (e: string) => reject(new Error(e));
-
-    try {
-      // Feed init segment
-      const initBuf = initData.slice(0) as MP4BoxBuffer;
-      initBuf.fileStart = 0;
-      mp4.appendBuffer(initBuf);
-
-      // Feed media segment
-      const mediaBuf = mediaData.slice(0) as MP4BoxBuffer;
-      mediaBuf.fileStart = initData.byteLength;
-      mp4.appendBuffer(mediaBuf);
-
-      mp4.flush();
-
-      // Resolve with collected samples
-      resolve(samples);
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
 // ── Shared metering computation ──
 
 function computeMeterBlocks(audioBuffer: AudioBuffer, segmentStartTime: number): MeterBlock[] {
@@ -427,7 +433,161 @@ function computeMeterBlocksFromPcm(
  * Decode an ArrayBuffer containing audio (fMP4) to an AudioBuffer.
  * Uses OfflineAudioContext.decodeAudioData which supports fMP4 in Safari.
  */
-async function decodeAudioBuffer(data: ArrayBuffer): Promise<AudioBuffer> {
-  const ctx = new OfflineAudioContext(2, 48000 * 30, 48000);
+async function decodeAudioBuffer(data: ArrayBuffer, channels = 6, sampleRate = 48000): Promise<AudioBuffer> {
+  const ctx = new OfflineAudioContext(channels, sampleRate * 30, sampleRate);
   return ctx.decodeAudioData(data);
+}
+
+// ── ADTS-wrapped AAC decode (fallback for Chrome/Firefox where fMP4 decodeAudioData fails) ──
+
+/** Sample rate → ADTS frequency index (ISO 14496-3 Table 1.18) */
+const ADTS_FREQ_INDEX: Record<number, number> = {
+  96000: 0, 88200: 1, 64000: 2, 48000: 3, 44100: 4, 32000: 5,
+  24000: 6, 22050: 7, 16000: 8, 12000: 9, 11025: 10, 8000: 11, 7350: 12,
+};
+
+/** Extract AAC object type from codec string: "mp4a.40.2" → 2, "mp4a.40.5" → 5 */
+function parseAacObjectType(codec: string): number {
+  const match = codec.match(/mp4a\.40\.(\d+)/);
+  if (match) return parseInt(match[1], 10);
+  // Default to AAC-LC if codec is just "mp4a" or unrecognized
+  if (codec.startsWith("mp4a")) return 2;
+  return 0;
+}
+
+interface Fmp4TrackInfo {
+  samples: Sample[];
+  codec: string;
+  sampleRate: number;
+  channelCount: number;
+}
+
+/**
+ * Extract audio samples from fMP4, returning track metadata alongside samples.
+ */
+function extractSamplesWithInfo(
+  initData: ArrayBuffer,
+  mediaData: ArrayBuffer,
+): Promise<Fmp4TrackInfo> {
+  return new Promise((resolve, reject) => {
+    const mp4 = createFile();
+    const samples: Sample[] = [];
+    let trackCodec = "";
+    let trackSampleRate = 48000;
+    let trackChannelCount = 2;
+
+    mp4.onReady = (info) => {
+      const audioTrack = info.audioTracks[0];
+      if (!audioTrack) {
+        reject(new Error("No audio track in fMP4"));
+        return;
+      }
+      trackCodec = (audioTrack as { codec?: string }).codec ?? "";
+      trackSampleRate = (audioTrack as { audio?: { sample_rate?: number } }).audio?.sample_rate ?? 48000;
+      trackChannelCount = (audioTrack as { audio?: { channel_count?: number } }).audio?.channel_count ?? 2;
+      mp4.setExtractionOptions(audioTrack.id, null, { nbSamples: Infinity });
+      mp4.start();
+    };
+
+    mp4.onSamples = (_trackId: number, _user: unknown, sampleArr: Sample[]) => {
+      for (const s of sampleArr) {
+        if (!s.data) continue;
+        const src = s.data instanceof Uint8Array ? s.data : new Uint8Array(s.data as ArrayBuffer);
+        const copy = new Uint8Array(s.size);
+        copy.set(src.subarray(0, s.size));
+        samples.push({ ...s, data: copy });
+      }
+    };
+
+    mp4.onError = (e: string) => reject(new Error(e));
+
+    try {
+      const initBuf = initData.slice(0) as MP4BoxBuffer;
+      initBuf.fileStart = 0;
+      mp4.appendBuffer(initBuf);
+
+      const mediaBuf = mediaData.slice(0) as MP4BoxBuffer;
+      mediaBuf.fileStart = initData.byteLength;
+      mp4.appendBuffer(mediaBuf);
+
+      mp4.flush();
+      resolve({ samples, codec: trackCodec, sampleRate: trackSampleRate, channelCount: trackChannelCount });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Build an ADTS-wrapped byte stream from raw AAC samples.
+ * Returns null if the codec isn't AAC or sample rate isn't recognized.
+ */
+function buildAdtsStream(
+  samples: Sample[],
+  codec: string,
+  sampleRate: number,
+  channelCount: number,
+): Uint8Array | null {
+  if (samples.length === 0) return null;
+
+  const objectType = parseAacObjectType(codec);
+  if (objectType === 0) return null;
+
+  const freqIdx = ADTS_FREQ_INDEX[sampleRate];
+  if (freqIdx === undefined) return null;
+
+  const profile = Math.min(objectType - 1, 3);
+  const chanConfig = Math.min(channelCount, 7);
+
+  let totalSize = 0;
+  for (const s of samples) {
+    if (s.data) totalSize += 7 + s.data.byteLength;
+  }
+
+  const adtsStream = new Uint8Array(totalSize);
+  let offset = 0;
+
+  for (const s of samples) {
+    if (!s.data) continue;
+    const frameLen = 7 + s.data.byteLength;
+
+    adtsStream[offset + 0] = 0xFF;
+    adtsStream[offset + 1] = 0xF1;
+    adtsStream[offset + 2] = ((profile << 6) | (freqIdx << 2) | (chanConfig >> 2)) & 0xFF;
+    adtsStream[offset + 3] = (((chanConfig & 3) << 6) | ((frameLen >> 11) & 3)) & 0xFF;
+    adtsStream[offset + 4] = ((frameLen >> 3) & 0xFF);
+    adtsStream[offset + 5] = (((frameLen & 7) << 5) | 0x1F) & 0xFF;
+    adtsStream[offset + 6] = 0xFC;
+
+    const src = s.data instanceof Uint8Array ? s.data : new Uint8Array(s.data as ArrayBuffer);
+    adtsStream.set(src.subarray(0, s.data.byteLength), offset + 7);
+    offset += frameLen;
+  }
+
+  return adtsStream;
+}
+
+/**
+ * Decode an ADTS byte stream via OfflineAudioContext.
+ * Only works when OfflineAudioContext is available (Safari workers, main thread).
+ */
+async function decodeAdtsStream(
+  adtsStream: Uint8Array,
+  frameCount: number,
+  sampleRate: number,
+  channelCount: number,
+): Promise<Float32Array[] | null> {
+  try {
+    const duration = Math.max(30, frameCount * 1024 / sampleRate + 1);
+    const ctx = new OfflineAudioContext(channelCount, Math.ceil(duration * sampleRate), sampleRate);
+    const audioBuffer = await ctx.decodeAudioData(adtsStream.buffer as ArrayBuffer);
+
+    const channels: Float32Array[] = [];
+    for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+      channels.push(new Float32Array(audioBuffer.getChannelData(ch)));
+    }
+    return channels;
+  } catch {
+    return null;
+  }
 }
