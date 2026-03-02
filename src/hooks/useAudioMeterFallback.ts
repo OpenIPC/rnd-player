@@ -407,6 +407,18 @@ export function useAudioMeterFallback(
       return { levels: [], error: null };
     }
 
+    // When paused, show silent bars (no signal flowing)
+    if (videoEl.paused) {
+      const chCount = channelCountRef.current;
+      const labels = CHANNEL_LABELS[chCount] ?? Array.from({ length: chCount }, (_, i) => `${i + 1}`);
+      return {
+        levels: Array.from({ length: chCount }, (_, i) => ({
+          rms: 0, peak: 0, dB: -60, label: labels[i] ?? `${i + 1}`,
+        })),
+        error: null,
+      };
+    }
+
     const currentTime = videoEl.currentTime;
     const idx = findClosestBlock(blocks, currentTime, lastBlockIdxRef.current);
     lastBlockIdxRef.current = idx;
@@ -430,7 +442,7 @@ export function useAudioMeterFallback(
   }, [enabled, videoEl]);
 
   const readLoudness = useCallback((): LoudnessData | null => {
-    if (!enabled || !videoEl) return null;
+    if (!enabled || !videoEl || videoEl.paused) return null;
 
     const blocks = blocksRef.current;
     if (blocks.length === 0) return null;
