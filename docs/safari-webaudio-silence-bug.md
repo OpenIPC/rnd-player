@@ -183,7 +183,7 @@ MSE blob URLs are same-origin by definition. The `wouldTaintOrigin()` check in W
 
 ### Resolution
 
-Graceful degradation: detect Safari + MSE and show "Audio metering unavailable in Safari with streaming" instead of the misleading "cross-origin media" message. The detection uses UA sniffing for Safari combined with checking that `videoEl.src` is empty (MSE uses `MediaSource` via `srcObject`/`URL.createObjectURL`, not the `src` attribute).
+Implemented full workaround: `useAudioMeterFallback` hook bypasses `MediaElementAudioSourceNode` entirely. Extracts raw AAC samples from fMP4 segments via mp4box, wraps in ADTS headers, decodes via `OfflineAudioContext.decodeAudioData()`, and computes metering from the decoded PCM. See `docs/audio-decode-workarounds.md` for the complete implementation details.
 
 ### Key sources
 
