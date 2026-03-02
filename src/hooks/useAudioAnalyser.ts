@@ -20,7 +20,7 @@ const ZERO_FRAMES_THRESHOLD = 10;
 /** Safari doesn't route MSE/HLS audio through createMediaElementSource
  *  (WebKit bugs #266922, #180696 — open since 2017). Detect early so we
  *  can show an accurate error instead of the misleading "cross-origin" one. */
-const isSafariMSE = (videoEl: HTMLVideoElement): boolean => {
+export const isSafariMSE = (videoEl: HTMLVideoElement): boolean => {
   const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
   // MSE-backed video has no src attribute — Shaka sets MediaSource via srcObject/URL
   const isMSE = !videoEl.src || videoEl.src === "";

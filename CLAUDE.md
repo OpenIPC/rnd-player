@@ -135,6 +135,20 @@ When activated, `configureSoftwareDecryption()` registers an async Shaka respons
 
 **autoConfig** (`src/utils/autoConfig.ts`) — Maps a `DeviceProfile` + optional build preset to a `PlayerModuleConfig`. Applies hard gates (missing APIs disable dependent modules) and soft gates (low-tier devices disable filmstrip + qualityCompare). See `docs/module-config.md` for the full three-layer config system.
 
+**biquadProcess** (`src/utils/biquadProcess.ts`) — Software IIR biquad filter for use in Web Workers where Web Audio IIRFilterNode is unavailable. Implements Direct Form I transfer function. Provides `applyBiquad(samples, coeffs, state)` and `applyKWeighting(samples, kCoeffs, shelfState, hpfState)`. State persists across blocks for filter continuity. Reuses `BiquadCoeffs`/`KWeightCoeffs` types from `kWeighting.ts`.
+
+**audioMeterWorker** (`src/workers/audioMeterWorker.ts`) — Web Worker for EC-3 software decode: concatenates init + media fMP4 bytes, decodes via `OfflineAudioContext.decodeAudioData()`, computes per-channel levels/K-weighting/TruePeak per 2048-sample block, posts back `MeterBlock[]` and per-channel PCM `Float32Array[]` (transferable) for playback via `AudioBufferSourceNode`. Also exports shared types (`MeterBlock`, message interfaces).
+
+**useAudioMeterFallback** (`src/hooks/useAudioMeterFallback.ts`) — Fallback audio metering for Safari MSE (WebKit bug #266922: `MediaElementAudioSourceNode` returns silence). Runs entirely on the main thread — no worker dependency. Pipeline: bootstraps by extracting audio stream from Shaka's manifest → fetches init segment → parses with mp4box for track IDs/timescale/codec → fetches media segments → extracts raw AAC samples via mp4box `setExtractionOptions`/`onSamples` → wraps in ADTS headers → decodes via `OfflineAudioContext.decodeAudioData()` → computes per-block RMS/K-weighted/TruePeak metering. Also registers a Shaka response filter for ongoing segments. Computes presentation time offset (PTO) from tfdt vs Shaka's segment reference to map DASH media timeline to presentation timeline. Caches `MeterBlock[]` sorted by time with binary-search lookup. Maintains LUFS ring buffers, gating state, and LRA state (same logic as `useLoudnessMeter`). Exposes `readLevels()` and `readLoudness()` with identical interfaces to `useAudioAnalyser`/`useLoudnessMeter`. Memory eviction: blocks outside ±30s of playback position.
+
+**dashAudioParser** (`src/utils/dashAudioParser.ts`) — Parses DASH MPD XML to extract EC-3/AC-3 audio tracks that the browser cannot natively decode. Extracts `SegmentTemplate` patterns, `SegmentTimeline`, `BaseURL`, channel config, bandwidth. Provides `parseEc3Tracks(manifestText, manifestUrl)` → `Ec3TrackInfo[]`, `stripEc3FromManifest(manifestText)` → modified XML, and `resolveSegmentUrls(segInfo, startTime, endTime)` for independent segment fetching.
+
+**ec3Decoder** (`src/wasm/ec3Decoder.ts`) — WASM EC-3/AC-3 decoder wrapper. Loads a minimal WASM build of FFmpeg's AC-3/E-AC-3 decoders (see `wasm/build-ec3.sh`). Provides `createEc3Decoder(channels, sampleRate)` → `Ec3DecoderInstance` with `decode(frame)` → per-channel `Float32Array[]` PCM. EC-3 patents expired January 2026.
+
+**useAudioPlayback** (`src/hooks/useAudioPlayback.ts`) — Plays decoded PCM through `AudioContext` → `AudioBufferSourceNode`, synchronized to video timeline. Double-buffer scheduling (300ms lookahead), drift detection (re-sync if >50ms), handles play/pause/seek/ratechange events. Mutes native video audio when active. Exposes `enqueueChunk(PcmChunk)`, `flush()`, `getAudioContext()`.
+
+**useEc3Audio** (`src/hooks/useEc3Audio.ts`) — Orchestrates EC-3 software decode playback. When activated: fetches EC-3 segments independently (15s prefetch), sends to `audioMeterWorker` for decode, feeds PCM to `useAudioPlayback`, provides metering blocks. Handles seek (flush + re-fetch), memory eviction (±30s). Exposes `activate(track)`, `deactivate()`, `readMeterBlocks()`.
+
 **Utilities** in `src/utils/`: `formatTime`, `formatTrackRes`, `safeNum`, `formatBitrate`, `parseSceneData` — small pure functions.
 
 ## Testing
