@@ -398,7 +398,7 @@ src/utils/vmafLibvmafValidation.test.ts        — 43 tests: pixel-identical val
 src/test/fixtures/vmaf-reference-scores.json   — Committed libvmaf 3.0.0 reference scores (HD + 4K models, 8 test cases)
 scripts/vmaf-generate-y4m.ts                   — Deterministic Y4M fixture generator for libvmaf consumption
 scripts/generate-vmaf-reference.sh             — Runs libvmaf on fixtures, produces reference JSON
-docs/vmaf-investigation-spec.md                — This document
+docs/vmaf.md                                   — This document
 ```
 
 Not pursued (performance targets met with pure TS):
