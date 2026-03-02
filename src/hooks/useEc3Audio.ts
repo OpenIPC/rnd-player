@@ -149,8 +149,6 @@ export function useEc3Audio(
       if (e.data.type === "ec3Decoded") {
         const { pcmChannels, blocks, segmentStartTime, duration, sampleRate } = e.data;
 
-        console.log(`[ec3] decoded: t=${segmentStartTime.toFixed(2)} dur=${duration.toFixed(2)} ch=${pcmChannels.length} sr=${sampleRate} blocks=${blocks.length}`);
-
         // Enqueue PCM for playback
         enqueueChunk({
           channels: pcmChannels,
@@ -169,7 +167,7 @@ export function useEc3Audio(
 
         setError(null);
       } else if (e.data.type === "error") {
-        console.warn("[ec3] Decode error:", e.data.message);
+        console.warn("[useEc3Audio] Decode error:", e.data.message);
         setError(e.data.message);
       }
     };
@@ -266,7 +264,6 @@ export function useEc3Audio(
   }, []);
 
   const activate = useCallback((track: Ec3TrackInfo) => {
-    console.log(`[ec3] activate: id=${track.id} codec=${track.codec} ch=${track.channelCount} sr=${track.sampleRate}`);
     activeTrackRef.current = track;
     setActive(true);
     setActiveTrackId(track.id);
