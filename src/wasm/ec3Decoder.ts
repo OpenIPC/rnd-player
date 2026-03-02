@@ -68,19 +68,12 @@ async function loadWasmModule(): Promise<WebAssembly.Module> {
 
     for (const path of paths) {
       try {
-        console.log(`[ec3-wasm] trying: ${path}`);
         const response = await fetch(path);
-        if (!response.ok) {
-          console.log(`[ec3-wasm] ${path} → HTTP ${response.status}`);
-          continue;
-        }
+        if (!response.ok) continue;
         const bytes = await response.arrayBuffer();
-        console.log(`[ec3-wasm] loaded ${bytes.byteLength} bytes, compiling...`);
         wasmModule = await WebAssembly.compile(bytes);
-        console.log("[ec3-wasm] compiled successfully");
         return wasmModule;
-      } catch (err) {
-        console.log(`[ec3-wasm] ${path} failed:`, err);
+      } catch {
         continue;
       }
     }

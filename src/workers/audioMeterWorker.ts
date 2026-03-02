@@ -154,7 +154,6 @@ async function handleDecodeEc3(msg: Ec3DecodeRequest): Promise<void> {
       audioBuffer = await decodeAudioBuffer(combined.buffer);
     } catch {
       // OfflineAudioContext can't decode EC-3 — fall back to WASM
-      console.log("[ec3-worker] OfflineAudioContext failed, trying WASM decoder");
     }
 
     if (audioBuffer) {
@@ -173,9 +172,7 @@ async function handleDecodeEc3(msg: Ec3DecodeRequest): Promise<void> {
       return;
     }
 
-    console.log("[ec3-worker] WASM decoder ready, demuxing fMP4...");
     const samples = await extractSamplesFromFmp4(initData, mediaData);
-    console.log(`[ec3-worker] extracted ${samples.length} EC-3 frames`);
     if (samples.length === 0) {
       post({
         type: "error",
@@ -293,12 +290,11 @@ async function getWasmDecoder(channels: number, sampleRate: number): Promise<Ec3
 
   wasmDecoderPromise = createEc3Decoder(channels, sampleRate)
     .then((dec) => {
-      console.log("[ec3-worker] WASM decoder created successfully");
       wasmDecoder = dec;
       return dec;
     })
     .catch((err) => {
-      console.error("[ec3-worker] WASM decoder init failed:", err);
+      console.warn("[audioMeterWorker] WASM EC-3 decoder init failed:", err);
       wasmDecoderPromise = null;
       return null;
     });
