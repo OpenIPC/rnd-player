@@ -82,6 +82,7 @@ export function useEc3Audio(
   const meterBlocksRef = useRef<MeterBlock[]>([]);
   const lastBlockIdxRef = useRef(0);
   const prefetchTimerRef = useRef(0);
+  const pendingFlushRef = useRef(false);
   const initCacheRef = useRef<ArrayBuffer | null>(null);
 
   // LUFS ring buffers (same structure as useLoudnessMeter / useAudioMeterFallback)
@@ -105,7 +106,9 @@ export function useEc3Audio(
 
   // Spawn worker on activation
   useEffect(() => {
+    console.log("[ec3] effect: active=%s trackId=%s videoEl=%s", active, activeTrackId, !!videoEl);
     if (!active || !videoEl) {
+      console.log("[ec3] effect: inactive, cleaning up");
       if (workerRef.current) {
         workerRef.current.terminate();
         workerRef.current = null;
@@ -121,8 +124,13 @@ export function useEc3Audio(
       return;
     }
 
+    // Defer flush until first new chunk arrives — old audio keeps playing
+    // during fetch+decode latency (avoids silence or wrong-language gap)
+    pendingFlushRef.current = true;
+
     // Initialize LUFS state
     const track = activeTrackRef.current;
+    console.log("[ec3] effect: setting up track=%s ch=%d sr=%d", track?.id, track?.channelCount, track?.sampleRate);
     const sampleRate = track?.sampleRate ?? 48000;
     const chCount = track?.channelCount ?? 2;
     const blocksPerSec = sampleRate / BLOCK_SIZE;
@@ -149,6 +157,14 @@ export function useEc3Audio(
     worker.onmessage = (e: MessageEvent<Ec3DecodeResponse | AudioMeterError>) => {
       if (e.data.type === "ec3Decoded") {
         const { pcmChannels, blocks, segmentStartTime, duration, sampleRate } = e.data;
+        console.log("[ec3] decoded: t=%.2f dur=%.2f ch=%d blocks=%d pendingFlush=%s", segmentStartTime, duration, pcmChannels.length, blocks.length, pendingFlushRef.current);
+
+        // Flush old track's audio on first new chunk arrival
+        if (pendingFlushRef.current) {
+          console.log("[ec3] flushing old audio before first new chunk");
+          flushPlayback();
+          pendingFlushRef.current = false;
+        }
 
         // Enqueue PCM for playback
         enqueueChunk({
@@ -184,6 +200,7 @@ export function useEc3Audio(
 
     // Handle seek
     const onSeeked = () => {
+      console.log("[ec3] ========== SEEKED to %.2f ==========", videoEl.currentTime);
       flushPlayback();
       fetchedSegmentsRef.current.clear();
       meterBlocksRef.current = [];
@@ -194,6 +211,7 @@ export function useEc3Audio(
     videoEl.addEventListener("seeked", onSeeked);
 
     return () => {
+      console.log("[ec3] effect cleanup: trackId=%s", activeTrackId);
       videoEl.removeEventListener("seeked", onSeeked);
       worker.terminate();
       workerRef.current = null;
@@ -205,12 +223,15 @@ export function useEc3Audio(
       meterBlocksRef.current = [];
       initCacheRef.current = null;
     };
-  }, [active, videoEl, enqueueChunk, flushPlayback]);
+  }, [active, activeTrackId, videoEl, enqueueChunk, flushPlayback]);
 
   const fetchSegments = useCallback(async (currentTime: number) => {
     const track = activeTrackRef.current;
     const worker = workerRef.current;
-    if (!track || !worker) return;
+    if (!track || !worker) {
+      console.log("[ec3] fetchSegments: skip (track=%s worker=%s)", !!track, !!worker);
+      return;
+    }
 
     const { segments: segInfo } = track;
 
@@ -265,6 +286,7 @@ export function useEc3Audio(
   }, []);
 
   const activate = useCallback((track: Ec3TrackInfo) => {
+    console.log("[ec3] activate: id=%s lang=%s ch=%d", track.id, track.language, track.channelCount);
     activeTrackRef.current = track;
     setActive(true);
     setActiveTrackId(track.id);
@@ -272,6 +294,7 @@ export function useEc3Audio(
   }, []);
 
   const deactivate = useCallback(() => {
+    console.log("[ec3] deactivate");
     activeTrackRef.current = null;
     setActive(false);
     setActiveTrackId(null);
