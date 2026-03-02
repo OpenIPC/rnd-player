@@ -1,16 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import shaka from "shaka-player";
 import { useAudioAnalyser } from "../hooks/useAudioAnalyser";
 import type { ChannelLevel } from "../hooks/useAudioAnalyser";
 import { useLoudnessMeter } from "../hooks/useLoudnessMeter";
 import type { LoudnessData } from "../hooks/useLoudnessMeter";
+import { useAudioMeterFallback } from "../hooks/useAudioMeterFallback";
+
+interface Ec3MeterReader {
+  readLevels: () => { levels: ChannelLevel[]; error: string | null };
+  readLoudness: () => LoudnessData | null;
+  resetIntegrated: () => void;
+}
 
 interface AudioLevelsProps {
   videoEl: HTMLVideoElement;
   containerEl: HTMLDivElement;
+  player: shaka.Player;
   onClose: () => void;
   loudnessTarget: number;
   onLoudnessTargetChange: (target: number) => void;
+  /** When true, use worker-based metering instead of Web Audio (Safari MSE). */
+  fallbackMode?: boolean;
+  /** When provided (EC-3 active), use this for metering instead of Web Audio. */
+  ec3Meter?: Ec3MeterReader;
 }
 
 /** dB scale tick marks to draw */
@@ -75,16 +88,34 @@ function formatLufs(val: number): string {
 export default function AudioLevels({
   videoEl,
   containerEl,
+  player,
   onClose,
   loudnessTarget,
   onLoudnessTargetChange,
+  fallbackMode = false,
+  ec3Meter,
 }: AudioLevelsProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
   const peaksRef = useRef<number[]>([]);
   const lastTimeRef = useRef(0);
-  const { readLevels } = useAudioAnalyser(videoEl, true);
-  const { readLoudness, resetIntegrated } = useLoudnessMeter(videoEl, true);
+
+  // Both hooks are always called (React rules), but only one is active.
+  // When ec3Meter is provided, disable both Web Audio and fallback hooks.
+  const hooksDisabled = !!ec3Meter;
+  const webAudio = useAudioAnalyser(videoEl, !fallbackMode && !hooksDisabled);
+  const webLoudness = useLoudnessMeter(videoEl, !fallbackMode && !hooksDisabled);
+  const fallback = useAudioMeterFallback(videoEl, player, fallbackMode && !hooksDisabled);
+
+  const readLevels = ec3Meter
+    ? ec3Meter.readLevels
+    : fallbackMode ? fallback.readLevels : webAudio.readLevels;
+  const readLoudness = ec3Meter
+    ? ec3Meter.readLoudness
+    : fallbackMode ? fallback.readLoudness : webLoudness.readLoudness;
+  const resetIntegrated = ec3Meter
+    ? ec3Meter.resetIntegrated
+    : fallbackMode ? fallback.resetIntegrated : webLoudness.resetIntegrated;
 
   // Track channel count to compute dynamic panel width
   const [channelCount, setChannelCount] = useState(2);

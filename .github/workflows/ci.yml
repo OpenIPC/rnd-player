@@ -24,6 +24,30 @@ jobs:
 
       - run: npm run build
 
+  wasm-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+
+      - name: Build EC-3 WASM decoder
+        run: bash wasm/build-ec3.sh
+
+      - name: Verify WASM binary
+        run: |
+          ls -la public/ec3-decoder.wasm
+          SIZE=$(stat --printf="%s" public/ec3-decoder.wasm)
+          echo "WASM size: ${SIZE} bytes"
+          if [ "$SIZE" -lt 100000 ]; then
+            echo "ERROR: WASM binary too small (${SIZE} bytes)"
+            exit 1
+          fi
+
   e2e:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

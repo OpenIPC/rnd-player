@@ -38,6 +38,8 @@ import type { SceneData } from "../types/sceneData";
 import { copyToClipboard } from "../utils/copyToClipboard";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { BoundaryPreview, RequestBoundaryPreviewFn } from "../hooks/useBoundaryPreviews";
+import type { Ec3TrackInfo } from "../utils/dashAudioParser";
+import type { UseEc3AudioResult } from "../hooks/useEc3Audio";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -69,6 +71,12 @@ interface VideoControlsProps {
   boundaryPreviews?: Map<number, BoundaryPreview>;
   requestBoundaryPreview?: RequestBoundaryPreviewFn;
   clearBoundaryPreviews?: () => void;
+  /** Safari MSE detected — use worker-based audio metering fallback. */
+  safariMSE?: boolean;
+  /** EC-3 tracks detected in manifest (not natively supported). */
+  ec3Tracks?: Ec3TrackInfo[];
+  /** EC-3 software decode playback controller. */
+  ec3Audio?: UseEc3AudioResult;
 }
 
 interface QualityOption {
@@ -158,6 +166,9 @@ export default function VideoControls({
   boundaryPreviews,
   requestBoundaryPreview,
   clearBoundaryPreviews,
+  safariMSE,
+  ec3Tracks,
+  ec3Audio,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -667,11 +678,24 @@ export default function VideoControls({
   };
 
   const selectAudio = (audio: AudioOption) => {
+    // If EC-3 was active, deactivate it
+    if (ec3Audio?.active) {
+      ec3Audio.deactivate();
+    }
     const tracks = player.getAudioTracks();
     if (tracks[audio.index]) {
       player.selectAudioTrack(tracks[audio.index]);
     }
     setActiveAudioIndex(audio.index);
+    setPopup(null);
+  };
+
+  const selectEc3Track = (track: Ec3TrackInfo) => {
+    if (ec3Audio) {
+      ec3Audio.activate(track);
+      // Set activeAudioIndex to -1 to indicate non-native track
+      setActiveAudioIndex(-1);
+    }
     setPopup(null);
   };
 
@@ -1350,11 +1374,22 @@ export default function VideoControls({
                       <div
                         key={a.index}
                         className={`vp-popup-item${
-                          activeAudioIndex === a.index ? " vp-active" : ""
+                          activeAudioIndex === a.index && !ec3Audio?.active ? " vp-active" : ""
                         }`}
                         onClick={() => selectAudio(a)}
                       >
                         {a.label || langDisplayName(a.language, `Track ${a.index + 1}`)}
+                      </div>
+                    ))}
+                    {ec3Tracks && ec3Tracks.length > 0 && ec3Tracks.map((t) => (
+                      <div
+                        key={`ec3-${t.id}`}
+                        className={`vp-popup-item${
+                          ec3Audio?.activeTrackId === t.id ? " vp-active" : ""
+                        }`}
+                        onClick={() => selectEc3Track(t)}
+                      >
+                        {t.label}
                       </div>
                     ))}
                   </div>
@@ -1554,12 +1589,15 @@ export default function VideoControls({
           <AudioLevels
             videoEl={videoEl}
             containerEl={containerEl}
+            player={player}
             onClose={() => setShowAudioLevels(false)}
             loudnessTarget={loudnessTarget}
             onLoudnessTargetChange={(target) => {
               setLoudnessTarget(target);
               try { localStorage.setItem("vp_loudness_target", String(target)); } catch { /* */ }
             }}
+            fallbackMode={safariMSE}
+            ec3Meter={ec3Audio?.active ? ec3Audio : undefined}
           />
         </Suspense>
       )}

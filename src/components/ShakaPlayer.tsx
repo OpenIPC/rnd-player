@@ -3,7 +3,10 @@ import shaka from "shaka-player";
 import VideoControls from "./VideoControls";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
 import { fetchWithCorsRetry, installCorsSchemePlugin, uninstallCorsSchemePlugin, getCorsBlockedOrigin } from "../utils/corsProxy";
+import { isSafariMSE } from "../hooks/useAudioAnalyser";
 import { useBoundaryPreviews } from "../hooks/useBoundaryPreviews";
+import { useEc3Audio } from "../hooks/useEc3Audio";
+import { parseEc3Tracks, stripEc3FromManifest, type Ec3TrackInfo } from "../utils/dashAudioParser";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
@@ -87,6 +90,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const compareViewRef = useRef<CompareViewState | null>(null);
   const clearSleepGuardRef = useRef<() => void>(() => {});
   const [playerReady, setPlayerReady] = useState(false);
+  const [safariMSE, setSafariMSE] = useState(false);
+  const [ec3Tracks, setEc3Tracks] = useState<Ec3TrackInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
@@ -111,6 +116,9 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const ssimHistoryRef = useRef<Map<number, number>>(new Map());
   const msSsimHistoryRef = useRef<Map<number, number>>(new Map());
   const vmafHistoryRef = useRef<Map<number, number>>(new Map());
+  // EC-3 software decode playback
+  const ec3Audio = useEc3Audio(videoRef.current);
+
   // Boundary previews for progress bar tooltip (independent of filmstrip)
   const { boundaryPreviews, requestBoundaryPreview, clearBoundaryPreviews } = useBoundaryPreviews(
     playerRef.current,
@@ -135,6 +143,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
     }
 
     const video = videoRef.current!;
+    setSafariMSE(isSafariMSE(video));
     const player = new shaka.Player();
     playerRef.current = player;
     let destroyed = false;
@@ -220,6 +229,26 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
         const cp = doc.querySelector("[*|default_KID]");
         defaultKID =
           cp?.getAttribute("cenc:default_KID")?.replaceAll("-", "") ?? null;
+
+        // Detect EC-3/AC-3 audio tracks that the browser can't decode natively
+        const detectedEc3 = parseEc3Tracks(manifestText, src);
+        if (detectedEc3.length > 0) {
+          setEc3Tracks(detectedEc3);
+          // Register a response filter to strip EC-3 AdaptationSets from the
+          // manifest so Shaka loads only video + AAC (native) tracks
+          const net = player.getNetworkingEngine();
+          if (net) {
+            net.registerResponseFilter((type, response) => {
+              if (type === shaka.net.NetworkingEngine.RequestType.MANIFEST) {
+                const xml = new TextDecoder().decode(response.data as ArrayBuffer);
+                const stripped = stripEc3FromManifest(xml);
+                response.data = new TextEncoder().encode(stripped).buffer as ArrayBuffer;
+              }
+            });
+          }
+        } else {
+          setEc3Tracks([]);
+        }
       }
 
       kidRef.current = defaultKID;
@@ -575,6 +604,9 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               boundaryPreviews={boundaryPreviews}
               requestBoundaryPreview={requestBoundaryPreview}
               clearBoundaryPreviews={clearBoundaryPreviews}
+              safariMSE={safariMSE}
+              ec3Tracks={ec3Tracks}
+              ec3Audio={ec3Audio}
             />
           )}
         {moduleConfig.qualityCompare &&
