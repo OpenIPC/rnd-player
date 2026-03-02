@@ -306,6 +306,18 @@ export function useAudioCompareMeter(
       return { levels: [], error: null };
     }
 
+    // When paused, show silent bars (matching Track A behavior)
+    if (videoEl.paused) {
+      const chCount = channelCount;
+      const labels = CHANNEL_LABELS[chCount] ?? Array.from({ length: chCount }, (_, i) => `${i + 1}`);
+      return {
+        levels: Array.from({ length: chCount }, (_, i) => ({
+          rms: 0, peak: 0, dB: -60, label: labels[i] ?? `${i + 1}`,
+        })),
+        error: null,
+      };
+    }
+
     const block = findBlock(meterBlocksRef.current, videoEl.currentTime, lastBlockIdxRef);
     if (!block) {
       return { levels: [], error };
@@ -322,10 +334,10 @@ export function useAudioCompareMeter(
     }));
 
     return { levels, error: null };
-  }, [active, videoEl, error]);
+  }, [active, videoEl, error, channelCount]);
 
   const readLoudness = useCallback((): LoudnessData | null => {
-    if (!active || !videoEl) return null;
+    if (!active || !videoEl || videoEl.paused) return null;
 
     const block = findBlock(meterBlocksRef.current, videoEl.currentTime, lastBlockIdxRef);
     if (!block) return null;
