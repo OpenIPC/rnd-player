@@ -231,6 +231,61 @@ async function fetchViaProxy(
 }
 
 /**
+ * Generic CORS-aware fetch that returns a Response. Uses the same three-layer
+ * retry strategy as the Shaka scheme plugin: direct → workaround → proxy.
+ * Throws on all failures (no silent null return).
+ */
+export async function corsFetch(url: string): Promise<Response> {
+  const pageOrigin = window.location.origin;
+  let origin = pageOrigin;
+  try { origin = new URL(url).origin; } catch { /* treat as same-origin */ }
+  const isCrossOrigin = origin !== pageOrigin;
+
+  if (!isCrossOrigin) {
+    return fetch(url);
+  }
+
+  // Fast path: known CORS-blocked origin — use proxy directly
+  if (corsBlockedOrigins.has(origin) && proxyConfigured) {
+    return fetchViaProxy(url, {});
+  }
+
+  // Known CORS-failing origin — use workaround directly
+  if (corsWorkaroundOrigins.has(origin)) {
+    try {
+      return await fetch(addCacheBuster(url), {
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+      });
+    } catch {
+      corsBlockedOrigins.add(origin);
+      if (proxyConfigured) return fetchViaProxy(url, {});
+      throw new Error(`CORS blocked: ${origin}`);
+    }
+  }
+
+  // Try direct fetch first
+  try {
+    return await fetch(addCacheBuster(url));
+  } catch (e) {
+    if (!(e instanceof TypeError)) throw e;
+    corsWorkaroundOrigins.add(origin);
+    try {
+      return await fetch(addCacheBuster(url), {
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+      });
+    } catch {
+      corsBlockedOrigins.add(origin);
+      if (proxyConfigured) return fetchViaProxy(url, {});
+      throw new Error(`CORS blocked: ${origin}`);
+    }
+  }
+}
+
+/**
  * Fetch with CORS retry. Tries a normal fetch first; on TypeError (CORS/network
  * error), retries with cache-busting param, credentials omitted, and browser
  * cache bypass.
