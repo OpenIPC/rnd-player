@@ -393,7 +393,7 @@ describe("SSIM WebGPU Compute Shader", () => {
       //   - GPU shader uses float32 (WGSL f32)
       //   - ssim.js does integer grayscale (Math.round), GPU uses exact float * 255
       //
-      // Acceptable tolerances (from ssim-performance-investigation.md):
+      // Acceptable tolerances (from ssim-performance.md):
       //   - mssim: within +/-0.001 of ssim.js bezkrovny
       //   - Per-window SSIM map: max absolute error <= 0.005
       //

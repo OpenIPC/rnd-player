@@ -174,8 +174,8 @@ E2E tests: Playwright across Chromium, Firefox, WebKit, Edge. Files in `e2e/`. U
 - `docs/frame-pipeline.md` — Save frame pipeline, frame analysis pitfalls (CTS, cross-stream mismatches)
 - `docs/quality-compare.md` — Compare mode internals: layer architecture, sync strategy, URL params, highlight/spotlight, analysis modes
 - `docs/diff-renderer-sync.md` — Diff renderer WebGL2 pipeline and compositor sync
-- `docs/ssim-performance-investigation.md` — SSIM algorithm optimization research
-- `docs/vmaf-investigation-spec.md` — VMAF implementation specification
+- `docs/ssim-performance.md` — SSIM algorithm optimization research
+- `docs/vmaf.md` — VMAF implementation specification
 - `docs/adaptation-toast.md` — ABR adaptation toast component
 - `docs/artifact-analysis-research.md` — Video artifact analysis research
 - `docs/stats-for-nerds.md` — Stats panel implementation
