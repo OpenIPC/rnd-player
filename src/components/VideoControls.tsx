@@ -239,7 +239,7 @@ export default function VideoControls({
   }
 
   // ── Unified Track A metering (shared by AudioLevels and AudioCompare) ──
-  const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio);
+  const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio, showAudioCompare);
 
   // ── Scene data: FPS + PTS offset correction ──
   // Corrects two independent errors when av1an scene data (frame-based)
