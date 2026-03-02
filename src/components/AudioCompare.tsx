@@ -6,7 +6,7 @@
  * overlaid sparkline, and summary deltas.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChannelLevel } from "../hooks/useAudioAnalyser";
 import type { LoudnessData } from "../hooks/useLoudnessMeter";
@@ -36,6 +36,8 @@ interface AudioCompareProps {
   trackAReadLoudness: () => LoudnessData | null;
   trackAResetIntegrated: () => void;
   trackALabel: string;
+  /** Active Track A's ID in the allAudioTracks array (for filtering/sorting). */
+  trackAId: string;
   loudnessTarget: number;
   onLoudnessTargetChange: (target: number) => void;
   onClose: () => void;
@@ -70,6 +72,7 @@ export default function AudioCompare({
   trackAReadLoudness,
   trackAResetIntegrated,
   trackALabel,
+  trackAId,
   loudnessTarget,
   onLoudnessTargetChange,
   onClose,
@@ -83,6 +86,24 @@ export default function AudioCompare({
   // Track B metering
   const trackB = useAudioCompareMeter(videoEl);
   const [selectedTrackId, setSelectedTrackId] = useState<string>("");
+
+  // Filter out Track A and sort: same language + different codec first
+  const trackBOptions = useMemo(() => {
+    const trackA = allAudioTracks.find((t) => t.id === trackAId);
+    const filtered = allAudioTracks.filter((t) => t.id !== trackAId);
+    if (!trackA) return filtered;
+    const aLang = trackA.language;
+    const aCodec = trackA.codec;
+    return filtered.sort((a, b) => {
+      const aLangMatch = a.language === aLang ? 1 : 0;
+      const bLangMatch = b.language === aLang ? 1 : 0;
+      if (aLangMatch !== bLangMatch) return bLangMatch - aLangMatch;
+      // Within same language: different codec first (most useful comparison)
+      const aCodecDiff = a.codec !== aCodec ? 1 : 0;
+      const bCodecDiff = b.codec !== aCodec ? 1 : 0;
+      return bCodecDiff - aCodecDiff;
+    });
+  }, [allAudioTracks, trackAId]);
 
   // Track channel counts for layout
   const [trackACh, setTrackACh] = useState(2);
@@ -351,7 +372,7 @@ export default function AudioCompare({
           onChange={(e) => handleTrackBChange(e.target.value)}
         >
           <option value="">Track B...</option>
-          {allAudioTracks.map((t) => (
+          {trackBOptions.map((t) => (
             <option key={t.id} value={t.id}>{t.label}</option>
           ))}
         </select>

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useRef, useCallback, lazy, Suspense } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, useRef, useCallback, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import shaka from "shaka-player";
 import {
@@ -240,6 +240,25 @@ export default function VideoControls({
 
   // ── Unified Track A metering (shared by AudioLevels and AudioCompare) ──
   const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio, showAudioCompare);
+
+  // Identify active Track A in allAudioTracks (for AudioCompare filtering/sorting)
+  const trackAId = useMemo(() => {
+    if (!allAudioTracks?.length) return "";
+    if (ec3Audio?.active && ec3Audio.activeTrackId) {
+      return ec3Audio.activeTrackId;
+    }
+    const lang = audioTracks[activeAudioIndex]?.language;
+    if (!lang) return "";
+    // Shaka normalizes to ISO 639-1 ("ru"), MPD may use ISO 639-2 ("rus")
+    const normLang = (s: string) => {
+      try { return new Intl.Locale(s).language; } catch { return s; }
+    };
+    const shakaLang = normLang(lang);
+    const match = allAudioTracks.find(
+      (t) => normLang(t.language) === shakaLang && !/^(ec-3|ac-3)/i.test(t.codec),
+    );
+    return match?.id ?? "";
+  }, [allAudioTracks, audioTracks, activeAudioIndex, ec3Audio?.active, ec3Audio?.activeTrackId]);
 
   // ── Scene data: FPS + PTS offset correction ──
   // Corrects two independent errors when av1an scene data (frame-based)
@@ -1632,6 +1651,7 @@ export default function VideoControls({
             trackAReadLoudness={trackAMeter.readLoudness}
             trackAResetIntegrated={trackAMeter.resetIntegrated}
             trackALabel={audioTracks[activeAudioIndex]?.label ?? "Track A"}
+            trackAId={trackAId}
             loudnessTarget={loudnessTarget}
             onLoudnessTargetChange={(target) => {
               setLoudnessTarget(target);
