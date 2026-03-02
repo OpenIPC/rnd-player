@@ -6,6 +6,7 @@ export interface DeviceProfile {
   webCodecs: boolean;
   webGL2: boolean;
   webAudio: boolean;
+  maxAudioChannels: number;
   workers: boolean;
   offscreenCanvas: boolean;
   performanceTier: PerformanceTier;
@@ -45,6 +46,19 @@ export async function detectCapabilities(): Promise<DeviceProfile> {
   const webAudio =
     typeof AudioContext !== "undefined" ||
     typeof (window as unknown as { webkitAudioContext?: unknown }).webkitAudioContext !== "undefined";
+  let maxAudioChannels = 2;
+  if (webAudio) {
+    try {
+      const AudioCtx =
+        AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new AudioCtx();
+      maxAudioChannels = ctx.destination.maxChannelCount || 2;
+      ctx.close().catch(() => {});
+    } catch {
+      // AudioContext may throw on restrictive environments
+    }
+  }
   const workers = typeof Worker !== "undefined";
   const offscreenCanvas = typeof OffscreenCanvas !== "undefined";
   const performanceTier = classifyTier(cpuCores, deviceMemoryGB, webCodecs, webGL2);
@@ -55,6 +69,7 @@ export async function detectCapabilities(): Promise<DeviceProfile> {
     webCodecs,
     webGL2,
     webAudio,
+    maxAudioChannels,
     workers,
     offscreenCanvas,
     performanceTier,

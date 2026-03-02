@@ -142,6 +142,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
     player.attach(video).then(async () => {
       if (destroyed) return;
 
+      if (deviceProfile.maxAudioChannels > 2) {
+        player.configure({ preferredAudioChannelCount: deviceProfile.maxAudioChannels });
+      }
+
       player.addEventListener("error", (event) => {
         const detail = (event as CustomEvent).detail;
         console.error(
