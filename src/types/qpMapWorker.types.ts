@@ -9,8 +9,8 @@ export interface QpMapDecodeRequest {
   width: number;
   /** Video height in pixels (for validation). */
   height: number;
-  /** Codec type: h264 uses JM decoder, h265 uses HM decoder. */
-  codec: "h264" | "h265";
+  /** Codec type: h264 uses JM decoder, h265 uses HM decoder, av1 uses dav1d decoder. */
+  codec: "h264" | "h265" | "av1";
 }
 
 export type QpMapWorkerRequest = QpMapDecodeRequest;
