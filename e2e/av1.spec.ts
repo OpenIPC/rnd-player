@@ -142,11 +142,17 @@ test.describe("AV1 playback", () => {
     test.skip(!loaded, "AV1 MSE reported but player failed to load");
     await seekTo(page, 0);
 
-    // Play for ~1 s then pause
+    // Play until video actually advances, then pause.
+    // AV1 decode startup can be slow on Windows CI runners, so wait
+    // for currentTime to advance rather than using a fixed timeout.
     await page.evaluate(async () => {
       const video = document.querySelector("video")!;
       video.play();
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const start = Date.now();
+      while (video.currentTime < 0.1 && Date.now() - start < 5000) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await new Promise((r) => setTimeout(r, 500));
       video.pause();
       await new Promise((resolve) =>
         video.addEventListener("pause", resolve, { once: true }),
