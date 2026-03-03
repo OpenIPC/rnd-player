@@ -164,7 +164,7 @@ With `--allow-multiple-definition`, the wrapper's `error()` must win over JM's. 
 
 ### HM Reference Decoder
 
-The [HM (HEVC Test Model)](https://vcgit.hhi.fraunhofer.de/jvet/HM) is the ITU-T/ISO reference implementation for H.265/HEVC (HM 16.26). Same approach as H.264/JM — compiled to WASM with patches for in-memory operation.
+The [HM (HEVC Test Model)](https://vcgit.hhi.fraunhofer.de/jvet/HM) is the ITU-T/ISO reference implementation for H.265/HEVC (HM 16.18, from [GitHub mirror](https://github.com/chenying-wang/Fast-HEVC-Intra-Encoder) since Fraunhofer GitLab is unreachable). Same approach as H.264/JM — compiled to WASM with patches for in-memory operation.
 
 ### CU-Based QP Extraction
 
@@ -193,15 +193,30 @@ Arrays typically contain VPS (type 32), SPS (type 33), and PPS (type 34).
 
 | # | File | Patch |
 |---|------|-------|
-| 1 | TAppDecTop.cpp | Memory buffer input via custom `membuf` streambuf |
-| 2 | TAppDecTop.cpp | QP capture callback in `xWriteOutput()` |
-| 3 | TAppDecCfg.cpp | Stub `parseCfg()` — skip CLI parsing |
+| 1 | TAppDecTop.cpp | Memory buffer input via custom `MemBufStream` streambuf |
+| 2 | TAppDecTop.cpp | QP capture callback in `xWriteOutput()` + `xFlushOutput()` via `g_current_pic_list` |
+| 3 | TAppDecCfg.cpp | Stub `parseCfg()` — skip CLI parsing (file excluded from build; stub in wrapper) |
 | 4 | TDecGop.cpp | Suppress `calcAndPrintHashStatus` |
-| 5 | TAppDecTop.cpp | Suppress YUV file output |
-| 6 | TAppDecTop.cpp | QP capture callback in `xFlushOutput()` |
-| — | overrides.h | Disable debug stats, tracing |
+| 5 | TAppDecTop.cpp | Suppress YUV file output (wrap `m_cTVideoIOYuvReconFile` calls with `if(0)`) |
+| — | overrides.h | Disable `RExt__DECODER_DEBUG_BIT_STATISTICS`, `RExt__DECODER_DEBUG_TOOL_STATISTICS`, `ENC_DEC_TRACE` |
 
-Build: `cd wasm && ./build-hm265.sh` — produces `public/hm265-qp.wasm`.
+Build: `cd wasm && ./build-hm265.sh` — produces `public/hm265-qp.wasm` (~404KB).
+
+### HM Build Details
+
+**Exception handling**: Built with `-fwasm-exceptions` (native WASM exception handling). HM's `AnnexBread.h/.cpp` relies on `istream::exceptions()` mask + try/catch for EOF detection. Unlike JM (C, no exceptions), HM requires working C++ exceptions — `-fno-exceptions` causes infinite loops or unreachable traps in the Annex B parser.
+
+**ROM lifecycle**: HM's `initROM()` / `destroyROM()` manage global lookup tables (Z-scan, scan orders). These are initialized once on first `hm265_qp_create()` and never destroyed — repeated init/destroy cycles corrupt global state, crashing subsequent decodes. WASM process lifecycle handles cleanup.
+
+**Constructor requirement**: `QpContext` (containing `TAppDecTop`) must be allocated with `new` (not `calloc`/`malloc`) so C++ constructors run and initialize vtables. Destroyed with `delete`.
+
+**WASI stubs**: The `-fwasm-exceptions` build imports more WASI functions than JM's `-fno-exceptions` build. Required stubs: `args_sizes_get`, `args_get`, `environ_sizes_get`, `environ_get`, `proc_exit`, `fd_close`, `fd_read`, `fd_write`, `fd_seek`, `fd_fdstat_get`, `clock_time_get`.
+
+### x265 QP Encoding Notes
+
+When generating fixed-QP H.265 test streams with libx265:
+- **aq-mode=0**: Required to disable adaptive quantization (default AQ shifts per-CU QPs away from the base)
+- **ipratio=1.0**: Required to disable I-frame QP offset (default `ipratio=1.4` lowers I-frame QP by `round(6 * log2(1.4))` = 3)
 
 ## Files
 
@@ -216,8 +231,8 @@ Build: `cd wasm && ./build-hm265.sh` — produces `public/hm265-qp.wasm`.
 
 - `wasm/hm265_wrapper.cpp` — C++ wrapper: memory buffer I/O, CU-based QP capture, error recovery
 - `wasm/hm265_overrides.h` — Compile-time stubs for debug stats and tracing
-- `wasm/build-hm265.sh` — Emscripten build: clone HM 16.26, apply 6 patches, compile with `-DNDEBUG`
-- `src/wasm/hm265Decoder.ts` — WASM loader: WASI stubs, WasiExit handling, RuntimeError safety net
+- `wasm/build-hm265.sh` — Emscripten build: clone HM 16.18, apply 5 patches, compile with `-fwasm-exceptions`
+- `src/wasm/hm265Decoder.ts` — WASM loader: 11 WASI stubs, WasiExit handling, RuntimeError safety net
 
 ### Shared
 
@@ -229,6 +244,7 @@ Build: `cd wasm && ./build-hm265.sh` — produces `public/hm265-qp.wasm`.
 ## Tests
 
 - `wasm/test-validate-qp.mjs` — H.264: fixed QP, dimensions, CRF variable QP, fMP4 pipeline, decoder reuse
-- `wasm/test-validate-qp-h265.mjs` — H.265: fixed QP, dimensions (8x8 blocks), CRF, fMP4 pipeline, decoder reuse
+- `wasm/test-validate-qp-h265.mjs` — H.265: fixed QP, dimensions (8x8 blocks), CRF, fMP4 pipeline, decoder reuse (32 tests)
 - `wasm/test-realworld.mjs` — H.264: baseline/main/high profiles, partial decode, error recovery
-- Run: `node wasm/test-validate-qp.mjs`, `node wasm/test-validate-qp-h265.mjs`, `node wasm/test-realworld.mjs`
+- `wasm/test-realworld-h265.mjs` — H.265: fixed QP cross-check, CRF vs ffprobe, fMP4 pipeline, multi-frame, visual QP map dump (18 tests)
+- Run: `node wasm/test-validate-qp.mjs`, `node wasm/test-validate-qp-h265.mjs`, `node wasm/test-realworld.mjs`, `node wasm/test-realworld-h265.mjs`
