@@ -14,7 +14,9 @@ export interface QpHeatmapData {
 interface UseQpHeatmapResult {
   /** Whether the active codec is H.264 (for showing/hiding the menu item). */
   isH264: boolean;
-  /** Whether the current codec supports QP extraction (H.264 only). */
+  /** Whether the active codec is H.265/HEVC (for showing/hiding the menu item). */
+  isH265: boolean;
+  /** Whether the current codec supports QP extraction (H.264 or H.265). */
   available: boolean;
   /** Whether a QP decode is in progress. */
   loading: boolean;
@@ -35,17 +37,21 @@ export function useQpHeatmap(
   const prevPausedRef = useRef(paused);
 
   // Derive codec availability from player state (no effect needed)
-  // Codec check — always computed so the menu item can be hidden for non-H.264
-  const isH264 = useMemo(() => {
+  // Codec check — always computed so the menu item can be hidden for unsupported codecs
+  const codecInfo = useMemo(() => {
     const tracks = player.getVariantTracks();
     const active = tracks.find((t) => t.active);
     const codec = active?.videoCodec ?? "";
-    return codec.startsWith("avc1");
+    return {
+      isH264: codec.startsWith("avc1"),
+      isH265: codec.startsWith("hvc1") || codec.startsWith("hev1"),
+    };
     // Re-check when paused changes (track may have switched via ABR)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player, paused]);
 
-  const available = enabled && isH264;
+  const { isH264, isH265 } = codecInfo;
+  const available = enabled && (isH264 || isH265);
 
   // Clear data when playback resumes (transition from paused→playing)
   if (prevPausedRef.current && !paused) {
@@ -198,6 +204,7 @@ export function useQpHeatmap(
         targetTime: currentTime,
         width: active.width ?? 0,
         height: active.height ?? 0,
+        codec: isH265 ? "h265" : "h264",
       };
 
       worker.onmessage = (e: MessageEvent<QpMapWorkerResponse>) => {
@@ -231,7 +238,7 @@ export function useQpHeatmap(
         console.warn("[QP heatmap] fetch error:", err);
       }
     }
-  }, [player, videoEl, enabled, paused, available]);
+  }, [player, videoEl, enabled, paused, available, isH265]);
 
   // Trigger on seeked (when paused) and on activation while paused
   useEffect(() => {
@@ -248,5 +255,5 @@ export function useQpHeatmap(
     return () => videoEl.removeEventListener("seeked", onSeeked);
   }, [enabled, paused, available, requestQpMap, videoEl]);
 
-  return { isH264, available, loading, data };
+  return { isH264, isH265, available, loading, data };
 }

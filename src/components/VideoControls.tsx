@@ -1559,7 +1559,7 @@ export default function VideoControls({
             onToggleFilmstrip();
             setContextMenu(null);
           } : undefined}
-          onToggleQpHeatmap={moduleConfig.qpHeatmap && qpHeatmap.isH264 ? () => {
+          onToggleQpHeatmap={moduleConfig.qpHeatmap && (qpHeatmap.isH264 || qpHeatmap.isH265) ? () => {
             setShowQpHeatmap((s) => !s);
             setContextMenu(null);
           } : undefined}
@@ -1575,6 +1575,7 @@ export default function VideoControls({
           showFilmstrip={!!showFilmstrip}
           showQpHeatmap={showQpHeatmap}
           isH264={qpHeatmap.isH264}
+          isH265={qpHeatmap.isH265}
         />
       )}
 

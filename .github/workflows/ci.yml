@@ -39,10 +39,11 @@ jobs:
         run: |
           bash wasm/build-ec3.sh
           bash wasm/build-jm264.sh
+          bash wasm/build-hm265.sh
 
       - name: Verify WASM binaries
         run: |
-          for f in public/ec3-decoder.wasm public/jm264-qp.wasm; do
+          for f in public/ec3-decoder.wasm public/jm264-qp.wasm public/hm265-qp.wasm; do
             ls -la "$f"
             SIZE=$(stat --printf="%s" "$f")
             echo "$f: ${SIZE} bytes"

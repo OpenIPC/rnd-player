@@ -155,24 +155,80 @@ With `--allow-multiple-definition`, the wrapper's `error()` must win over JM's. 
 
 ## Scope
 
-- **Codec**: H.264 only (avc1.* codec string)
+- **Codec**: H.264 (avc1.*) and H.265/HEVC (hvc1.*, hev1.*)
 - **Trigger**: Paused frames only (clears on play)
 - **Rendering**: Canvas 2D overlay with pointer-events: none
 - **Letterboxing**: Accounts for object-fit: contain in fullscreen
 
+## H.265/HEVC Support
+
+### HM Reference Decoder
+
+The [HM (HEVC Test Model)](https://vcgit.hhi.fraunhofer.de/jvet/HM) is the ITU-T/ISO reference implementation for H.265/HEVC (HM 16.26). Same approach as H.264/JM — compiled to WASM with patches for in-memory operation.
+
+### CU-Based QP Extraction
+
+HEVC uses variable-size Coding Units (CU): 8x8 to 64x64, organized in a quad-tree within each Coding Tree Unit (CTU). Unlike H.264's fixed 16x16 macroblocks, the QP grid is non-uniform. We output QP at **8x8 granularity** — the smallest CU size — to keep the overlay uniform and codec-agnostic:
+
+- Iterate every 8x8 pixel position in raster order
+- Find the CTU containing that position
+- Convert pixel coordinates to the CTU's partition grid (4x4 units)
+- Use `g_auiRasterToZscan[]` to map raster index → Z-scan partition index
+- Read `pCtu->getQP(zScanIdx)` to get the QP of the containing CU
+
+This means larger CUs (e.g., 64x64) will show the same QP value across all their constituent 8x8 blocks, which is correct — the entire CU uses one QP value.
+
+### hvcC Parsing
+
+H.265 parameter sets are stored in the `hvcC` box (vs `avcC` for H.264). Structure:
+
+```
+[22 bytes config] + numOfArrays(1) + array entries
+Each array: arrayCompleteness+naluType(1) + numNalus(2) + [naluLength(2) + naluData]...
+```
+
+Arrays typically contain VPS (type 32), SPS (type 33), and PPS (type 34).
+
+### HM-Specific Patches
+
+| # | File | Patch |
+|---|------|-------|
+| 1 | TAppDecTop.cpp | Memory buffer input via custom `membuf` streambuf |
+| 2 | TAppDecTop.cpp | QP capture callback in `xWriteOutput()` |
+| 3 | TAppDecCfg.cpp | Stub `parseCfg()` — skip CLI parsing |
+| 4 | TDecGop.cpp | Suppress `calcAndPrintHashStatus` |
+| 5 | TAppDecTop.cpp | Suppress YUV file output |
+| 6 | TAppDecTop.cpp | QP capture callback in `xFlushOutput()` |
+| — | overrides.h | Disable debug stats, tracing |
+
+Build: `cd wasm && ./build-hm265.sh` — produces `public/hm265-qp.wasm`.
+
 ## Files
+
+### H.264 (JM)
 
 - `wasm/jm264_wrapper.c` — C wrapper: memory buffer I/O, QP capture, error recovery, exported API
 - `wasm/jm264_overrides.h` — Compile-time stubs for file I/O and trace
 - `wasm/build-jm264.sh` — Emscripten build: clone JM, apply 11 patches, compile with `-DNDEBUG`
 - `src/wasm/jm264Decoder.ts` — WASM loader: WASI stubs, WasiExit handling, RuntimeError safety net
-- `src/types/qpMapWorker.types.ts` — Worker message types
-- `src/workers/qpMapWorker.ts` — QP extraction worker: mp4box parsing, Annex B assembly, decoder caching
-- `src/hooks/useQpHeatmap.ts` — React hook: codec detection, segment fetching, worker lifecycle
+
+### H.265 (HM)
+
+- `wasm/hm265_wrapper.cpp` — C++ wrapper: memory buffer I/O, CU-based QP capture, error recovery
+- `wasm/hm265_overrides.h` — Compile-time stubs for debug stats and tracing
+- `wasm/build-hm265.sh` — Emscripten build: clone HM 16.26, apply 6 patches, compile with `-DNDEBUG`
+- `src/wasm/hm265Decoder.ts` — WASM loader: WASI stubs, WasiExit handling, RuntimeError safety net
+
+### Shared
+
+- `src/types/qpMapWorker.types.ts` — Worker message types (codec field, blockSize)
+- `src/workers/qpMapWorker.ts` — QP extraction worker: mp4box parsing, Annex B assembly, codec-branched decoder
+- `src/hooks/useQpHeatmap.ts` — React hook: codec detection (avc1/hvc1/hev1), segment fetching, worker lifecycle
 - `src/components/QpHeatmapOverlay.tsx` — Canvas overlay: 5-stop color gradient, letterbox-aware sizing
 
 ## Tests
 
-- `wasm/test-validate-qp.mjs` — 32 tests: fixed QP, dimensions, CRF variable QP, fMP4 pipeline, decoder reuse
-- `wasm/test-realworld.mjs` — 8 tests: baseline/main/high profiles, partial decode, error recovery, sequential decodes
-- Run: `node wasm/test-validate-qp.mjs` and `node wasm/test-realworld.mjs`
+- `wasm/test-validate-qp.mjs` — H.264: fixed QP, dimensions, CRF variable QP, fMP4 pipeline, decoder reuse
+- `wasm/test-validate-qp-h265.mjs` — H.265: fixed QP, dimensions (8x8 blocks), CRF, fMP4 pipeline, decoder reuse
+- `wasm/test-realworld.mjs` — H.264: baseline/main/high profiles, partial decode, error recovery
+- Run: `node wasm/test-validate-qp.mjs`, `node wasm/test-validate-qp-h265.mjs`, `node wasm/test-realworld.mjs`

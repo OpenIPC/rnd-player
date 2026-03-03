@@ -51,6 +51,7 @@ interface ContextMenuProps {
   showFilmstrip: boolean;
   showQpHeatmap: boolean;
   isH264: boolean;
+  isH265: boolean;
 }
 
 export default function ContextMenu({
@@ -83,6 +84,7 @@ export default function ContextMenu({
   showFilmstrip,
   showQpHeatmap,
   isH264,
+  isH265,
 }: ContextMenuProps) {
   return createPortal(
     <div
@@ -164,7 +166,7 @@ export default function ContextMenu({
           {showFilmstrip ? "Hide filmstrip" : "Filmstrip timeline"}
         </div>
       )}
-      {moduleConfig.qpHeatmap && isH264 && onToggleQpHeatmap && (
+      {moduleConfig.qpHeatmap && (isH264 || isH265) && onToggleQpHeatmap && (
         <div className="vp-context-menu-item" onClick={onToggleQpHeatmap}>
           <QpHeatmapIcon />
           {showQpHeatmap ? "Hide QP heatmap" : "QP heatmap"}
