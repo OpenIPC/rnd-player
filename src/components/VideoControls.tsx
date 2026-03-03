@@ -42,6 +42,7 @@ import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { BoundaryPreview, RequestBoundaryPreviewFn } from "../hooks/useBoundaryPreviews";
 import type { Ec3TrackInfo } from "../utils/dashAudioParser";
 import type { UseEc3AudioResult } from "../hooks/useEc3Audio";
+import type { DrmConfig } from "../drm/types";
 import { useTrackAMeter } from "../hooks/useTrackAMeter";
 import { useQpHeatmap } from "../hooks/useQpHeatmap";
 
@@ -51,6 +52,7 @@ interface VideoControlsProps {
   player: shaka.Player;
   src: string;
   clearKey?: string;
+  drmConfig?: DrmConfig;
   showFilmstrip?: boolean;
   onToggleFilmstrip?: () => void;
   showCompare?: boolean;
@@ -148,6 +150,7 @@ export default function VideoControls({
   player,
   src,
   clearKey,
+  drmConfig,
   showFilmstrip,
   onToggleFilmstrip,
   showCompare,
@@ -888,6 +891,11 @@ export default function VideoControls({
     params.set("v", src);
     params.set("t", `${parseFloat(videoEl.currentTime.toFixed(3))}s`);
     if (clearKey) params.set("key", clearKey);
+    if (drmConfig) {
+      params.set("license", drmConfig.licenseUrl);
+      params.set("token", drmConfig.sessionToken);
+      params.set("asset", drmConfig.assetId);
+    }
     if (scenesUrl) params.set("scenes", scenesUrl);
     if (showCompare) params.set("compare", compareSrc || src);
     if (compareHeightA) params.set("qa", String(compareHeightA));

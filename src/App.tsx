@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import ShakaPlayer from "./components/ShakaPlayer";
 import type { PlayerModuleConfig } from "./types/moduleConfig";
 import type { SceneData } from "./types/sceneData";
 import type { DeviceProfile } from "./utils/detectCapabilities";
+import type { DrmConfig } from "./drm/types";
 import { detectCapabilities } from "./utils/detectCapabilities";
 import { autoConfig } from "./utils/autoConfig";
 import { parseSceneData } from "./utils/parseSceneData";
@@ -31,6 +32,9 @@ function parseUrlParams(): {
   compareVmodel: string | null;
   scenes: string | null;
   sceneFps: number | null;
+  license: string | null;
+  token: string | null;
+  asset: string | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const v = params.get("v");
@@ -54,6 +58,9 @@ function parseUrlParams(): {
   const vmodel = params.get("vmodel");
   const scenes = params.get("scenes");
   const sceneFpsRaw = params.get("sceneFps");
+  const license = params.get("license");
+  const token = params.get("token");
+  const asset = params.get("asset");
 
   return {
     src: v || null,
@@ -77,6 +84,9 @@ function parseUrlParams(): {
     compareVmodel: vmodel || null,
     scenes: scenes || null,
     sceneFps: sceneFpsRaw ? parseFloat(sceneFpsRaw) || null : null,
+    license: license || null,
+    token: token || null,
+    asset: asset || null,
   };
 }
 
@@ -217,6 +227,13 @@ function App() {
     reader.readAsText(file);
   }, []);
 
+  const drmConfig = useMemo<DrmConfig | undefined>(() => {
+    if (initial.license && initial.token && initial.asset) {
+      return { licenseUrl: initial.license, sessionToken: initial.token, assetId: initial.asset };
+    }
+    return undefined;
+  }, []);
+
   const handleModuleConfigChange = useCallback((next: PlayerModuleConfig) => {
     setModuleConfig(next);
     const settings = loadSettings();
@@ -314,6 +331,7 @@ function App() {
         autoPlay={!initial.compare}
         clearKey={clearKey ?? undefined}
         startTime={startTime ?? undefined}
+        drmConfig={drmConfig}
         compareSrc={compareSrc ?? undefined}
         compareQa={initial.compareQa ?? undefined}
         compareQb={initial.compareQb ?? undefined}

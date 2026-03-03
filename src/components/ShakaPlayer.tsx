@@ -10,6 +10,9 @@ import { parseEc3Tracks, parseAllAudioTracks, stripEc3FromManifest, type Ec3Trac
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
+import type { DrmConfig } from "../drm/types";
+import { fetchLicense } from "../drm/drmClient";
+import { createSessionManager, type SessionManager } from "../drm/sessionManager";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
@@ -36,6 +39,7 @@ interface ShakaPlayerProps {
   autoPlay?: boolean;
   clearKey?: string;
   startTime?: number;
+  drmConfig?: DrmConfig;
   compareSrc?: string;
   compareQa?: number;
   compareQb?: number;
@@ -82,13 +86,14 @@ function describeLoadError(e: shaka.util.Error): string {
   return `Failed to load video (code ${e.code}).`;
 }
 
-function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel, moduleConfig, deviceProfile, onModuleConfigChange, sceneData, onSceneDataChange, onLoadSceneData, onLoadSceneFile, scenesUrl }: ShakaPlayerProps) {
+function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel, moduleConfig, deviceProfile, onModuleConfigChange, sceneData, onSceneDataChange, onLoadSceneData, onLoadSceneFile, scenesUrl }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<shaka.Player | null>(null);
   const kidRef = useRef<string | null>(null);
   const compareViewRef = useRef<CompareViewState | null>(null);
   const clearSleepGuardRef = useRef<() => void>(() => {});
+  const sessionRef = useRef<SessionManager | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
   const [safariMSE, setSafariMSE] = useState(false);
   const [ec3Tracks, setEc3Tracks] = useState<Ec3TrackInfo[]>([]);
@@ -96,6 +101,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
+  const [pendingDrmKey, setPendingDrmKey] = useState<string | null>(null);
+  const pendingSessionRef = useRef<{ sessionId: string; renewalS: number } | null>(null);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
@@ -257,19 +264,38 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
 
       kidRef.current = defaultKID;
 
-      if (defaultKID && !clearKey) {
+      // --- DRM key resolution (3-tier priority) ---
+      // All DRM paths return early and defer loading to handleKeySubmit
+      // via pendingDrmKey. Loading DRM content inside this useEffect's
+      // async chain causes playback to stall (Shaka/EME timing issue).
+      if (defaultKID && !clearKey && drmConfig) {
+        // Priority 2: fetch key from license server.
+        // Don't load here — defer to handleKeySubmit via pendingDrmKey
+        // so the load happens in a separate async context (matches test 3 flow).
+        try {
+          const result = await fetchLicense(drmConfig);
+          if (destroyed) return;
+          pendingSessionRef.current = {
+            sessionId: result.license.session_id,
+            renewalS: result.license.policy.renewal_interval_s,
+          };
+          setPendingDrmKey(result.clearKeyHex);
+        } catch (e) {
+          if (destroyed) return;
+          console.warn("[DRM] License fetch failed, falling back to key prompt:", e);
+          setNeedsKey(true);
+        }
+        return;
+      } else if (defaultKID && !clearKey) {
+        // Priority 3: no key and no config — show manual prompt
         setNeedsKey(true);
         return;
-      }
-
-      if (defaultKID && clearKey) {
-        if (await hasClearKeySupport()) {
-          player.configure({
-            drm: { clearKeys: { [defaultKID]: clearKey } },
-          });
-        } else {
-          configureSoftwareDecryption(player, clearKey);
-        }
+      } else if (defaultKID && clearKey) {
+        // Priority 1: ?key= param provided.
+        // Defer to handleKeySubmit like priority 2 — loading DRM content
+        // inside the main useEffect's async chain causes playback to stall.
+        setPendingDrmKey(clearKey);
+        return;
       }
 
       try {
@@ -374,44 +400,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
             video.play().catch(() => {});
           }
         } else if (autoPlay) {
-          video.play().catch(() => {
-            // Browser may block autoplay without user interaction
-          });
-        }
-
-        // Non-blocking EME fallback (see handleKeySubmit for details)
-        if (defaultKID && clearKey) {
-          waitForDecryption(video).then(async (emeWorks) => {
-            if (destroyed || emeWorks) return;
-            await player.unload();
-            if (destroyed) return;
-            player.configure({ drm: { clearKeys: {} } });
-            configureSoftwareDecryption(player, clearKey);
-            await player.load(src, loadStartTime);
-            if (destroyed) return;
-            video.play().catch(() => {});
-          });
+          video.play().catch(() => {});
         }
       } catch (e: unknown) {
         if (destroyed) return;
-        // DRM error — EME may be entirely absent (e.g. Linux WebKitGTK).
-        // Fall back to software decryption instead of showing an error.
-        if (defaultKID && clearKey && e instanceof shaka.util.Error && (e.category === 6 || e.category === 3)) {
-          console.warn("EME load failed (code %d), falling back to software decryption", e.code);
-          player.configure({ drm: { clearKeys: {} } });
-          configureSoftwareDecryption(player, clearKey);
-          try {
-            await player.load(src, loadStartTime);
-            if (destroyed) return;
-            setError(null);
-            setPlayerReady(true);
-            video.play().catch(() => {});
-            return;
-          } catch {
-            if (destroyed) return;
-          }
-        }
-
         if (e instanceof shaka.util.Error) {
           console.error("Error loading manifest:", e.code, e.message, "data=", e.data);
           setError(describeLoadError(e));
@@ -425,13 +417,15 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
       destroyed = true;
       setPlayerReady(false);
       kidRef.current = null;
+      sessionRef.current?.destroy();
+      sessionRef.current = null;
       uninstallCorsSchemePlugin();
       player.destroy();
       playerRef.current = null;
     };
-  }, [src, autoPlay, clearKey, startTime]);
+  }, [src, autoPlay, clearKey, startTime, drmConfig]);
 
-  const handleKeySubmit = async (key: string) => {
+  const handleKeySubmit = async (key: string, shouldPlay = true) => {
     setNeedsKey(false);
     setActiveKey(key);
 
@@ -449,7 +443,34 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
     try {
       await player.load(src);
       setPlayerReady(true);
-      videoRef.current?.play().catch(() => {});
+      if (shouldPlay) videoRef.current?.play().catch(() => {});
+
+      // Start session heartbeat for license-server DRM
+      const pending = pendingSessionRef.current;
+      if (drmConfig && pending) {
+        pendingSessionRef.current = null;
+        sessionRef.current = createSessionManager({
+          licenseUrl: drmConfig.licenseUrl,
+          sessionToken: drmConfig.sessionToken,
+          sessionId: pending.sessionId,
+          renewalIntervalS: pending.renewalS,
+          getPlaybackState: () => {
+            const v = videoRef.current;
+            const activeTrack = player.getVariantTracks().find((t) => t.active);
+            return {
+              position_s: v ? v.currentTime : 0,
+              buffer_health_s: v && v.buffered.length > 0
+                ? v.buffered.end(v.buffered.length - 1) - v.currentTime
+                : 0,
+              rendition: activeTrack ? `${activeTrack.height}p` : "unknown",
+            };
+          },
+          onRevoked: () => {
+            console.warn("[DRM] Session revoked by server (Phase 1: no interruption)");
+          },
+        });
+        sessionRef.current.start();
+      }
 
       // Non-blocking EME fallback: some browsers report ClearKey EME as
       // supported but silently fail to decrypt. Detect in background and
@@ -474,6 +495,16 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
       }
     }
   };
+
+  // Auto-load when license server resolves a key (deferred from useEffect
+  // so the load runs in a separate async context — same as manual key entry).
+  useEffect(() => {
+    if (pendingDrmKey && !playerReady && !needsKey) {
+      const key = pendingDrmKey;
+      setPendingDrmKey(null);
+      handleKeySubmit(key, false);
+    }
+  }, [pendingDrmKey, playerReady, needsKey]);
 
   // Auto-enter compare mode when compareSrc is provided via URL param
   const compareSrcTriggered = useRef(false);
@@ -584,6 +615,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, compareSrc, c
               player={playerRef.current}
               src={src}
               clearKey={activeKey}
+              drmConfig={drmConfig}
               showFilmstrip={showFilmstrip}
               onToggleFilmstrip={() => setShowFilmstrip((s) => !s)}
               showCompare={compareMode}

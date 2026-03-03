@@ -408,193 +408,132 @@ The DRM client integrates as a new module alongside the existing `softwareDecryp
 ```
 src/
 ├── drm/
-│   ├── drmClient.ts           # Main DRM orchestrator
-│   ├── licenseInterceptor.ts   # Shaka request/response filter
-│   ├── keyUnwrap.ts            # ECDH + AES-KW key unwrapping
-│   ├── sessionManager.ts       # Heartbeat, renewal, lifecycle
-│   ├── deviceFingerprint.ts    # Browser fingerprinting
-│   ├── watermarkRenderer.ts    # Canvas-based forensic watermark
-│   └── types.ts                # Shared types
+│   ├── types.ts                # DrmConfig, license/session request/response types
+│   ├── drmClient.ts            # License fetching + key conversion
+│   ├── sessionManager.ts       # Heartbeat loop, session end (sendBeacon)
+│   ├── deviceFingerprint.ts    # SHA-256 browser fingerprint
+│   ├── licenseInterceptor.ts   # (Phase 3) Shaka request/response filter
+│   ├── keyUnwrap.ts            # (Phase 3) ECDH + AES-KW key unwrapping
+│   └── watermarkRenderer.ts    # (Phase 4) Canvas-based forensic watermark
 ├── workers/
 │   └── cencDecrypt.ts          # (existing) — reused for software decrypt path
 └── utils/
     └── softwareDecrypt.ts      # (existing) — fallback path unchanged
 ```
 
-### 6.2 DRM Client (`drmClient.ts`)
+#### Phase 1 Implementation (Current)
 
-The orchestrator that replaces the current manual key prompt flow.
+Four files in `src/drm/`, ~220 lines total:
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `types.ts` | 65 | `DrmConfig`, `LicenseRequest/Response`, `LicenseKey`, `LicensePolicy`, `HeartbeatRequest/Response`, `SessionEndRequest/Response` |
+| `deviceFingerprint.ts` | 20 | SHA-256 of browser signals, module-level cache |
+| `drmClient.ts` | 60 | `fetchLicense()` + `convertKey()` for hex/base64 conversion |
+| `sessionManager.ts` | 95 | `createSessionManager()` factory with heartbeat + destroy |
+
+### 6.2 DRM Client (`drmClient.ts`) — Phase 1
+
+Fetches a license and converts server key format to Shaka ClearKey format.
 
 ```typescript
-interface DrmClientConfig {
-  licenseServerUrl: string;
-  sessionToken: string;          // JWT from auth service
-  assetId: string;
-  deviceFingerprint: string;
-  onSessionRevoked?: () => void;
-  onKeyRotation?: (periodIndex: number) => void;
-}
+export async function fetchLicense(config: DrmConfig): Promise<FetchLicenseResult>;
+export function convertKey(lk: LicenseKey): { kidHex: string; keyHex: string };
+```
 
-interface DrmClient {
-  /** Called once before player.load(). Sets up Shaka DRM config. */
-  configure(player: shaka.Player): Promise<void>;
+**Key conversion pipeline**:
+1. KID: UUID format (`7f0195f4-7894-3a89-...`) → strip dashes → lowercase hex
+2. Key: base64 (`YIUkMMxv...`) → decode → hex (`60852430cc6f...`)
+3. Returns `clearKeys` map (`{ [kidHex]: keyHex }`) for Shaka ClearKey config
+4. Returns `clearKeyHex` (first key) for software decrypt fallback
 
-  /** Start heartbeat loop. Call after playback begins. */
-  startSession(videoEl: HTMLVideoElement): void;
+### 6.3 URL Parameters
 
-  /** Clean shutdown — notify server, stop heartbeat. */
-  destroy(): Promise<void>;
+Three URL params activate DRM license fetching (all three required):
+
+| Param | Example | Purpose |
+|-------|---------|---------|
+| `?license=` | `http://localhost:8080/license` | License server endpoint |
+| `?token=` | `eyJhbGciOi...` | JWT session token from auth service |
+| `?asset=` | `movie-123` | Asset identifier for entitlement check |
+
+Parsed in `App.tsx`'s `parseUrlParams()`, assembled into a `DrmConfig` object via `useMemo`, passed to `ShakaPlayer` as a prop. Included in shareable URL via `VideoControls.copyVideoUrl()`.
+
+**Priority**: `?key=` > `?license=+token=+asset=` > manual prompt. The `?key=` param always wins as a dev/debug override.
+
+### 6.4 ShakaPlayer Integration — DRM Load Flow
+
+DRM content cannot be loaded inside the main `useEffect` async chain — calling `video.play()` without a user gesture after `player.load()` with ClearKey EME corrupts the HTMLVideoElement's playback state, causing subsequent user-initiated `play()` calls to silently fail. All DRM paths defer loading to `handleKeySubmit()` via a `pendingDrmKey` state variable.
+
+**Flow for license server (Priority 2)**:
+
+```
+useEffect:
+  1. player.attach(video)
+  2. fetchWithCorsRetry(src) → extract defaultKID from manifest
+  3. fetchLicense(drmConfig) → get clearKeyHex + session info
+  4. setPendingDrmKey(clearKeyHex) → return early (no load)
+
+pendingDrmKey effect:
+  5. handleKeySubmit(key, shouldPlay=false)
+     → hasClearKeySupport() → configure ClearKey or software decrypt
+     → player.load(src)
+     → setPlayerReady(true)
+     → skip play() (no user gesture)
+     → start sessionManager heartbeat
+
+User interaction:
+  6. Click video area or play button → video.play() → playback begins
+```
+
+**Flow for `?key=` param (Priority 1)**: Same deferred path — `setPendingDrmKey(clearKey)` → `handleKeySubmit(key, false)`.
+
+**Flow for manual prompt (Priority 3)**: Unchanged — `setNeedsKey(true)` → user enters key → `handleKeySubmit(key, true)` → auto-plays (user gesture from form submit).
+
+The `shouldPlay` parameter on `handleKeySubmit` controls whether `video.play()` is called after load. Only `true` when triggered by a user gesture (manual key entry).
+
+### 6.5 Session Manager (`sessionManager.ts`)
+
+Factory function `createSessionManager(opts)` → `{ start, destroy }`:
+
+```typescript
+interface SessionManagerOpts {
+  licenseUrl: string;       // base URL — heartbeat/end derived by replacing /license
+  sessionToken: string;     // JWT for Authorization header
+  sessionId: string;        // from license response
+  renewalIntervalS: number; // initial heartbeat interval from policy
+  getPlaybackState: () => { position_s, buffer_health_s, rendition };
+  onRevoked?: () => void;   // Phase 1: logs warning, no interruption
 }
 ```
 
-**Flow**:
+**Heartbeat loop**: `setInterval` at server-specified cadence. Sends `POST /session/heartbeat` with position, buffer health, rendition, and ISO timestamp. Adapts interval when server returns a different `next_heartbeat_s`. Network errors are logged silently — never interrupt playback (Phase 1 = "not enforced").
 
-1. `configure()` is called before `player.load()`
-2. Registers a Shaka license request filter that intercepts ClearKey license requests
-3. The filter calls the license server instead of using static keys
-4. Response keys are unwrapped via ECDH and passed to Shaka's ClearKey handler
-5. For browsers without EME, falls back to `configureSoftwareDecryption()` with the unwrapped keys
-6. `startSession()` begins the heartbeat loop
-7. On `destroy()`, sends a session-end event and stops heartbeats
+**Session end**: `destroy()` sends `POST /session/end` via `navigator.sendBeacon` (survives page unload). Falls back to `fetch` with `keepalive: true` if sendBeacon fails.
 
-### 6.3 License Interceptor (`licenseInterceptor.ts`)
+**URL derivation**: Heartbeat/end URLs derived from license URL by replacing `/license` → `/session/heartbeat` or `/session/end`.
 
-Hooks into Shaka's networking engine to redirect license requests to our server.
+**Lifecycle**: Created in `handleKeySubmit` after successful `player.load()` when `drmConfig` is present. Destroyed in the main `useEffect` cleanup (before `player.destroy()`).
 
-```typescript
-export function installLicenseInterceptor(
-  player: shaka.Player,
-  config: DrmClientConfig,
-  keyStore: Map<string, CryptoKey>,  // kid → unwrapped CryptoKey
-): void {
-  const netEngine = player.getNetworkingEngine();
+### 6.6 Device Fingerprinting (`deviceFingerprint.ts`)
 
-  // Request filter: intercept license requests
-  netEngine.registerRequestFilter(async (type, request) => {
-    if (type !== shaka.net.NetworkingEngine.RequestType.LICENSE) return;
+Lightweight SHA-256 fingerprint from 5 browser signals: userAgent, language, screen dimensions + color depth, timezone, hardwareConcurrency. Result cached at module level (same pattern as `detectCapabilities.ts`). Uses `crypto.subtle.digest` (always available — player requires secure context).
 
-    // Extract requested KIDs from the license request body
-    const kids = extractKidsFromRequest(request);
+### 6.7 Error Handling
 
-    // Generate ephemeral ECDH key pair
-    const { publicKey, privateKey } = await crypto.subtle.generateKey(
-      { name: "ECDH", namedCurve: "P-256" },
-      false,
-      ["deriveBits"]
-    );
+| Scenario | Behavior |
+|----------|----------|
+| License fetch fails (network/HTTP error) | Log warning, fall back to key prompt |
+| Server returns empty keys | Throw in fetchLicense, caught → fall back to prompt |
+| Keys don't match manifest KID | Shaka DRM error, existing error handler shows message |
+| EME silently fails | Existing `waitForDecryption` fallback reloads with software decrypt |
+| Heartbeat network failure | Logged silently, playback continues |
+| Server sends `revoke` | `onRevoked` callback logs warning (Phase 1: no interruption) |
+| Page unload during session | `sendBeacon` delivers session-end reliably |
+| `?key=` and `?license=` both present | `?key=` wins (Priority 1) |
+| `play()` without user gesture | Skipped for auto-loaded DRM content; user clicks to start |
 
-    // Build license request to our server
-    const licenseResponse = await fetchLicense({
-      url: config.licenseServerUrl,
-      sessionToken: config.sessionToken,
-      assetId: config.assetId,
-      kids,
-      deviceFingerprint: config.deviceFingerprint,
-      clientPublicKey: await exportPublicKey(publicKey),
-    });
-
-    // Unwrap CEKs using ECDH shared secret
-    const wrappingKey = await deriveWrappingKey(
-      privateKey,
-      licenseResponse.transport_key_params.epk,
-    );
-
-    for (const entry of licenseResponse.keys) {
-      const cek = await unwrapKey(wrappingKey, entry.key);
-      keyStore.set(entry.kid, cek);
-    }
-
-    // Rewrite request body to ClearKey format for Shaka
-    request.body = buildClearKeyLicenseBody(licenseResponse.keys);
-  });
-}
-```
-
-### 6.4 Session Manager (`sessionManager.ts`)
-
-```typescript
-export class SessionManager {
-  private heartbeatTimer: number | null = null;
-  private sessionId: string | null = null;
-
-  async start(videoEl: HTMLVideoElement, sessionId: string): Promise<void> {
-    this.sessionId = sessionId;
-    this.scheduleHeartbeat(videoEl, 30_000);
-  }
-
-  private scheduleHeartbeat(videoEl: HTMLVideoElement, intervalMs: number): void {
-    this.heartbeatTimer = window.setInterval(async () => {
-      const response = await fetch("/session/heartbeat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: this.sessionId,
-          position_s: videoEl.currentTime,
-          buffer_health_s: getBufferHealth(videoEl),
-          rendition: getCurrentRendition(),
-          timestamp: Date.now(),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.status === "revoke") {
-        this.onRevoked(data.reason);
-        return;
-      }
-
-      if (response.status === 401) {
-        this.onExpired();
-        return;
-      }
-
-      // Adaptive heartbeat interval
-      if (data.next_heartbeat_s) {
-        this.reschedule(videoEl, data.next_heartbeat_s * 1000);
-      }
-    }, intervalMs);
-  }
-
-  async destroy(): Promise<void> {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    if (this.sessionId) {
-      await fetch("/session/end", {
-        method: "POST",
-        body: JSON.stringify({ session_id: this.sessionId }),
-      }).catch(() => {}); // best-effort
-    }
-  }
-}
-```
-
-### 6.5 Device Fingerprinting (`deviceFingerprint.ts`)
-
-Lightweight browser fingerprint to bind sessions to devices. Not for tracking — for preventing session token theft.
-
-```typescript
-export async function computeDeviceFingerprint(): Promise<string> {
-  const signals = [
-    navigator.userAgent,
-    navigator.language,
-    screen.width + "x" + screen.height,
-    screen.colorDepth.toString(),
-    navigator.hardwareConcurrency?.toString() ?? "?",
-    Intl.DateTimeFormat().resolvedOptions().timeZone,
-    // Canvas fingerprint (hash only, not the image)
-    await canvasHash(),
-    // WebGL renderer string
-    getWebGLRenderer(),
-  ];
-
-  const raw = signals.join("|");
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-```
-
-### 6.6 Forensic Watermark (`watermarkRenderer.ts`)
+### 6.8 Forensic Watermark (`watermarkRenderer.ts`) — Phase 4
 
 A semi-transparent overlay rendered on a canvas layer above the video. Contains user-identifiable info that survives screen recording.
 
@@ -631,7 +570,7 @@ export function renderWatermark(
 - Encodes session short code (4 chars) — maps to user+device+time on server
 - Rendered on a canvas overlay, not burned into the video stream (client-side approach)
 
-### 6.7 Key Unwrap (`keyUnwrap.ts`)
+### 6.9 Key Unwrap (`keyUnwrap.ts`) — Phase 3
 
 ```typescript
 export async function deriveWrappingKey(
@@ -1087,37 +1026,66 @@ These are accepted risks at the software DRM tier. The industry addresses them w
 
 ## 10. Migration Path from Current ClearKey
 
-### Phase 1: License Server MVP
+### Phase 1: License Server MVP — IMPLEMENTED
 
 **Goal**: Replace manual key prompt with server-issued keys. No breaking changes.
 
-1. Deploy license server with single-key mode (one key per asset, like today)
-2. Add `drmClient.ts` to player — intercepts where `handleKeySubmit` currently works
-3. Existing `?key=` URL param remains as a dev/debug override
-4. Software decrypt fallback path unchanged
-5. Heartbeat + session tracking active but not enforced
+**Server side** (see `../free-drm/`):
+- Go license server with Redis session store
+- Single-key mode (one key per asset, deterministic derivation from master key via HKDF)
+- `POST /license` — validates JWT, derives CEK, creates session, returns key + policy
+- `POST /session/heartbeat` — extends session TTL, returns adaptive interval
+- `POST /session/end` — closes session, logs total watch time
+- Keys delivered as base64 (plaintext, no wrapping — Phase 1 simplification)
 
-**Player changes**: ~200 lines in new `src/drm/` module. ShakaPlayer.tsx changes: replace key prompt modal with auto-license-fetch.
+**Player side** (`src/drm/`, 4 files, ~220 lines):
+
+| File | Purpose |
+|------|---------|
+| `types.ts` | `DrmConfig`, request/response interfaces matching server API |
+| `drmClient.ts` | `fetchLicense()` — POST to server, convert UUID KID → hex, base64 key → hex |
+| `sessionManager.ts` | `createSessionManager()` — heartbeat loop, `sendBeacon` session end |
+| `deviceFingerprint.ts` | SHA-256 of browser signals, cached |
+
+**Modified files**:
+- `App.tsx` — 3 new URL params (`?license=`, `?token=`, `?asset=`), `DrmConfig` via `useMemo`
+- `ShakaPlayer.tsx` — deferred DRM load via `pendingDrmKey` state (see §6.4), session manager lifecycle
+- `VideoControls.tsx` — DRM params included in shareable URL
+
+**Key decisions**:
+- All DRM paths defer `player.load()` to `handleKeySubmit()` — loading with ClearKey EME inside `useEffect` corrupts the video element when `play()` is rejected (no user gesture). The deferred pattern (`setPendingDrmKey` → separate effect → `handleKeySubmit(key, shouldPlay=false)`) avoids this.
+- `?key=` URL param preserved as Priority 1 dev/debug override
+- Heartbeat + session tracking active but **not enforced** (server revoke = log only)
+- Software decrypt fallback path unchanged
 
 ### Phase 2: Multi-Key + Entitlements
 
-1. Packager produces multi-key encrypted content
-2. License server returns only entitled keys per user tier
-3. Player handles partial key sets gracefully (Shaka auto-selects highest available quality)
-4. Concurrency enforcement turned on
+**Server side** (planned):
+1. Packager produces multi-key encrypted content (separate KIDs for audio/sd/hd/uhd tracks)
+2. License server returns only entitled keys per user tier from JWT claims
+3. Concurrency enforcement turned on (reject or evict oldest session)
+
+**Player side** (minimal changes needed):
+- `fetchLicense()` already returns a `clearKeys` map supporting multiple KID→key pairs — Shaka accepts this directly via `drm.clearKeys` config
+- `convertKey()` already iterates all keys in the response
+- Shaka auto-selects the highest available quality when some track keys are missing
+- No new files needed; the multi-key path works transparently through existing code
+- Only change: if server returns partial keys (e.g. no UHD key for "basic" tier), Shaka may fire a DRM error on the restricted tracks — add a filter to suppress these expected errors based on the policy response
 
 ### Phase 3: Key Transport Protection
 
-1. ECDH key exchange replaces plaintext key delivery
-2. Device fingerprinting active
-3. Session token binding to device
+1. Add `keyUnwrap.ts` — ECDH ephemeral key agreement + AES-KW unwrapping (see §6.9 for implementation sketch)
+2. Player generates ephemeral EC key pair per license request
+3. Server wraps CEKs with ECDH-derived key; player unwraps before configuring Shaka
+4. Device fingerprint already sent in Phase 1 — server begins binding fingerprint to session token
+5. `licenseInterceptor.ts` — optional Shaka request/response filter for transparent key unwrapping
 
 ### Phase 4: Watermarking + Analytics
 
-1. Canvas-based forensic watermark overlay
-2. Consumption analytics pipeline
-3. Anomaly detection rules
-4. Signed manifest URLs
+1. Canvas-based forensic watermark overlay (see §6.8 for `watermarkRenderer.ts` sketch)
+2. Consumption analytics pipeline — heartbeat data already flowing from Phase 1
+3. Anomaly detection rules (see §7.6)
+4. Signed manifest URLs with short TTL
 
 ### Phase 5 (Optional): External DRM Integration
 
@@ -1133,14 +1101,15 @@ If the service scales to require L1 protection:
 
 ### Client-Side Tasks (TypeScript/React)
 
-| Module | Input | Output | Dependencies |
-|--------|-------|--------|-------------|
-| `drmClient.ts` | `DrmClientConfig` | Configured Shaka player with DRM | `licenseInterceptor`, `sessionManager`, `keyUnwrap` |
-| `licenseInterceptor.ts` | Shaka `NetworkingEngine`, license server URL | ClearKey config or software decrypt setup | `keyUnwrap`, existing `softwareDecrypt.ts` |
-| `keyUnwrap.ts` | Server ephemeral public key, wrapped key bytes | `CryptoKey` (AES-CTR) | Web Crypto API |
-| `sessionManager.ts` | Session ID, video element | Heartbeat loop, revocation handling | Fetch API |
-| `deviceFingerprint.ts` | — | SHA-256 hex string | Canvas, WebGL, Web Crypto |
-| `watermarkRenderer.ts` | Canvas element, watermark config | Rendered overlay | Canvas 2D API |
+| Module | Status | Input | Output | Dependencies |
+|--------|--------|-------|--------|-------------|
+| `drmClient.ts` | **Phase 1** | `DrmConfig` | `{ clearKeys, clearKeyHex, license }` | `deviceFingerprint` |
+| `sessionManager.ts` | **Phase 1** | `SessionManagerOpts` | Heartbeat loop, `sendBeacon` session end | Fetch API |
+| `deviceFingerprint.ts` | **Phase 1** | — | SHA-256 hex string | Web Crypto API |
+| `types.ts` | **Phase 1** | — | Type definitions for all DRM API contracts | — |
+| `licenseInterceptor.ts` | Phase 3 | Shaka `NetworkingEngine`, license server URL | ClearKey config or software decrypt setup | `keyUnwrap`, existing `softwareDecrypt.ts` |
+| `keyUnwrap.ts` | Phase 3 | Server ephemeral public key, wrapped key bytes | `CryptoKey` (AES-CTR) | Web Crypto API |
+| `watermarkRenderer.ts` | Phase 4 | Canvas element, watermark config | Rendered overlay | Canvas 2D API |
 
 ### Server-Side Tasks (Go/Rust)
 
