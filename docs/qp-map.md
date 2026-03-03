@@ -68,6 +68,91 @@ Video frame (paused)
 
 The scale adapts to the actual min/max QP in each frame for maximum contrast.
 
+## WASM Build
+
+Build: `cd wasm && ./build-jm264.sh` — produces `public/jm264-qp.wasm` (~428KB).
+
+11 patches applied to JM source, compiled with Emscripten (`emcc -O2 -DNDEBUG`):
+
+| # | File | Patch |
+|---|------|-------|
+| 1 | annexb.c | Replace file read with memory buffer (`g_mem_buf`) |
+| 2 | annexb.c | Skip `open_annex_b()` file open when using memory buffer |
+| 3 | output.c | QP capture callback (`jm264_on_frame_output`) + suppress YUV writes |
+| 4 | configfile.c | Stub `ParseCommand()` — skip CLI/config parsing |
+| 5 | report.c | Suppress report file writes |
+| 6 | ldecod.c | Suppress `Report()` log file writes |
+| 7 | defines.h | Disable TRACE, fix duplicate `ColorComponent` symbol |
+| 8 | mbuffer.c | DPB size violations: clamp values instead of `error()` |
+| 9 | image.c | "Unintentional loss of pictures": printf instead of `error()` |
+| — | build flag | `-DNDEBUG` disables all `assert()` calls (64 in total) |
+| — | overrides.h | Compile-time stubs for file I/O and trace |
+
+### Heredoc Quoting
+
+Build script patches use Python heredocs to modify JM source. **Critical**: heredocs that contain `\\n` (C escape sequences) must use quoted delimiters (`<< 'PYEOF'`) to prevent bash from expanding `\\n` as a literal newline. Unquoted heredocs silently break C string literals, producing compile errors only on clean rebuilds (when `wasm/build/JM` is not cached).
+
+Path variables (`$MBUFFER_SRC`, etc.) are passed via environment variables since quoted heredocs don't expand shell variables.
+
+## Error Recovery (3 Layers)
+
+### Layer 1 — Prevent Errors at Source
+
+Configured via `jm264_wrapper.c` and build patches:
+
+- `conceal_mode=0` (NOT 1): JM's concealment code (`erc_do_p.c`) has an assertion `conceal_from_picture != NULL` that crashes when the DPB is empty. With `conceal_mode=0`, `fill_frame_num_gap()` creates lightweight placeholder frames instead.
+- `non_conforming_stream=1`: reference picture errors become printf warnings, not fatal `error()` calls. Re-applied before each decode since SPS parsing may reset it.
+- mbuffer.c patches: DPB size violations (`max_dec_frame_buffering > MaxDpbSize`, `DPB size < num_ref_frames`) are clamped to valid values instead of calling `error()`.
+- image.c patch: "unintentional loss of pictures" is a warning, not `error()`.
+
+### Layer 2 — Capture QP During Frame Output
+
+`write_out_picture()` is patched to call `jm264_on_frame_output()` which copies `p_Vid->mb_data[].qp` into the context's cache. This fires **before** DPB management, ensuring QP data is captured even if a subsequent `error()` triggers during the same decode loop iteration.
+
+### Layer 3 — Error Recovery via `error()` Override
+
+The wrapper overrides JM's `error()` function (via `--allow-multiple-definition` link order — wrapper.c must be first). Before calling `exit()`:
+
+1. Captures `p_Vid->mb_data[].qp` to the pre-registered output buffer (`g_qp_out_buf`)
+2. Writes a recovery struct (`g_error_recovery`) with `valid=1`, MB count, and dimensions
+3. Calls `exit(code)` → `proc_exit` → JS `WasiExit` exception
+
+JS reads the recovery struct from WASM linear memory after catching `WasiExit`, returning QP data even from failed decodes.
+
+### WASM Trap Safety Net
+
+JM's 64 `assert()` calls compiled to `unreachable` WASM instructions. Before adding `-DNDEBUG`, certain H.264 segments triggered these assertions intermittently (~10% failure rate). The traps produce `WebAssembly.RuntimeError: unreachable` which is **not** a `WasiExit` — it bypasses `proc_exit` entirely.
+
+Fix (two-pronged):
+1. **Build**: `-DNDEBUG` removes all `assert()` calls from the WASM binary
+2. **Runtime**: `decodeFrame()`/`flush()` catch `WebAssembly.RuntimeError`, mark the decoder as destroyed, and return `false`. The worker nulls `cachedDecoder`, and the next pause/seek creates a fresh 64MB WASM instance.
+
+## Issues and Workarounds
+
+### WasiExit Must NOT Extend Error
+
+`WasiExit` is a plain class, **not** `extends Error`. Chrome V8 crashes ("Aw Snap" tab crash — SIGABRT in JIT code) when `Error.captureStackTrace` runs during WASM `proc_exit` execution, because WASM frames on the stack can't be symbolized. This matches the pattern used by the EC-3 decoder.
+
+### Vite WASM Loading in Workers
+
+Use `fetch("/jm264-qp.wasm")` (absolute path from public/) — **not** `new URL("../../public/jm264-qp.wasm", import.meta.url)`. Vite transforms `new URL(...)` incorrectly in worker contexts, producing invalid paths.
+
+### WASI fd_write Must Report Bytes
+
+The `fd_write` WASI stub must set `nwritten` to the actual byte count. Returning 0 causes the C runtime's `write()` wrapper to retry in an infinite loop, hanging the WASM instance.
+
+### Decoder Instance Caching
+
+The decoder allocates 64MB of WASM memory on creation. Creating a new instance per decode request would cause memory pressure and GC pauses. The worker caches a single `Jm264QpInstance` and only recreates it after a `WasiExit` or `RuntimeError` marks it as destroyed.
+
+### Link Order for error() Override
+
+With `--allow-multiple-definition`, the wrapper's `error()` must win over JM's. `jm264_wrapper.c` must be the **first** source file in the `emcc` command line for its definition to take precedence.
+
+### Always-On Audio Meter Fallback Crashes Chrome
+
+`useAudioMeterFallback` (Safari MSE workaround) must **not** run unconditionally on all browsers. When enabled on Chrome with EC-3 audio streams, the fetch+decode pipeline causes tab crashes (SIGABRT). The fallback must be gated on `safariMSE && !ec3Active` — only activated on Safari where it's actually needed. (Identified via `git bisect`: commit `d827e04`.)
+
 ## Scope
 
 - **Codec**: H.264 only (avc1.* codec string)
@@ -77,11 +162,17 @@ The scale adapts to the actual min/max QP in each frame for maximum contrast.
 
 ## Files
 
-- `wasm/jm264_wrapper.c` — C wrapper for JM reference decoder
-- `wasm/jm264_overrides.h` — Compile-time stubs for file I/O
-- `wasm/build-jm264.sh` — Emscripten build script
-- `src/wasm/jm264Decoder.ts` — TypeScript WASM loader
+- `wasm/jm264_wrapper.c` — C wrapper: memory buffer I/O, QP capture, error recovery, exported API
+- `wasm/jm264_overrides.h` — Compile-time stubs for file I/O and trace
+- `wasm/build-jm264.sh` — Emscripten build: clone JM, apply 11 patches, compile with `-DNDEBUG`
+- `src/wasm/jm264Decoder.ts` — WASM loader: WASI stubs, WasiExit handling, RuntimeError safety net
 - `src/types/qpMapWorker.types.ts` — Worker message types
-- `src/workers/qpMapWorker.ts` — QP extraction worker
-- `src/hooks/useQpHeatmap.ts` — React hook
-- `src/components/QpHeatmapOverlay.tsx` — Canvas overlay component
+- `src/workers/qpMapWorker.ts` — QP extraction worker: mp4box parsing, Annex B assembly, decoder caching
+- `src/hooks/useQpHeatmap.ts` — React hook: codec detection, segment fetching, worker lifecycle
+- `src/components/QpHeatmapOverlay.tsx` — Canvas overlay: 5-stop color gradient, letterbox-aware sizing
+
+## Tests
+
+- `wasm/test-validate-qp.mjs` — 32 tests: fixed QP, dimensions, CRF variable QP, fMP4 pipeline, decoder reuse
+- `wasm/test-realworld.mjs` — 8 tests: baseline/main/high profiles, partial decode, error recovery, sequential decodes
+- Run: `node wasm/test-validate-qp.mjs` and `node wasm/test-realworld.mjs`
