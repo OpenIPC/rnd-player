@@ -26,19 +26,13 @@ export function useTrackAMeter(
   player: shaka.Player | null,
   safariMSE: boolean,
   ec3Audio: UseEc3AudioResult | undefined,
-  preferPrecomputed?: boolean,
 ): TrackAMeterResult {
-  // All three hooks are always called (React rules of hooks).
-  // Web Audio stays enabled even when fallback output is selected — disabling
-  // it would suspend the AudioContext and kill the video's audio routing
-  // through MediaElementAudioSourceNode.
+  // All three hooks are always called (React rules of hooks),
+  // but only one is active at a time via the enabled flags.
   const ec3Active = !!ec3Audio?.active;
-  const useFallbackOutput = safariMSE || (!!preferPrecomputed && !ec3Active);
   const webAudio = useAudioAnalyser(videoEl, !safariMSE && !ec3Active);
   const webLoudness = useLoudnessMeter(videoEl, !safariMSE && !ec3Active);
-  // Fallback always runs (when not EC-3) so pre-computed blocks are ready
-  // when AudioCompare opens — avoids a cold-start bootstrap delay.
-  const fallback = useAudioMeterFallback(videoEl, player, !ec3Active);
+  const fallback = useAudioMeterFallback(videoEl, player, safariMSE && !ec3Active);
 
   if (ec3Active && ec3Audio) {
     return {
@@ -48,7 +42,7 @@ export function useTrackAMeter(
     };
   }
 
-  if (useFallbackOutput) {
+  if (safariMSE) {
     return {
       readLevels: fallback.readLevels,
       readLoudness: fallback.readLoudness,

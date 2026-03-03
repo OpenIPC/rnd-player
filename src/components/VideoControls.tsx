@@ -242,7 +242,7 @@ export default function VideoControls({
   }
 
   // ── Unified Track A metering (shared by AudioLevels and AudioCompare) ──
-  const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio, showAudioCompare);
+  const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio);
 
   // ── QP heatmap (H.264 macroblock QP visualization) ──
   const qpHeatmap = useQpHeatmap(player, videoEl, showQpHeatmap && moduleConfig.qpHeatmap, !playing);
