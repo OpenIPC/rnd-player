@@ -40,3 +40,6 @@ e2e/screenshots/
 
 # WASM build artifacts (FFmpeg source + object files)
 wasm/build/
+
+# WASM binaries (built in CI)
+public/*.wasm
