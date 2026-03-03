@@ -262,6 +262,13 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
           destroyed = true;
           return hasRecovery;
         }
+        // RuntimeError: unreachable — WASM trap from assertion or __builtin_trap.
+        // Decoder state is corrupted; mark destroyed so a fresh instance is created.
+        if (e instanceof WebAssembly.RuntimeError) {
+          console.warn("[JM264] WASM trap during decode:", e.message);
+          destroyed = true;
+          return false;
+        }
         throw e;
       }
     },
@@ -276,6 +283,11 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
           const hasRecovery = readErrorRecovery();
           destroyed = true;
           return hasRecovery;
+        }
+        if (e instanceof WebAssembly.RuntimeError) {
+          console.warn("[JM264] WASM trap during flush:", e.message);
+          destroyed = true;
+          return false;
         }
         throw e;
       }
