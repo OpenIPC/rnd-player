@@ -51,10 +51,10 @@ ANNEXB_SRC="${JM_DIR}/ldecod/src/annexb.c"
 if ! grep -q "g_mem_buf" "${ANNEXB_SRC}" 2>/dev/null; then
   echo "  Patch 1: annexb.c — memory buffer for getChunk() + skip file open"
 
-  python3 << PYEOF
-import re
+  ANNEXB_SRC_PATH="${ANNEXB_SRC}" python3 << 'PYEOF'
+import re, os
 
-src_path = "${ANNEXB_SRC}"
+src_path = os.environ.get("ANNEXB_SRC_PATH")
 with open(src_path, 'r') as f:
     src = f.read()
 
@@ -239,10 +239,11 @@ MBUFFER_SRC="${JM_DIR}/ldecod/src/mbuffer.c"
 if grep -q 'error ("max_dec_frame_buffering larger than MaxDpbSize"' "${MBUFFER_SRC}" 2>/dev/null; then
   echo "  Patch 8: mbuffer.c — make DPB size checks non-fatal + clamp values"
 
-  python3 << PYEOF
-import re
+  MBUFFER_SRC_PATH="${MBUFFER_SRC}" python3 << 'PYEOF'
+import re, os
 
-with open("${MBUFFER_SRC}", "r") as f:
+mbuffer_src = os.environ.get("MBUFFER_SRC_PATH")
+with open(mbuffer_src, "r") as f:
     src = f.read()
 
 # 8a: Replace all "max_dec_frame_buffering larger than MaxDpbSize" error calls
@@ -252,12 +253,6 @@ src = src.replace(
 )
 
 # 8b: In init_dpb, after the DPB-size-vs-num_ref_frames check, clamp p_Dpb->size
-# Original:
-#   if (p_Dpb->size < active_sps->num_ref_frames)
-#   {
-#     error("DPB size ...", 1000);
-#   }
-# Replace with: clamp p_Dpb->size up to num_ref_frames
 old = '''  if (p_Dpb->size < active_sps->num_ref_frames)
 #endif
   {
@@ -277,7 +272,7 @@ src = src.replace(
     'printf("Warning: DPB size < num_ref_frames (clamped)\\n");'
 )
 
-with open("${MBUFFER_SRC}", "w") as f:
+with open(mbuffer_src, "w") as f:
     f.write(src)
 
 print("    mbuffer.c patched: DPB errors non-fatal + values clamped")
@@ -291,8 +286,10 @@ IMAGE_SRC="${JM_DIR}/ldecod/src/image.c"
 if grep -q 'error("An unintentional loss of pictures occurs' "${IMAGE_SRC}" 2>/dev/null; then
   echo "  Patch 9: image.c — make 'unintentional loss of pictures' non-fatal"
 
-  python3 << PYEOF
-with open("${IMAGE_SRC}", "r") as f:
+  IMAGE_SRC_PATH="${IMAGE_SRC}" python3 << 'PYEOF'
+import os
+image_src = os.environ.get("IMAGE_SRC_PATH")
+with open(image_src, "r") as f:
     src = f.read()
 
 src = src.replace(
@@ -300,7 +297,7 @@ src = src.replace(
     'printf("Warning: unintentional loss of pictures (continuing with concealment)\\n");'
 )
 
-with open("${IMAGE_SRC}", "w") as f:
+with open(image_src, "w") as f:
     f.write(src)
 
 print("    image.c patched: picture loss error now non-fatal")
@@ -353,6 +350,7 @@ echo "Compiling to WASM..."
 mkdir -p "${OUTPUT_DIR}"
 
 emcc -O2 \
+  -DNDEBUG \
   -s STANDALONE_WASM=1 \
   -s TOTAL_MEMORY=67108864 \
   -s ALLOW_MEMORY_GROWTH=1 \
