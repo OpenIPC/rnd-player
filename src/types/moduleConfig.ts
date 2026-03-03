@@ -10,6 +10,7 @@ export interface PlayerModuleConfig {
   keyboardShortcuts: boolean;
   sleepWakeRecovery: boolean;
   sceneMarkers: boolean;
+  qpHeatmap: boolean;
 }
 
 export const MODULE_DEFAULTS: PlayerModuleConfig = {
@@ -24,4 +25,5 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   keyboardShortcuts: true,
   sleepWakeRecovery: true,
   sceneMarkers: true,
+  qpHeatmap: true,
 };

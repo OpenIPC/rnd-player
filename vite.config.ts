@@ -20,6 +20,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     audioLevels: false,
     audioCompare: false,
     segmentExport: false,
+    qpHeatmap: false,
   },
   minimal: {
     filmstrip: false,
@@ -33,6 +34,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     keyboardShortcuts: false,
     sleepWakeRecovery: false,
     sceneMarkers: false,
+    qpHeatmap: false,
   },
 }
 
@@ -57,6 +59,7 @@ function resolveModulePreset(): ModulePreset | undefined {
     keyboardShortcuts: true,
     sleepWakeRecovery: true,
     sceneMarkers: true,
+    qpHeatmap: true,
   }
   return { ...defaults, ...preset }
 }

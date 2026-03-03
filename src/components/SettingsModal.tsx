@@ -83,6 +83,12 @@ const MODULE_INFO: ModuleInfo[] = [
     label: "Scene markers",
     description: "av1an scene boundary visualization on progress bar and filmstrip",
   },
+  {
+    key: "qpHeatmap",
+    label: "QP heatmap",
+    description: "H.264 macroblock QP visualization overlay (requires pause)",
+    hardGate: (p) => !p.workers ? "Requires Web Workers" : null,
+  },
 ];
 
 export default function SettingsModal({

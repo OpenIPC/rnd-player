@@ -26,6 +26,7 @@ import ExportPicker from "./ExportPicker";
 const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
 const AudioCompare = lazy(() => import("./AudioCompare"));
+const QpHeatmapOverlay = lazy(() => import("./QpHeatmapOverlay"));
 const SettingsModal = lazy(() => import("./SettingsModal"));
 import AdaptationToast from "./AdaptationToast";
 import { formatTimecode } from "../utils/formatTime";
@@ -42,6 +43,7 @@ import type { BoundaryPreview, RequestBoundaryPreviewFn } from "../hooks/useBoun
 import type { Ec3TrackInfo } from "../utils/dashAudioParser";
 import type { UseEc3AudioResult } from "../hooks/useEc3Audio";
 import { useTrackAMeter } from "../hooks/useTrackAMeter";
+import { useQpHeatmap } from "../hooks/useQpHeatmap";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -216,6 +218,7 @@ export default function VideoControls({
   const [translateSetupSignal, setTranslateSetupSignal] = useState(0);
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showQpHeatmap, setShowQpHeatmap] = useState(false);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -240,6 +243,9 @@ export default function VideoControls({
 
   // ── Unified Track A metering (shared by AudioLevels and AudioCompare) ──
   const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio, showAudioCompare);
+
+  // ── QP heatmap (H.264 macroblock QP visualization) ──
+  const qpHeatmap = useQpHeatmap(player, videoEl, showQpHeatmap && moduleConfig.qpHeatmap, !playing);
 
   // Identify active Track A in allAudioTracks (for AudioCompare filtering/sorting)
   const trackAId = useMemo(() => {
@@ -1553,6 +1559,10 @@ export default function VideoControls({
             onToggleFilmstrip();
             setContextMenu(null);
           } : undefined}
+          onToggleQpHeatmap={moduleConfig.qpHeatmap && qpHeatmap.isH264 ? () => {
+            setShowQpHeatmap((s) => !s);
+            setContextMenu(null);
+          } : undefined}
           hasMarkers={inPoint != null || outPoint != null}
           hasInOutPoints={inPoint != null && outPoint != null}
           hasActiveSubtitles={activeTextIds.size > 0}
@@ -1563,6 +1573,8 @@ export default function VideoControls({
           showAudioCompare={showAudioCompare}
           showCompare={!!showCompare}
           showFilmstrip={!!showFilmstrip}
+          showQpHeatmap={showQpHeatmap}
+          isH264={qpHeatmap.isH264}
         />
       )}
 
@@ -1661,6 +1673,15 @@ export default function VideoControls({
           />
         </Suspense>
       )}
+
+      {/* QP heatmap overlay — portaled into containerEl, positioned over video */}
+      {moduleConfig.qpHeatmap && showQpHeatmap && qpHeatmap.data &&
+        createPortal(
+          <Suspense fallback={null}>
+            <QpHeatmapOverlay videoEl={videoEl} data={qpHeatmap.data} />
+          </Suspense>,
+          containerEl
+        )}
 
       {/* Help modal — portaled to body */}
       {showHelp && createPortal(

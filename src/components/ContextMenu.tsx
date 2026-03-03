@@ -13,6 +13,7 @@ import {
   AudioCompareIcon,
   CompareIcon,
   FilmstripIcon,
+  QpHeatmapIcon,
 } from "./icons";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 
@@ -35,6 +36,7 @@ interface ContextMenuProps {
   onToggleAudioCompare: (() => void) | undefined;
   onToggleCompare: (() => void) | undefined;
   onToggleFilmstrip: (() => void) | undefined;
+  onToggleQpHeatmap: (() => void) | undefined;
 
   // State for conditional items
   hasMarkers: boolean;
@@ -47,6 +49,8 @@ interface ContextMenuProps {
   showAudioCompare: boolean;
   showCompare: boolean;
   showFilmstrip: boolean;
+  showQpHeatmap: boolean;
+  isH264: boolean;
 }
 
 export default function ContextMenu({
@@ -66,6 +70,7 @@ export default function ContextMenu({
   onToggleAudioCompare,
   onToggleCompare,
   onToggleFilmstrip,
+  onToggleQpHeatmap,
   hasMarkers,
   hasInOutPoints,
   hasActiveSubtitles,
@@ -76,6 +81,8 @@ export default function ContextMenu({
   showAudioCompare,
   showCompare,
   showFilmstrip,
+  showQpHeatmap,
+  isH264,
 }: ContextMenuProps) {
   return createPortal(
     <div
@@ -155,6 +162,12 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleFilmstrip}>
           <FilmstripIcon />
           {showFilmstrip ? "Hide filmstrip" : "Filmstrip timeline"}
+        </div>
+      )}
+      {moduleConfig.qpHeatmap && isH264 && onToggleQpHeatmap && (
+        <div className="vp-context-menu-item" onClick={onToggleQpHeatmap}>
+          <QpHeatmapIcon />
+          {showQpHeatmap ? "Hide QP heatmap" : "QP heatmap"}
         </div>
       )}
     </div>,
