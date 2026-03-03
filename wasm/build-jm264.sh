@@ -33,10 +33,10 @@ echo "Using Emscripten: $(emcc --version | head -1)"
 # ── Clone JM ──
 mkdir -p "${BUILD_DIR}"
 if [ ! -d "${JM_DIR}" ]; then
-  echo "Cloning JM H.264 reference decoder..."
-  # Primary: Fraunhofer HHI GitLab. Fallback: GitHub mirror.
-  git clone --depth 1 https://vcgit.hhi.fraunhofer.de/jvet/JM.git "${JM_DIR}" 2>/dev/null \
-    || git clone --depth 1 https://github.com/shihuade/JM.git "${JM_DIR}"
+  echo "Cloning JM H.264 reference decoder (JM 19.0)..."
+  # JM 19.0 is the final release (2015). Pinned to exact commit for reproducibility.
+  # Mirror of Fraunhofer HHI official source (iphome.hhi.de/suehring/tml/download/).
+  git clone --depth 1 https://github.com/shihuade/JM.git "${JM_DIR}"
 fi
 
 echo "JM source: ${JM_DIR}"
