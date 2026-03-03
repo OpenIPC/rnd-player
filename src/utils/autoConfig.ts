@@ -22,6 +22,7 @@ export function autoConfig(
   }
   if (!profile.workers) {
     config.segmentExport = false;
+    config.qpHeatmap = false;
   }
 
   // Soft gates: disable heavy features on low-tier devices
