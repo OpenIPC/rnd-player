@@ -16,7 +16,9 @@ interface UseQpHeatmapResult {
   isH264: boolean;
   /** Whether the active codec is H.265/HEVC (for showing/hiding the menu item). */
   isH265: boolean;
-  /** Whether the current codec supports QP extraction (H.264 or H.265). */
+  /** Whether the active codec is AV1 (for showing/hiding the menu item). */
+  isAv1: boolean;
+  /** Whether the current codec supports QP extraction (H.264, H.265, or AV1). */
   available: boolean;
   /** Whether a QP decode is in progress. */
   loading: boolean;
@@ -45,13 +47,14 @@ export function useQpHeatmap(
     return {
       isH264: codec.startsWith("avc1"),
       isH265: codec.startsWith("hvc1") || codec.startsWith("hev1"),
+      isAv1: codec.startsWith("av01"),
     };
     // Re-check when paused changes (track may have switched via ABR)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player, paused]);
 
-  const { isH264, isH265 } = codecInfo;
-  const available = enabled && (isH264 || isH265);
+  const { isH264, isH265, isAv1 } = codecInfo;
+  const available = enabled && (isH264 || isH265 || isAv1);
 
   // Clear data when playback resumes (transition from paused→playing)
   if (prevPausedRef.current && !paused) {
@@ -204,7 +207,7 @@ export function useQpHeatmap(
         targetTime: currentTime,
         width: active.width ?? 0,
         height: active.height ?? 0,
-        codec: isH265 ? "h265" : "h264",
+        codec: isAv1 ? "av1" : isH265 ? "h265" : "h264",
       };
 
       worker.onmessage = (e: MessageEvent<QpMapWorkerResponse>) => {
@@ -238,7 +241,7 @@ export function useQpHeatmap(
         console.warn("[QP heatmap] fetch error:", err);
       }
     }
-  }, [player, videoEl, enabled, paused, available, isH265]);
+  }, [player, videoEl, enabled, paused, available, isH265, isAv1]);
 
   // Trigger on seeked (when paused) and on activation while paused
   useEffect(() => {
@@ -255,5 +258,5 @@ export function useQpHeatmap(
     return () => videoEl.removeEventListener("seeked", onSeeked);
   }, [enabled, paused, available, requestQpMap, videoEl]);
 
-  return { isH264, isH265, available, loading, data };
+  return { isH264, isH265, isAv1, available, loading, data };
 }

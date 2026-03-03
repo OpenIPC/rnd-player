@@ -14,6 +14,7 @@ import { createFile, MP4BoxBuffer } from "mp4box";
 import type { Sample } from "mp4box";
 import { createJm264QpDecoder, type Jm264QpInstance } from "../wasm/jm264Decoder";
 import { createHm265QpDecoder, type Hm265QpInstance } from "../wasm/hm265Decoder";
+import { createDav1dQpDecoder, type Dav1dQpInstance } from "../wasm/dav1dDecoder";
 import type { QpMapWorkerRequest, QpMapWorkerResponse } from "../types/qpMapWorker.types";
 
 /** 4-byte Annex B start code. */
@@ -26,6 +27,7 @@ const START_CODE = new Uint8Array([0x00, 0x00, 0x00, 0x01]);
  */
 let cachedJmDecoder: Jm264QpInstance | null = null;
 let cachedHmDecoder: Hm265QpInstance | null = null;
+let cachedDav1dDecoder: Dav1dQpInstance | null = null;
 
 async function getJmDecoder(): Promise<Jm264QpInstance> {
   if (cachedJmDecoder) return cachedJmDecoder;
@@ -37,6 +39,12 @@ async function getHmDecoder(): Promise<Hm265QpInstance> {
   if (cachedHmDecoder) return cachedHmDecoder;
   cachedHmDecoder = await createHm265QpDecoder();
   return cachedHmDecoder;
+}
+
+async function getDav1dDecoder(): Promise<Dav1dQpInstance> {
+  if (cachedDav1dDecoder) return cachedDav1dDecoder;
+  cachedDav1dDecoder = await createDav1dQpDecoder();
+  return cachedDav1dDecoder;
 }
 
 /**
@@ -246,18 +254,56 @@ function buildAnnexB(paramSets: Uint8Array[], sampleNalus: Uint8Array[]): Uint8A
   return result;
 }
 
+/**
+ * Extract config OBUs (sequence header) from the init segment's av1C box.
+ *
+ * av1C structure: [4 bytes size][4 bytes 'av1C'][4 bytes config header][configOBUs...]
+ * The 4-byte config header contains: marker(1bit), version(7bits), seq_profile(3bits),
+ * seq_level_idx_0(5bits), seq_tier_0(1bit), high_bitdepth(1bit), twelve_bit(1bit),
+ * monochrome(1bit), chroma_subsampling_x(1bit), chroma_subsampling_y(1bit),
+ * chroma_sample_position(2bits), initial_presentation_delay stuff(8bits).
+ * After the 4 header bytes: raw OBUs (typically just the sequence header OBU).
+ */
+function extractConfigOBUsAV1(initBuf: ArrayBuffer): Uint8Array | null {
+  const data = new Uint8Array(initBuf);
+
+  // Search for av1C box: [4 bytes size][4 bytes 'av1C'][payload...]
+  // 0x61='a', 0x76='v', 0x31='1', 0x43='C'
+  for (let i = 0; i + 8 < data.length; i++) {
+    if (data[i + 4] !== 0x61 || data[i + 5] !== 0x76 ||
+        data[i + 6] !== 0x31 || data[i + 7] !== 0x43) continue;
+
+    const boxSize = (data[i] << 24) | (data[i + 1] << 16) | (data[i + 2] << 8) | data[i + 3];
+    if (boxSize < 12 || i + boxSize > data.length) continue;
+
+    // Skip box header (8 bytes) + config header (4 bytes) = 12 bytes
+    const obuStart = i + 12;
+    const obuEnd = i + boxSize;
+    if (obuStart >= obuEnd) return null;
+
+    return data.slice(obuStart, obuEnd);
+  }
+  return null;
+}
+
+/**
+ * Build OBU buffer for dav1d: sequence header OBUs + sample data.
+ * AV1 in fMP4: samples contain self-delimiting OBUs (each has internal size field).
+ * No length-prefix parsing needed — just concatenate.
+ */
+function buildObuBuffer(configObus: Uint8Array, sampleData: Uint8Array): Uint8Array {
+  const result = new Uint8Array(configObus.length + sampleData.length);
+  result.set(configObus, 0);
+  result.set(sampleData, configObus.length);
+  return result;
+}
+
 async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
   const { initSegment, mediaSegment, targetTime, codec } = msg;
   console.log("[QP worker] handleDecode: codec=%s targetTime=%f, init=%d bytes, media=%d bytes",
     codec, targetTime, initSegment.byteLength, mediaSegment.byteLength);
 
-  // 1. Extract parameter sets from init segment (avcC for H.264, hvcC for H.265)
-  const paramSets = codec === "h265"
-    ? extractParameterSetsHEVC(initSegment)
-    : extractParameterSets(initSegment);
-  console.log("[QP worker] paramSets: %d NALUs", paramSets.length);
-
-  // 2. Extract all samples from media segment
+  // Extract all samples from media segment
   const samples = await extractAllSamples(initSegment, mediaSegment);
   console.log("[QP worker] samples: %d", samples.length);
   if (samples.length === 0) {
@@ -266,7 +312,7 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     return;
   }
 
-  // 3. Find the target frame — closest to targetTime
+  // Find the target frame — closest to targetTime
   const timescale = samples[0].timescale;
   const targetCts = targetTime * timescale;
 
@@ -283,7 +329,7 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     }
   }
 
-  // 4. Feed NALUs from the most recent IDR up to and including the target frame
+  // Walk backward to the most recent sync sample
   let idrIdx = targetSampleIdx;
   while (idrIdx > 0 && !sortedByCts[idrIdx].is_sync) {
     idrIdx--;
@@ -298,53 +344,66 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
   console.log("[QP worker] feeding %d samples (IDR at %d, target at %d, feedEnd at %d)",
     samplesToFeed.length, idrIdx, targetSampleIdx, feedEnd);
 
-  // 5. Build a single Annex B buffer with SPS+PPS+all slice NALUs
-  const allNalus: Uint8Array[] = [];
-  for (const sample of samplesToFeed) {
-    const nalus = sampleToNalUnits(sample);
-    for (const nalu of nalus) {
-      allNalus.push(nalu);
-    }
-  }
-
-  const annexB = buildAnnexB(paramSets, allNalus);
-  console.log("[QP worker] Annex B buffer: %d bytes (%d param sets + %d sample NALUs)",
-    annexB.length, paramSets.length, allNalus.length);
-
-  // 6. Get (or create) decoder and decode
-  const isH265 = codec === "h265";
   let widthMbs: number;
   let heightMbs: number;
   let qpValues: Uint8Array;
   let count: number;
+  let blockSize: number;
 
-  if (isH265) {
+  if (codec === "av1") {
+    // AV1 path: OBU concatenation (no Annex B, no NALU length prefix parsing)
+    const configObus = extractConfigOBUsAV1(initSegment);
+    if (!configObus || configObus.length === 0) {
+      const response: QpMapWorkerResponse = { type: "error", message: "No av1C config OBUs found in init segment" };
+      self.postMessage(response);
+      return;
+    }
+    console.log("[QP worker] av1C config OBUs: %d bytes", configObus.length);
+
+    // AV1 samples contain raw OBUs — concatenate all sample data
+    let totalSampleSize = 0;
+    for (const sample of samplesToFeed) {
+      if (sample.data) totalSampleSize += sample.data.byteLength;
+    }
+    const sampleData = new Uint8Array(totalSampleSize);
+    let offset = 0;
+    for (const sample of samplesToFeed) {
+      if (sample.data) {
+        sampleData.set(new Uint8Array(sample.data), offset);
+        offset += sample.data.byteLength;
+      }
+    }
+
+    const obuBuffer = buildObuBuffer(configObus, sampleData);
+    console.log("[QP worker] OBU buffer: %d bytes (%d config + %d sample)",
+      obuBuffer.length, configObus.length, sampleData.length);
+
     let decoder;
     try {
-      decoder = await getHmDecoder();
+      decoder = await getDav1dDecoder();
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error("[QP worker] HM decoder creation failed:", errMsg);
+      console.error("[QP worker] dav1d decoder creation failed:", errMsg);
       const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
       self.postMessage(response);
       return;
     }
 
-    console.log("[QP worker] calling HM decodeFrame (%d bytes)...", annexB.length);
+    console.log("[QP worker] calling dav1d decodeFrame (%d bytes)...", obuBuffer.length);
     const t0 = performance.now();
-    const frameReady = decoder.decodeFrame(annexB);
-    console.log("[QP worker] HM decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
+    const frameReady = decoder.decodeFrame(obuBuffer);
+    console.log("[QP worker] dav1d decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
       frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
 
     let hasFrame = frameReady;
     if (!hasFrame) {
       const flushed = decoder.flush();
-      console.log("[QP worker] HM flush → %s", flushed);
+      console.log("[QP worker] dav1d flush → %s", flushed);
       if (flushed) hasFrame = true;
     }
 
     if (decoder.destroyed) {
-      cachedHmDecoder = null;
+      cachedDav1dDecoder = null;
     }
 
     if (!hasFrame) {
@@ -358,46 +417,112 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     count = result.count;
     widthMbs = decoder.getWidthBlocks();
     heightMbs = decoder.getHeightBlocks();
+    blockSize = 8;
   } else {
-    let decoder;
-    try {
-      decoder = await getJmDecoder();
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error("[QP worker] JM decoder creation failed:", errMsg);
-      const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
-      self.postMessage(response);
-      return;
+    // H.264/H.265 path: Annex B with NALU parsing
+    const paramSets = codec === "h265"
+      ? extractParameterSetsHEVC(initSegment)
+      : extractParameterSets(initSegment);
+    console.log("[QP worker] paramSets: %d NALUs", paramSets.length);
+
+    // Build Annex B buffer with param sets + sample NALUs
+    const allNalus: Uint8Array[] = [];
+    for (const sample of samplesToFeed) {
+      const nalus = sampleToNalUnits(sample);
+      for (const nalu of nalus) {
+        allNalus.push(nalu);
+      }
     }
 
-    console.log("[QP worker] calling JM decodeFrame (%d bytes)...", annexB.length);
-    const t0 = performance.now();
-    const frameReady = decoder.decodeFrame(annexB);
-    console.log("[QP worker] JM decodeFrame → %s, widthMbs=%d, heightMbs=%d (%.0fms)",
-      frameReady, decoder.getWidthMbs(), decoder.getHeightMbs(), performance.now() - t0);
+    const annexB = buildAnnexB(paramSets, allNalus);
+    console.log("[QP worker] Annex B buffer: %d bytes (%d param sets + %d sample NALUs)",
+      annexB.length, paramSets.length, allNalus.length);
 
-    let hasFrame = frameReady;
-    if (!hasFrame) {
-      const flushed = decoder.flush();
-      console.log("[QP worker] JM flush → %s", flushed);
-      if (flushed) hasFrame = true;
+    const isH265 = codec === "h265";
+
+    if (isH265) {
+      let decoder;
+      try {
+        decoder = await getHmDecoder();
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[QP worker] HM decoder creation failed:", errMsg);
+        const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
+        self.postMessage(response);
+        return;
+      }
+
+      console.log("[QP worker] calling HM decodeFrame (%d bytes)...", annexB.length);
+      const t0 = performance.now();
+      const frameReady = decoder.decodeFrame(annexB);
+      console.log("[QP worker] HM decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
+        frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
+
+      let hasFrame = frameReady;
+      if (!hasFrame) {
+        const flushed = decoder.flush();
+        console.log("[QP worker] HM flush → %s", flushed);
+        if (flushed) hasFrame = true;
+      }
+
+      if (decoder.destroyed) {
+        cachedHmDecoder = null;
+      }
+
+      if (!hasFrame) {
+        const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
+        self.postMessage(response);
+        return;
+      }
+
+      const result = decoder.copyQps();
+      qpValues = result.qpValues;
+      count = result.count;
+      widthMbs = decoder.getWidthBlocks();
+      heightMbs = decoder.getHeightBlocks();
+    } else {
+      let decoder;
+      try {
+        decoder = await getJmDecoder();
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[QP worker] JM decoder creation failed:", errMsg);
+        const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
+        self.postMessage(response);
+        return;
+      }
+
+      console.log("[QP worker] calling JM decodeFrame (%d bytes)...", annexB.length);
+      const t0 = performance.now();
+      const frameReady = decoder.decodeFrame(annexB);
+      console.log("[QP worker] JM decodeFrame → %s, widthMbs=%d, heightMbs=%d (%.0fms)",
+        frameReady, decoder.getWidthMbs(), decoder.getHeightMbs(), performance.now() - t0);
+
+      let hasFrame = frameReady;
+      if (!hasFrame) {
+        const flushed = decoder.flush();
+        console.log("[QP worker] JM flush → %s", flushed);
+        if (flushed) hasFrame = true;
+      }
+
+      if (decoder.destroyed) {
+        cachedJmDecoder = null;
+      }
+
+      if (!hasFrame) {
+        const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
+        self.postMessage(response);
+        return;
+      }
+
+      const result = decoder.copyQps();
+      qpValues = result.qpValues;
+      count = result.count;
+      widthMbs = decoder.getWidthMbs();
+      heightMbs = decoder.getHeightMbs();
     }
 
-    if (decoder.destroyed) {
-      cachedJmDecoder = null;
-    }
-
-    if (!hasFrame) {
-      const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
-      self.postMessage(response);
-      return;
-    }
-
-    const result = decoder.copyQps();
-    qpValues = result.qpValues;
-    count = result.count;
-    widthMbs = decoder.getWidthMbs();
-    heightMbs = decoder.getHeightMbs();
+    blockSize = isH265 ? 8 : 16;
   }
 
   if (count === 0 || widthMbs === 0 || heightMbs === 0) {
@@ -419,7 +544,7 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     qpValues,
     widthMbs,
     heightMbs,
-    blockSize: isH265 ? 8 : 16,
+    blockSize,
     minQp,
     maxQp,
   };

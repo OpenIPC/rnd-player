@@ -1,6 +1,6 @@
 # QP Heatmap Overlay
 
-Per-macroblock QP (Quantization Parameter) heatmap overlay for H.264 streams, rendered on paused frames.
+Per-block QP (Quantization Parameter) heatmap overlay for H.264, H.265/HEVC, and AV1 streams, rendered on paused frames.
 
 ## Background
 
@@ -155,7 +155,7 @@ With `--allow-multiple-definition`, the wrapper's `error()` must win over JM's. 
 
 ## Scope
 
-- **Codec**: H.264 (avc1.*) and H.265/HEVC (hvc1.*, hev1.*)
+- **Codec**: H.264 (avc1.*), H.265/HEVC (hvc1.*, hev1.*), and AV1 (av01.*)
 - **Trigger**: Paused frames only (clears on play)
 - **Rendering**: Canvas 2D overlay with pointer-events: none
 - **Letterboxing**: Accounts for object-fit: contain in fullscreen
@@ -218,6 +218,49 @@ When generating fixed-QP H.265 test streams with libx265:
 - **aq-mode=0**: Required to disable adaptive quantization (default AQ shifts per-CU QPs away from the base)
 - **ipratio=1.0**: Required to disable I-frame QP offset (default `ipratio=1.4` lowers I-frame QP by `round(6 * log2(1.4))` = 3)
 
+## AV1 Support
+
+### dav1d Decoder
+
+[dav1d](https://code.videolan.org/videolan/dav1d) is the high-performance C AV1 decoder by VideoLAN. Chosen over libaom (reference decoder) because it's smaller, faster, pure C (easier WASM build), and has proven Emscripten compilation.
+
+### q_index vs QP
+
+AV1 uses `q_index` (0–255) instead of H.264/H.265's QP (0–51). The overlay adapts to the actual min/max automatically — no rescaling needed. AV1 encoders (SVT-AV1, libaom) map their QP parameter (typically 0–63) to the internal q_index range non-linearly.
+
+### SuperBlock-Level Capture
+
+AV1 uses SuperBlocks (64×64 or 128×128) with recursive partitioning. Per-SB `delta_q` is the meaningful QP variation unit — the decoder applies `ts->last_qidx = iclip(ts->last_qidx + delta_q, 1, 255)` at each superblock boundary.
+
+The WASM build patches `src/decode.c` to capture `ts->last_qidx` into a global buffer indexed by superblock grid position. The wrapper then expands the SB grid to 8×8 output for codec-agnostic overlay rendering (same granularity as H.265).
+
+### OBU Format (vs Annex B)
+
+AV1 uses OBU (Open Bitstream Unit) format — each unit has an internal size field. No Annex B assembly or start codes needed:
+- **Init segment**: `av1C` box contains 4-byte config header + raw OBUs (sequence header)
+- **Media samples**: raw OBU data (self-delimiting, each has internal size)
+- **Decode input**: concatenate `configOBUs + sampleData` → feed to dav1d
+
+### av1C Parsing
+
+```
+[4 bytes size][4 bytes 'av1C'][4 bytes config header][configOBUs...]
+```
+
+Config header: marker(1b), version(7b), seq_profile(3b), seq_level_idx_0(5b), seq_tier_0(1b), high_bitdepth(1b), twelve_bit(1b), monochrome(1b), chroma_subsampling_x(1b), chroma_subsampling_y(1b), chroma_sample_position(2b), initial_presentation_delay(8b). After the 4 header bytes: raw OBUs (typically just the sequence header OBU).
+
+### dav1d Build Without Meson
+
+The build script bypasses meson and compiles `.c` files directly with emcc:
+- Regular sources: 25 files compiled once (no BITDEPTH)
+- Template sources: 13 files compiled twice (`-DBITDEPTH=8` and `-DBITDEPTH=16`)
+- Skip `src/x86/`, `src/arm/`, `src/loongarch/`, `src/ppc/` (no ASM for WASM)
+- `config.h` generated from `dav1d_overrides.h` — disables threading, ASM, enables `HAVE_POSIX_MEMALIGN`
+- `cpu.c` patched to return 0 for CPU flags (no SIMD detection)
+- Single-threaded (no pthreads), `n_threads=1`, `max_frame_delay=1`
+
+Build: `cd wasm && ./build-dav1d-av1.sh` — produces `public/dav1d-qp.wasm` (~432KB).
+
 ## Files
 
 ### H.264 (JM)
@@ -234,17 +277,26 @@ When generating fixed-QP H.265 test streams with libx265:
 - `wasm/build-hm265.sh` — Emscripten build: clone HM 16.18, apply 5 patches, compile with `-fwasm-exceptions`
 - `src/wasm/hm265Decoder.ts` — WASM loader: 11 WASI stubs, WasiExit handling, RuntimeError safety net
 
+### AV1 (dav1d)
+
+- `wasm/dav1d_wrapper.c` — C wrapper: dav1d push/pull API, SB-level QP capture, expand to 8×8 grid
+- `wasm/dav1d_overrides.h` — Compile-time config: disables ASM, threading, enables POSIX memalign
+- `wasm/build-dav1d-av1.sh` — Emscripten build: clone dav1d 1.5.1, patch decode.c + cpu.c, compile with `-O2 -DNDEBUG`
+- `src/wasm/dav1dDecoder.ts` — WASM loader: 11 WASI stubs, WasiExit handling, RuntimeError safety net
+
 ### Shared
 
-- `src/types/qpMapWorker.types.ts` — Worker message types (codec field, blockSize)
-- `src/workers/qpMapWorker.ts` — QP extraction worker: mp4box parsing, Annex B assembly, codec-branched decoder
-- `src/hooks/useQpHeatmap.ts` — React hook: codec detection (avc1/hvc1/hev1), segment fetching, worker lifecycle
+- `src/types/qpMapWorker.types.ts` — Worker message types (codec field: h264/h265/av1, blockSize)
+- `src/workers/qpMapWorker.ts` — QP extraction worker: mp4box parsing, codec-branched decoder (Annex B for H.264/H.265, OBU for AV1)
+- `src/hooks/useQpHeatmap.ts` — React hook: codec detection (avc1/hvc1/hev1/av01), segment fetching, worker lifecycle
 - `src/components/QpHeatmapOverlay.tsx` — Canvas overlay: 5-stop color gradient, letterbox-aware sizing
 
 ## Tests
 
-- `wasm/test-validate-qp.mjs` — H.264: fixed QP, dimensions, CRF variable QP, fMP4 pipeline, decoder reuse
+- `wasm/test-validate-qp.mjs` — H.264: fixed QP, dimensions, CRF variable QP, fMP4 pipeline, decoder reuse (32 tests)
 - `wasm/test-validate-qp-h265.mjs` — H.265: fixed QP, dimensions (8x8 blocks), CRF, fMP4 pipeline, decoder reuse (32 tests)
+- `wasm/test-validate-qp-av1.mjs` — AV1: fixed q_index, dimensions (8x8 blocks), CRF, fMP4 pipeline (av1C+OBU), decoder reuse (36 tests)
 - `wasm/test-realworld.mjs` — H.264: baseline/main/high profiles, partial decode, error recovery
 - `wasm/test-realworld-h265.mjs` — H.265: fixed QP cross-check, CRF vs ffprobe, fMP4 pipeline, multi-frame, visual QP map dump (18 tests)
-- Run: `node wasm/test-validate-qp.mjs`, `node wasm/test-validate-qp-h265.mjs`, `node wasm/test-realworld.mjs`, `node wasm/test-realworld-h265.mjs`
+- `wasm/test-realworld-av1.mjs` — AV1: fixed q_index cross-check, CRF variable, fMP4 pipeline, sequential reuse, visual QP map dump (14 tests)
+- Run: `node wasm/test-validate-qp.mjs`, `node wasm/test-validate-qp-h265.mjs`, `node wasm/test-validate-qp-av1.mjs`, `node wasm/test-realworld.mjs`, `node wasm/test-realworld-h265.mjs`, `node wasm/test-realworld-av1.mjs`
