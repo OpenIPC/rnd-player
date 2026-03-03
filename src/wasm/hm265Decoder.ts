@@ -135,6 +135,13 @@ export async function createHm265QpDecoder(): Promise<Hm265QpInstance> {
         return 0;
       },
       args_get: () => 0,
+      environ_sizes_get: (countPtr: number, bufSizePtr: number) => {
+        const v = getView();
+        v.setUint32(countPtr, 0, true);
+        v.setUint32(bufSizePtr, 0, true);
+        return 0;
+      },
+      environ_get: () => 0,
       proc_exit: (code: number) => { throw new WasiExit(code, capturedOutput); },
       fd_close: () => 0,
       fd_read: () => 0,
@@ -157,6 +164,12 @@ export async function createHm265QpDecoder(): Promise<Hm265QpInstance> {
         return 0;
       },
       fd_seek: () => 0,
+      fd_fdstat_get: () => 0,
+      clock_time_get: (_clockId: number, _precision: bigint, timePtr: number) => {
+        const v = getView();
+        v.setBigUint64(timePtr, 0n, true);
+        return 0;
+      },
     },
   });
 
