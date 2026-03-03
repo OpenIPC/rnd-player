@@ -35,18 +35,29 @@ jobs:
         with:
           version: 3.1.74
 
-      - name: Build EC-3 WASM decoder
-        run: bash wasm/build-ec3.sh
-
-      - name: Verify WASM binary
+      - name: Build WASM decoders
         run: |
-          ls -la public/ec3-decoder.wasm
-          SIZE=$(stat --printf="%s" public/ec3-decoder.wasm)
-          echo "WASM size: ${SIZE} bytes"
-          if [ "$SIZE" -lt 100000 ]; then
-            echo "ERROR: WASM binary too small (${SIZE} bytes)"
-            exit 1
-          fi
+          bash wasm/build-ec3.sh
+          bash wasm/build-jm264.sh
+
+      - name: Verify WASM binaries
+        run: |
+          for f in public/ec3-decoder.wasm public/jm264-qp.wasm; do
+            ls -la "$f"
+            SIZE=$(stat --printf="%s" "$f")
+            echo "$f: ${SIZE} bytes"
+            if [ "$SIZE" -lt 100000 ]; then
+              echo "ERROR: $f too small (${SIZE} bytes)"
+              exit 1
+            fi
+          done
+
+      - name: Upload WASM binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-binaries
+          path: public/*.wasm
+          retention-days: 1
 
   e2e:
     runs-on: ${{ matrix.os }}
@@ -185,7 +196,7 @@ jobs:
 
   deploy:
     if: github.ref == 'refs/heads/main'
-    needs: [test, e2e]
+    needs: [test, e2e, wasm-build]
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -204,6 +215,12 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Download WASM binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-binaries
+          path: public/
 
       - name: Read version from package.json
         id: version
