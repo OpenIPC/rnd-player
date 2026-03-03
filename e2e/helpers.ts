@@ -136,12 +136,6 @@ if (isEncryptedDashFixtureAvailable()) {
  * then pauses and seeks to time 0.
  */
 export async function loadPlayerWithEncryptedDash(page: Page) {
-  // Capture browser errors for CI debugging
-  page.on("pageerror", (err) => console.log(`[PAGE ERROR] ${err.message}`));
-  page.on("console", (msg) => {
-    if (msg.type() === "error") console.log(`[CONSOLE ERROR] ${msg.text()}`);
-  });
-
   // Shaka Packager produces single-segment MP4 files with SegmentBase in MPD.
   // Shaka Player fetches segments via byte-range requests (Range header).
   await page.route(

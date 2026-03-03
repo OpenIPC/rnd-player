@@ -307,8 +307,12 @@ function getBaseUrl(el: Element, parentBase: string): string {
       new URL(base);
       return base;
     } catch {
-      // Relative — resolve against parent
-      return new URL(base, parentBase).href;
+      // Relative — resolve against parent (parentBase may itself be relative)
+      try {
+        return new URL(base, parentBase).href;
+      } catch {
+        return parentBase;
+      }
     }
   }
   return parentBase;
@@ -389,7 +393,11 @@ function resolveTemplate(template: string, baseUrl: string, number: number, time
     new URL(url);
     return url; // Already absolute
   } catch {
-    return new URL(url, baseUrl).href;
+    try {
+      return new URL(url, baseUrl).href;
+    } catch {
+      return url; // baseUrl may be relative; return template as-is
+    }
   }
 }
 
