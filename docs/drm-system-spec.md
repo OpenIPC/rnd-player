@@ -1058,19 +1058,18 @@ These are accepted risks at the software DRM tier. The industry addresses them w
 - Heartbeat + session tracking active but **not enforced** (server revoke = log only)
 - Software decrypt fallback path unchanged
 
-### Phase 2: Multi-Key + Entitlements
+### Phase 2: Multi-Key + Entitlements — IMPLEMENTED
 
-**Server side** (planned):
-1. Packager produces multi-key encrypted content (separate KIDs for audio/sd/hd/uhd tracks)
-2. License server returns only entitled keys per user tier from JWT claims
-3. Concurrency enforcement turned on (reject or evict oldest session)
+**Server side** (see `../free-drm/`):
+1. License server returns per-tier keys based on JWT `entitled_assets` / `max_resolution` claims
+2. Concurrency enforcement via Redis session tracking
 
-**Player side** (minimal changes needed):
-- `fetchLicense()` already returns a `clearKeys` map supporting multiple KID→key pairs — Shaka accepts this directly via `drm.clearKeys` config
-- `convertKey()` already iterates all keys in the response
-- Shaka auto-selects the highest available quality when some track keys are missing
-- No new files needed; the multi-key path works transparently through existing code
-- Only change: if server returns partial keys (e.g. no UHD key for "basic" tier), Shaka may fire a DRM error on the restricted tracks — add a filter to suppress these expected errors based on the policy response
+**Player side** (no additional code needed — Phase 1 implementation is multi-key from the start):
+- `fetchLicense()` iterates all keys in the response and builds a `clearKeys` map (`Record<kidHex, keyHex>`) — supports any number of KID→key pairs
+- `convertKey()` handles each key independently (UUID KID → hex, base64 key → hex)
+- Shaka accepts the full map via `drm.clearKeys` config and auto-selects the highest available quality
+- When the server returns partial keys (e.g. no UHD key for "basic" tier), Shaka skips restricted tracks transparently
+- Software decrypt fallback uses `clearKeyHex` (first key) — sufficient for single-key content; multi-key software decrypt would require per-track key selection (not yet needed)
 
 ### Phase 3: Key Transport Protection
 
