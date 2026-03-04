@@ -1071,13 +1071,16 @@ These are accepted risks at the software DRM tier. The industry addresses them w
 - When the server returns partial keys (e.g. no UHD key for "basic" tier), Shaka skips restricted tracks transparently
 - Software decrypt fallback uses `clearKeyHex` (first key) — sufficient for single-key content; multi-key software decrypt would require per-track key selection (not yet needed)
 
-### Phase 3: Key Transport Protection
+### Phase 3: Key Transport Protection — IMPLEMENTED
 
-1. Add `keyUnwrap.ts` — ECDH ephemeral key agreement + AES-KW unwrapping (see §6.9 for implementation sketch)
-2. Player generates ephemeral EC key pair per license request
-3. Server wraps CEKs with ECDH-derived key; player unwraps before configuring Shaka
-4. Device fingerprint already sent in Phase 1 — server begins binding fingerprint to session token
-5. `licenseInterceptor.ts` — optional Shaka request/response filter for transparent key unwrapping
+Player-side ECDH-ES+A256KW key transport protection:
+
+1. **`keyUnwrap.ts`** — `generateEphemeralKeyPair()` creates P-256 key pair per license request; `unwrapCEKs()` performs ECDH deriveBits → HKDF-SHA256 → AES-256-KW unwrap
+2. **`drmClient.ts`** — `fetchLicense()` generates ephemeral key pair, sends `client_public_key` (JWK) in license request, unwraps CEKs when `transport_key_params` present in response
+3. **Backward compatible** — falls back to plaintext base64 decoding when `transport_key_params` is absent (Phase 1/2 servers)
+4. **`types.ts`** — `TransportKeyParams` interface (`algorithm` + `epk`), `client_public_key` on `LicenseRequest`, `transport_key_params` on `LicenseResponse`
+5. **Tests** — `keyUnwrap.test.ts` (7 tests: round-trip, multi-key, wrong-key rejection, corruption detection), `drmClient.test.ts` (6 tests: plaintext fallback, wrapped unwrap, request format, error handling)
+6. Device fingerprint already sent in Phase 1 — server binds fingerprint to session token
 
 ### Phase 4: Watermarking + Analytics
 
@@ -1106,8 +1109,7 @@ If the service scales to require L1 protection:
 | `sessionManager.ts` | **Phase 1** | `SessionManagerOpts` | Heartbeat loop, `sendBeacon` session end | Fetch API |
 | `deviceFingerprint.ts` | **Phase 1** | — | SHA-256 hex string | Web Crypto API |
 | `types.ts` | **Phase 1** | — | Type definitions for all DRM API contracts | — |
-| `licenseInterceptor.ts` | Phase 3 | Shaka `NetworkingEngine`, license server URL | ClearKey config or software decrypt setup | `keyUnwrap`, existing `softwareDecrypt.ts` |
-| `keyUnwrap.ts` | Phase 3 | Server ephemeral public key, wrapped key bytes | `CryptoKey` (AES-CTR) | Web Crypto API |
+| `keyUnwrap.ts` | **Phase 3** | Client private key, server EPK, wrapped key bytes | Raw CEK bytes (`Uint8Array[]`) | Web Crypto API (ECDH, HKDF, AES-KW) |
 | `watermarkRenderer.ts` | Phase 4 | Canvas element, watermark config | Rendered overlay | Canvas 2D API |
 
 ### Server-Side Tasks (Go/Rust)
