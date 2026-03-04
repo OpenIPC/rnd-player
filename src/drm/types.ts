@@ -34,12 +34,20 @@ export interface TransportKeyParams {
   epk: JsonWebKey; // Server's ephemeral public key
 }
 
+/** Phase 4: Forensic watermark token from license response. */
+export interface WatermarkToken {
+  user_hash: string;     // sha256(userId)[:8] hex
+  session_short: string; // base36(sessionId)[:4] uppercase
+  opacity: number;       // ~0.03
+}
+
 /** POST /license response body. */
 export interface LicenseResponse {
   session_id: string;
   keys: LicenseKey[];
   policy: LicensePolicy;
   transport_key_params?: TransportKeyParams; // Phase 3: present when CEKs are wrapped
+  watermark?: WatermarkToken; // Phase 4: forensic watermark config
 }
 
 /** POST /session/heartbeat request body. */

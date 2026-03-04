@@ -10,11 +10,12 @@ import { parseEc3Tracks, parseAllAudioTracks, stripEc3FromManifest, type Ec3Trac
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
-import type { DrmConfig } from "../drm/types";
+import type { DrmConfig, WatermarkToken } from "../drm/types";
 import { fetchLicense } from "../drm/drmClient";
 import { createSessionManager, type SessionManager } from "../drm/sessionManager";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
+const WatermarkOverlay = lazy(() => import("./WatermarkOverlay"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
 import "./ShakaPlayer.css";
 
@@ -103,6 +104,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [pendingDrmKey, setPendingDrmKey] = useState<string | null>(null);
   const pendingSessionRef = useRef<{ sessionId: string; renewalS: number } | null>(null);
+  const [watermark, setWatermark] = useState<WatermarkToken | null>(null);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
@@ -279,6 +281,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
             sessionId: result.license.session_id,
             renewalS: result.license.policy.renewal_interval_s,
           };
+          setWatermark(result.watermark ?? null);
           setPendingDrmKey(result.clearKeyHex);
         } catch (e) {
           if (destroyed) return;
@@ -600,6 +603,17 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
             </form>
           </div>
         )}
+        {moduleConfig.watermark &&
+          watermark &&
+          playerReady &&
+          videoRef.current && (
+            <Suspense fallback={null}>
+              <WatermarkOverlay
+                videoEl={videoRef.current}
+                watermark={watermark}
+              />
+            </Suspense>
+          )}
         {error && (
           <div className="vp-error-overlay">
             <div className="vp-error-message">{error}</div>

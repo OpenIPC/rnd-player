@@ -414,7 +414,7 @@ src/
 │   ├── deviceFingerprint.ts    # SHA-256 browser fingerprint
 │   ├── licenseInterceptor.ts   # (Phase 3) Shaka request/response filter
 │   ├── keyUnwrap.ts            # (Phase 3) ECDH + AES-KW key unwrapping
-│   └── watermarkRenderer.ts    # (Phase 4) Canvas-based forensic watermark
+│   └── WatermarkOverlay.tsx     # (Phase 4) Canvas-based forensic watermark overlay
 ├── workers/
 │   └── cencDecrypt.ts          # (existing) — reused for software decrypt path
 └── utils/
@@ -1084,7 +1084,7 @@ Player-side ECDH-ES+A256KW key transport protection:
 
 ### Phase 4: Watermarking + Analytics
 
-1. Canvas-based forensic watermark overlay (see §6.8 for `watermarkRenderer.ts` sketch)
+1. ~~Canvas-based forensic watermark overlay (see §6.8 for `watermarkRenderer.ts` sketch)~~ **IMPLEMENTED** — `WatermarkOverlay.tsx` renders session-traceable watermark on canvas overlay with 30s position rotation, mulberry32 PRNG, DPR-aware sizing, letterbox-aware placement
 2. Consumption analytics pipeline — heartbeat data already flowing from Phase 1
 3. Anomaly detection rules (see §7.6)
 4. Signed manifest URLs with short TTL
@@ -1110,7 +1110,7 @@ If the service scales to require L1 protection:
 | `deviceFingerprint.ts` | **Phase 1** | — | SHA-256 hex string | Web Crypto API |
 | `types.ts` | **Phase 1** | — | Type definitions for all DRM API contracts | — |
 | `keyUnwrap.ts` | **Phase 3** | Client private key, server EPK, wrapped key bytes | Raw CEK bytes (`Uint8Array[]`) | Web Crypto API (ECDH, HKDF, AES-KW) |
-| `watermarkRenderer.ts` | Phase 4 | Canvas element, watermark config | Rendered overlay | Canvas 2D API |
+| `WatermarkOverlay.tsx` | **Phase 4** | `videoEl`, `WatermarkToken` | Canvas overlay with 5 rotating positions | Canvas 2D API, ResizeObserver |
 
 ### Server-Side Tasks (Go/Rust)
 

@@ -11,6 +11,7 @@ export interface PlayerModuleConfig {
   sleepWakeRecovery: boolean;
   sceneMarkers: boolean;
   qpHeatmap: boolean;
+  watermark: boolean;
 }
 
 export const MODULE_DEFAULTS: PlayerModuleConfig = {
@@ -26,4 +27,5 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   sleepWakeRecovery: true,
   sceneMarkers: true,
   qpHeatmap: true,
+  watermark: true,
 };

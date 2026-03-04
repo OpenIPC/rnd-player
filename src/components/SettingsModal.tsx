@@ -89,6 +89,11 @@ const MODULE_INFO: ModuleInfo[] = [
     description: "H.264 macroblock QP visualization overlay (requires pause)",
     hardGate: (p) => !p.workers ? "Requires Web Workers" : null,
   },
+  {
+    key: "watermark",
+    label: "Watermark",
+    description: "Forensic watermark overlay for DRM-protected content",
+  },
 ];
 
 export default function SettingsModal({
