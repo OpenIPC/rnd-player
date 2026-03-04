@@ -16,6 +16,8 @@ import { parseManifestDrm } from "../drm/diagnostics/parseManifestDrm";
 import { parseInitSegmentDrm } from "../drm/diagnostics/parseInitSegmentDrm";
 import type { DrmDiagnosticsState } from "../drm/diagnostics/types";
 import { createSessionManager, type SessionManager } from "../drm/sessionManager";
+import { hasWidevinePssh, configureWidevineProxy } from "../drm/widevineProxy";
+import { computeDeviceFingerprint } from "../drm/deviceFingerprint";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const WatermarkOverlay = lazy(() => import("./WatermarkOverlay"));
@@ -123,6 +125,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [pendingDrmKey, setPendingDrmKey] = useState<string | null>(null);
+  const [pendingWidevine, setPendingWidevine] = useState<string | null>(null);
   const pendingSessionRef = useRef<{ sessionId: string; renewalS: number } | null>(null);
   const [watermark, setWatermark] = useState<WatermarkToken | null>(null);
   const [showDrmDiagnostics, setShowDrmDiagnostics] = useState(false);
@@ -325,9 +328,26 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       // via pendingDrmKey. Loading DRM content inside this useEffect's
       // async chain causes playback to stall (Shaka/EME timing issue).
       if (defaultKID && !clearKey && drmConfig) {
-        // Priority 2: fetch key from license server.
-        // Don't load here — defer to handleKeySubmit via pendingDrmKey
-        // so the load happens in a separate async context (matches test 3 flow).
+        // Priority 2: check if manifest has Widevine PSSH → native Widevine EME
+        // Otherwise fall back to ClearKey license server fetch.
+        const { info: drmInfo } = parseManifestDrm(manifestText!);
+
+        if (hasWidevinePssh(drmInfo)) {
+          // Widevine path: defer load to separate useEffect (same pattern
+          // as ClearKey — loading DRM inside this async chain stalls).
+          try {
+            const fingerprint = await computeDeviceFingerprint();
+            if (destroyed) return;
+            setPendingWidevine(fingerprint);
+          } catch (e) {
+            if (destroyed) return;
+            console.warn("[DRM] Widevine setup failed, falling back to key prompt:", e);
+            setNeedsKey(true);
+          }
+          return;
+        }
+
+        // ClearKey license server fetch (existing path)
         try {
           const result = await fetchLicense(drmConfig);
           if (destroyed) return;
@@ -562,6 +582,74 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       handleKeySubmit(key, false);
     }
   }, [pendingDrmKey, playerReady, needsKey]);
+
+  // Auto-load Widevine EME (deferred from main useEffect — same timing
+  // pattern as ClearKey: loading DRM inside the attach() chain stalls).
+  useEffect(() => {
+    if (!pendingWidevine || playerReady || needsKey) return;
+    const player = playerRef.current;
+    if (!player || !drmConfig) return;
+
+    const fingerprint = pendingWidevine;
+    setPendingWidevine(null);
+
+    let wvSessionId: string | undefined;
+    let wvRenewalS = 30;
+
+    configureWidevineProxy({
+      player,
+      licenseUrl: drmConfig.licenseUrl,
+      sessionToken: drmConfig.sessionToken,
+      assetId: drmConfig.assetId,
+      deviceFingerprint: fingerprint,
+      onSessionInfo: (sid, renewal) => {
+        wvSessionId = sid;
+        wvRenewalS = renewal;
+      },
+      onWatermark: (wm) => setWatermark(wm),
+    });
+
+    (async () => {
+      try {
+        await player.load(src);
+        if (!playerRef.current) return; // destroyed
+
+        // Start session manager with info from the license response filter
+        if (wvSessionId) {
+          sessionRef.current = createSessionManager({
+            licenseUrl: drmConfig.licenseUrl,
+            sessionToken: drmConfig.sessionToken,
+            sessionId: wvSessionId,
+            renewalIntervalS: wvRenewalS,
+            getPlaybackState: () => {
+              const v = videoRef.current;
+              const activeTrack = player.getVariantTracks().find((t) => t.active);
+              return {
+                position_s: v ? v.currentTime : 0,
+                buffer_health_s: v && v.buffered.length > 0
+                  ? v.buffered.end(v.buffered.length - 1) - v.currentTime
+                  : 0,
+                rendition: activeTrack ? `${activeTrack.height}p` : "unknown",
+              };
+            },
+            onRevoked: () => {
+              console.warn("[DRM] Session revoked by server");
+            },
+          });
+          sessionRef.current.start();
+        }
+
+        setPlayerReady(true);
+        if (autoPlay) videoRef.current?.play().catch(() => {});
+      } catch (e) {
+        if (!playerRef.current) return; // destroyed
+        const reason = e instanceof Error ? e.message : String(e);
+        console.warn("[DRM] Widevine EME failed, falling back to key prompt:", e);
+        setError(`Widevine DRM failed: ${reason}`);
+        setNeedsKey(true);
+      }
+    })();
+  }, [pendingWidevine, playerReady, needsKey]);
 
   // Auto-enter compare mode when compareSrc is provided via URL param
   const compareSrcTriggered = useRef(false);

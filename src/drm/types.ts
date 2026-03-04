@@ -50,6 +50,15 @@ export interface LicenseResponse {
   watermark?: WatermarkToken; // Phase 4: forensic watermark config
 }
 
+/** POST /license/widevine response body. */
+export interface WidevineLicenseResponse {
+  session_id: string;
+  license: string; // base64-encoded Widevine license bytes
+  policy: LicensePolicy;
+  evicted_sessions?: string[];
+  watermark?: WatermarkToken;
+}
+
 /** POST /session/heartbeat request body. */
 export interface HeartbeatRequest {
   session_id: string;
