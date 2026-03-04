@@ -12,6 +12,7 @@ export interface PlayerModuleConfig {
   sceneMarkers: boolean;
   qpHeatmap: boolean;
   watermark: boolean;
+  drmDiagnostics: boolean;
 }
 
 export const MODULE_DEFAULTS: PlayerModuleConfig = {
@@ -28,4 +29,5 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   sceneMarkers: true,
   qpHeatmap: true,
   watermark: true,
+  drmDiagnostics: true,
 };

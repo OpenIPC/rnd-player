@@ -295,6 +295,15 @@ export function QpHeatmapIcon() {
   );
 }
 
+export function DrmDiagnosticsIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="3" y="4" width="14" height="12" rx="2" />
+      <path d="M10 8v4M8 10h4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function SettingsIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

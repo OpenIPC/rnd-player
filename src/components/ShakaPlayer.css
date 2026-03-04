@@ -2594,3 +2594,164 @@ video::-webkit-media-text-track-container {
 .vp-settings-row.vp-settings-disabled input[type="checkbox"] {
   cursor: default;
 }
+
+/* ── DRM Diagnostics panel ── */
+.vp-drm-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 8px 12px;
+  padding-right: 28px;
+  border-radius: 4px;
+  font: 11px/1.6 monospace;
+  color: #e0e0e0;
+  width: 480px;
+  min-width: 280px;
+  max-width: 90%;
+  min-height: 100px;
+  max-height: 80%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: auto;
+  resize: both;
+}
+
+.vp-drm-title {
+  font-weight: bold;
+  font-size: 12px;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.vp-drm-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: none;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.vp-drm-close:hover {
+  color: #fff;
+}
+
+.vp-drm-section {
+  margin-bottom: 6px;
+}
+
+.vp-drm-section-header {
+  cursor: pointer;
+  color: #ccc;
+  font-weight: bold;
+  font-size: 11px;
+  padding: 2px 0;
+  user-select: none;
+}
+.vp-drm-section-header:hover {
+  color: #fff;
+}
+
+.vp-drm-collapse-icon {
+  display: inline-block;
+  width: 12px;
+  font-size: 10px;
+}
+
+.vp-drm-section-body {
+  padding-left: 4px;
+}
+
+.vp-drm-card {
+  border-left: 2px solid rgba(255, 255, 255, 0.15);
+  padding-left: 8px;
+  margin: 4px 0;
+}
+
+.vp-drm-row {
+  display: flex;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.vp-drm-label {
+  color: #999;
+  min-width: 70px;
+  flex-shrink: 0;
+}
+
+.vp-drm-value {
+  color: #e0e0e0;
+  word-break: break-all;
+}
+
+.vp-drm-mono {
+  font-family: monospace;
+}
+
+.vp-drm-truncate {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vp-drm-copy {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #aaa;
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 2px;
+  cursor: pointer;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.vp-drm-copy:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.vp-drm-decoded {
+  margin-top: 4px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.vp-drm-decoded-title {
+  color: #4488ff;
+  font-size: 10px;
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+.vp-drm-hex-toggle {
+  background: none;
+  border: none;
+  color: #4488ff;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 0;
+  text-decoration: underline;
+}
+
+.vp-drm-hex {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 6px;
+  border-radius: 2px;
+  font-size: 10px;
+  word-break: break-all;
+  margin-top: 2px;
+  color: #aaa;
+}
+
+.vp-drm-empty {
+  color: #888;
+  font-style: italic;
+  padding: 4px 0;
+}
