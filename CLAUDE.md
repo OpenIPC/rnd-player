@@ -36,6 +36,17 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 - Module config gating: FilmstripTimeline render gated on `moduleConfig.filmstrip`, QualityCompare on `moduleConfig.qualityCompare`
 - Passes scene data through to VideoControls and FilmstripTimeline
 - Spawns `useBoundaryPreviews` hook for progress bar boundary preview images (independent of filmstrip panel), passes `boundaryPreviews`/`requestBoundaryPreview`/`clearBoundaryPreviews` to VideoControls
+- Watermark overlay: extracts `WatermarkToken` from license response, stores in state, lazy-loads `WatermarkOverlay` gated on `moduleConfig.watermark && watermark && playerReady`
+
+**WatermarkOverlay** (`src/components/WatermarkOverlay.tsx`) — Canvas-based forensic watermark overlay for DRM-protected content. Renders the `session_short` code (4 chars) at 5 positions across the video area. Features:
+- Position rotation every 30s using `Math.floor(Date.now() / 30_000)` as seed
+- Mulberry32 seeded PRNG for deterministic x/y/angle generation
+- DPR-aware canvas sizing, `ResizeObserver` for fullscreen transitions
+- Letterbox-aware placement via `getVideoRect()` (handles `object-fit: contain`)
+- Font: `14px monospace`, fill: `rgba(255, 255, 255, opacity)`, `globalCompositeOperation: "lighter"`
+- Invisible at ~3% opacity but detectable by forensic tools (contrast amplification)
+- CSS: `vp-watermark-canvas` at `z-index: 1` (below controls at z-index 2)
+- Only rendered when license server provides a `watermark` token; `?key=` manual override produces no watermark
 
 **VideoControls** (`src/components/VideoControls.tsx`) — Custom overlay UI with 20+ state variables managing:
 - Play/pause, seek bar, volume slider, quality/speed/audio/subtitle popups
@@ -125,7 +136,7 @@ When activated, `configureSoftwareDecryption()` registers an async Shaka respons
 
 **useKeyboardShortcuts** (`src/hooks/useKeyboardShortcuts.ts`) — Hook for JKL shuttle, frame step, volume, fullscreen, in/out points, subtitle toggles, help modal hotkeys, and scene navigation (PageDown/PageUp). Accepts an `enabled` option (default `true`, gated on `moduleConfig.keyboardShortcuts`) — when `false`, the `useEffect` returns early without registering any key listeners. Scene navigation callbacks (`onNextScene`/`onPrevScene`) are optional and only wired when scene data is loaded.
 
-**PlayerModuleConfig** (`src/types/moduleConfig.ts`) — Interface with 10 boolean fields controlling which optional modules are active: `filmstrip`, `qualityCompare`, `statsPanel`, `audioLevels`, `segmentExport`, `subtitles`, `adaptationToast`, `keyboardShortcuts`, `sleepWakeRecovery`, `sceneMarkers`. `MODULE_DEFAULTS` has all fields `true`.
+**PlayerModuleConfig** (`src/types/moduleConfig.ts`) — Interface with boolean fields controlling which optional modules are active: `filmstrip`, `qualityCompare`, `statsPanel`, `audioLevels`, `segmentExport`, `subtitles`, `adaptationToast`, `keyboardShortcuts`, `sleepWakeRecovery`, `sceneMarkers`, `qpHeatmap`, `watermark`. `MODULE_DEFAULTS` has all fields `true`.
 
 **SceneData types** (`src/types/sceneData.ts`) — Types for av1an scene detection integration: `Av1anScene` (raw scene entry with `start_frame`/`end_frame`), `Av1anSceneJson` (top-level JSON shape with `frames` count and `scenes` array), `SceneData` (processed: `totalFrames`, `boundaries: number[]` in seconds, `fps`, `originalFrames: number[]` preserving raw frame numbers for index-based worker lookup).
 

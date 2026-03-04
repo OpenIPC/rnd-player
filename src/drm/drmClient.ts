@@ -1,4 +1,4 @@
-import type { DrmConfig, LicenseKey, LicenseResponse } from "./types";
+import type { DrmConfig, LicenseKey, LicenseResponse, WatermarkToken } from "./types";
 import { computeDeviceFingerprint } from "./deviceFingerprint";
 import { generateEphemeralKeyPair, unwrapCEKs } from "./keyUnwrap";
 
@@ -24,6 +24,7 @@ export interface FetchLicenseResult {
   clearKeys: Record<string, string>;
   clearKeyHex: string;
   license: LicenseResponse;
+  watermark?: WatermarkToken;
 }
 
 /** Convert raw key bytes to hex string. */
@@ -91,5 +92,5 @@ export async function fetchLicense(config: DrmConfig): Promise<FetchLicenseResul
   const firstKidHex = normalizeKid(license.keys[0].kid);
   const clearKeyHex = clearKeys[firstKidHex];
 
-  return { clearKeys, clearKeyHex, license };
+  return { clearKeys, clearKeyHex, license, watermark: license.watermark };
 }
