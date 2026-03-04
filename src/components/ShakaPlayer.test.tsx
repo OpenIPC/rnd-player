@@ -49,6 +49,7 @@ describe("ShakaPlayer", () => {
     getTextTracks: ReturnType<typeof vi.fn>;
     selectAudioTrack: ReturnType<typeof vi.fn>;
     selectTextTrack: ReturnType<typeof vi.fn>;
+    getNetworkingEngine: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
@@ -78,6 +79,10 @@ describe("ShakaPlayer", () => {
       getTextTracks: vi.fn(() => []),
       selectAudioTrack: vi.fn(),
       selectTextTrack: vi.fn(),
+      getNetworkingEngine: vi.fn(() => ({
+        registerRequestFilter: vi.fn(),
+        registerResponseFilter: vi.fn(),
+      })),
     };
 
     (shaka.Player as unknown as ReturnType<typeof vi.fn>).mockImplementation(

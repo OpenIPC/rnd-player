@@ -12,10 +12,14 @@ import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { DrmConfig, WatermarkToken } from "../drm/types";
 import { fetchLicense } from "../drm/drmClient";
+import { parseManifestDrm } from "../drm/diagnostics/parseManifestDrm";
+import { parseInitSegmentDrm } from "../drm/diagnostics/parseInitSegmentDrm";
+import type { DrmDiagnosticsState } from "../drm/diagnostics/types";
 import { createSessionManager, type SessionManager } from "../drm/sessionManager";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const WatermarkOverlay = lazy(() => import("./WatermarkOverlay"));
+const DrmDiagnosticsPanel = lazy(() => import("./DrmDiagnosticsPanel"));
 const DebugPanel = import.meta.env.DEV ? lazy(() => import("./DebugPanel")) : null;
 import "./ShakaPlayer.css";
 
@@ -67,6 +71,22 @@ interface ShakaPlayerProps {
   scenesUrl?: string | null;
 }
 
+/** Quick scan for a 4-byte box type in ISOBMFF data (top-level only). */
+function findBox(data: Uint8Array, fourcc: string): boolean {
+  const c0 = fourcc.charCodeAt(0), c1 = fourcc.charCodeAt(1);
+  const c2 = fourcc.charCodeAt(2), c3 = fourcc.charCodeAt(3);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+  while (offset + 8 <= data.length) {
+    if (data[offset + 4] === c0 && data[offset + 5] === c1 &&
+        data[offset + 6] === c2 && data[offset + 7] === c3) return true;
+    const size = view.getUint32(offset);
+    if (size < 8) break;
+    offset += size;
+  }
+  return false;
+}
+
 let polyfillsInstalled = false;
 
 function describeLoadError(e: shaka.util.Error): string {
@@ -105,6 +125,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const [pendingDrmKey, setPendingDrmKey] = useState<string | null>(null);
   const pendingSessionRef = useRef<{ sessionId: string; renewalS: number } | null>(null);
   const [watermark, setWatermark] = useState<WatermarkToken | null>(null);
+  const [showDrmDiagnostics, setShowDrmDiagnostics] = useState(false);
+  const [drmDiagnosticsState, setDrmDiagnosticsState] = useState<DrmDiagnosticsState>({
+    manifest: null,
+    initSegment: null,
+  });
   const [showFilmstrip, setShowFilmstrip] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
@@ -265,6 +290,35 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       }
 
       kidRef.current = defaultKID;
+
+      // --- DRM diagnostics: parse manifest metadata ---
+      if (moduleConfig.drmDiagnostics && manifestText) {
+        const { info: manifestDrmInfo, psshBoxes: manifestPsshBoxes } = parseManifestDrm(manifestText);
+        setDrmDiagnosticsState((prev) => ({
+          ...prev,
+          manifest: manifestDrmInfo,
+          manifestPsshBoxes,
+        }));
+
+        // Register init segment capture filter for PSSH/tenc extraction
+        const net = player.getNetworkingEngine();
+        if (net) {
+          net.registerResponseFilter(async (type, response) => {
+            if (type !== shaka.net.NetworkingEngine.RequestType.SEGMENT) return;
+            const data = response.data as ArrayBuffer;
+            if (!data || data.byteLength < 8) return;
+            // Check if this is an init segment (contains moov box)
+            const bytes = new Uint8Array(data);
+            const hasMoov =
+              findBox(bytes, "moov") || findBox(bytes, "ftyp");
+            if (!hasMoov) return;
+            const initInfo = await parseInitSegmentDrm(data);
+            if (initInfo) {
+              setDrmDiagnosticsState((prev) => prev.initSegment ? prev : { ...prev, initSegment: initInfo });
+            }
+          });
+        }
+      }
 
       // --- DRM key resolution (3-tier priority) ---
       // All DRM paths return early and defer loading to handleKeySubmit
@@ -614,6 +668,14 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               />
             </Suspense>
           )}
+        {moduleConfig.drmDiagnostics && showDrmDiagnostics && (
+            <Suspense fallback={null}>
+              <DrmDiagnosticsPanel
+                state={drmDiagnosticsState}
+                onClose={() => setShowDrmDiagnostics(false)}
+              />
+            </Suspense>
+          )}
         {error && (
           <div className="vp-error-overlay">
             <div className="vp-error-message">{error}</div>
@@ -658,6 +720,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               ec3Tracks={ec3Tracks}
               ec3Audio={ec3Audio}
               allAudioTracks={allAudioTracks}
+              showDrmDiagnostics={showDrmDiagnostics}
+              onToggleDrmDiagnostics={() => setShowDrmDiagnostics((s) => !s)}
             />
           )}
         {moduleConfig.qualityCompare &&

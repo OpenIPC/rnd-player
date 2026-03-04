@@ -14,6 +14,7 @@ import {
   CompareIcon,
   FilmstripIcon,
   QpHeatmapIcon,
+  DrmDiagnosticsIcon,
 } from "./icons";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 
@@ -37,6 +38,7 @@ interface ContextMenuProps {
   onToggleCompare: (() => void) | undefined;
   onToggleFilmstrip: (() => void) | undefined;
   onToggleQpHeatmap: (() => void) | undefined;
+  onToggleDrmDiagnostics: (() => void) | undefined;
 
   // State for conditional items
   hasMarkers: boolean;
@@ -50,6 +52,7 @@ interface ContextMenuProps {
   showCompare: boolean;
   showFilmstrip: boolean;
   showQpHeatmap: boolean;
+  showDrmDiagnostics: boolean;
   isH264: boolean;
   isH265: boolean;
   isAv1: boolean;
@@ -73,6 +76,7 @@ export default function ContextMenu({
   onToggleCompare,
   onToggleFilmstrip,
   onToggleQpHeatmap,
+  onToggleDrmDiagnostics,
   hasMarkers,
   hasInOutPoints,
   hasActiveSubtitles,
@@ -84,6 +88,7 @@ export default function ContextMenu({
   showCompare,
   showFilmstrip,
   showQpHeatmap,
+  showDrmDiagnostics,
   isH264,
   isH265,
   isAv1,
@@ -172,6 +177,12 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleQpHeatmap}>
           <QpHeatmapIcon />
           {showQpHeatmap ? "Hide QP heatmap" : "QP heatmap"}
+        </div>
+      )}
+      {moduleConfig.drmDiagnostics && onToggleDrmDiagnostics && (
+        <div className="vp-context-menu-item" onClick={onToggleDrmDiagnostics}>
+          <DrmDiagnosticsIcon />
+          {showDrmDiagnostics ? "Hide DRM diagnostics" : "DRM diagnostics"}
         </div>
       )}
     </div>,
