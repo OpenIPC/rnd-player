@@ -10,6 +10,7 @@ export interface LicenseRequest {
   session_token: string;
   asset_id: string;
   device_fingerprint: string;
+  client_public_key?: JsonWebKey; // Phase 3: ECDH ephemeral public key
 }
 
 /** Single key entry in license response. */
@@ -27,11 +28,18 @@ export interface LicensePolicy {
   allow_offline: boolean;
 }
 
+/** Phase 3: ECDH-ES+A256KW transport key parameters from server. */
+export interface TransportKeyParams {
+  algorithm: string; // "ECDH-ES+A256KW"
+  epk: JsonWebKey; // Server's ephemeral public key
+}
+
 /** POST /license response body. */
 export interface LicenseResponse {
   session_id: string;
   keys: LicenseKey[];
   policy: LicensePolicy;
+  transport_key_params?: TransportKeyParams; // Phase 3: present when CEKs are wrapped
 }
 
 /** POST /session/heartbeat request body. */
