@@ -59,6 +59,15 @@ export interface WidevineLicenseResponse {
   watermark?: WatermarkToken;
 }
 
+/** POST /license/fairplay response body. */
+export interface FairPlayLicenseResponse {
+  session_id: string;
+  ckc: string; // base64-encoded Content Key Context
+  policy: LicensePolicy;
+  evicted_sessions?: string[];
+  watermark?: WatermarkToken;
+}
+
 /** POST /session/heartbeat request body. */
 export interface HeartbeatRequest {
   session_id: string;

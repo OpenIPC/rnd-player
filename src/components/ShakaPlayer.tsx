@@ -17,6 +17,7 @@ import { parseInitSegmentDrm } from "../drm/diagnostics/parseInitSegmentDrm";
 import type { DrmDiagnosticsState } from "../drm/diagnostics/types";
 import { createSessionManager, type SessionManager } from "../drm/sessionManager";
 import { hasWidevinePssh, configureWidevineProxy } from "../drm/widevineProxy";
+import { hasFairPlayKey, setupFairPlay } from "../drm/fairplayProxy";
 import { computeDeviceFingerprint } from "../drm/deviceFingerprint";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
@@ -126,6 +127,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [pendingDrmKey, setPendingDrmKey] = useState<string | null>(null);
   const [pendingWidevine, setPendingWidevine] = useState<string | null>(null);
+  const [pendingFairPlay, setPendingFairPlay] = useState<string | null>(null);
   const pendingSessionRef = useRef<{ sessionId: string; renewalS: number } | null>(null);
   const [watermark, setWatermark] = useState<WatermarkToken | null>(null);
   const [showDrmDiagnostics, setShowDrmDiagnostics] = useState(false);
@@ -373,6 +375,30 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         // inside the main useEffect's async chain causes playback to stall.
         setPendingDrmKey(clearKey);
         return;
+      }
+
+      // Priority 2b: HLS FairPlay — no defaultKID (HLS doesn't use DASH PSSH),
+      // but manifest contains FairPlay key format.
+      if (!defaultKID && drmConfig && manifestText) {
+        const { info: drmInfo } = parseManifestDrm(manifestText);
+        console.log("[FP-TRACE] drmInfo:", drmInfo.type, "hlsKeys:", drmInfo.hlsKeys);
+        if (hasFairPlayKey(drmInfo)) {
+          console.log("[FP-TRACE] FairPlay key detected, computing fingerprint...");
+          try {
+            const fingerprint = await computeDeviceFingerprint();
+            if (destroyed) return;
+            console.log("[FP-TRACE] setPendingFairPlay, fingerprint:", fingerprint.slice(0, 16) + "...");
+            setPendingFairPlay(fingerprint);
+          } catch (e) {
+            if (destroyed) return;
+            console.warn("[DRM] FairPlay setup failed, falling back to key prompt:", e);
+            setNeedsKey(true);
+          }
+          return;
+        }
+        console.log("[FP-TRACE] hasFairPlayKey returned false");
+      } else {
+        console.log("[FP-TRACE] FairPlay check skipped: defaultKID=%s drmConfig=%s manifestText=%s", !!defaultKID, !!drmConfig, !!manifestText);
       }
 
       try {
@@ -650,6 +676,98 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       }
     })();
   }, [pendingWidevine, playerReady, needsKey]);
+
+  // Auto-load FairPlay EME (deferred from main useEffect — same timing
+  // pattern as Widevine/ClearKey: loading DRM inside the attach() chain stalls).
+  useEffect(() => {
+    console.log("[FP-TRACE] FairPlay useEffect: pendingFairPlay=%s playerReady=%s needsKey=%s", !!pendingFairPlay, playerReady, needsKey);
+    if (!pendingFairPlay || playerReady || needsKey) return;
+    const player = playerRef.current;
+    if (!player || !drmConfig) {
+      console.log("[FP-TRACE] FairPlay useEffect: player=%s drmConfig=%s — bailing", !!player, !!drmConfig);
+      return;
+    }
+
+    const fingerprint = pendingFairPlay;
+    setPendingFairPlay(null);
+    console.log("[FP] Starting FairPlay setup...");
+
+    let fpSessionId: string | undefined;
+    let fpRenewalS = 30;
+    let fpCleanup: (() => void) | undefined;
+
+    (async () => {
+      try {
+        const video = videoRef.current;
+        if (!video) return;
+
+        // FairPlay uses Safari's native HLS (no Shaka MediaSource needed).
+        // Detach Shaka so it doesn't interfere, then set video.src directly.
+        console.log("[FP] detach Shaka...");
+        await player.detach();
+
+        // Set up legacy WebKit EME (the only API that works for FairPlay in Safari)
+        fpCleanup = await setupFairPlay({
+          video,
+          licenseUrl: drmConfig.licenseUrl,
+          sessionToken: drmConfig.sessionToken,
+          assetId: drmConfig.assetId,
+          deviceFingerprint: fingerprint,
+          onSessionInfo: (sid, renewal) => {
+            console.log("[FP] onSessionInfo: sid=%s renewal=%d", sid, renewal);
+            fpSessionId = sid;
+            fpRenewalS = renewal;
+          },
+          onWatermark: (wm) => setWatermark(wm),
+        });
+
+        // Set video source directly — Safari's native HLS parser will
+        // encounter the EXT-X-KEY and fire webkitneedkey.
+        console.log("[FP] Setting video.src...");
+        video.src = src;
+        await new Promise<void>((resolve) => {
+          video.addEventListener("canplay", () => resolve(), { once: true });
+          video.addEventListener("error", () => resolve(), { once: true });
+        });
+        console.log("[FP] Video ready. fpSessionId=%s", fpSessionId);
+        if (!playerRef.current) return; // destroyed
+
+        // Start session manager with info from the license response
+        if (fpSessionId) {
+          sessionRef.current = createSessionManager({
+            licenseUrl: drmConfig.licenseUrl,
+            sessionToken: drmConfig.sessionToken,
+            sessionId: fpSessionId,
+            renewalIntervalS: fpRenewalS,
+            getPlaybackState: () => {
+              const v = videoRef.current;
+              const activeTrack = player.getVariantTracks().find((t) => t.active);
+              return {
+                position_s: v ? v.currentTime : 0,
+                buffer_health_s: v && v.buffered.length > 0
+                  ? v.buffered.end(v.buffered.length - 1) - v.currentTime
+                  : 0,
+                rendition: activeTrack ? `${activeTrack.height}p` : "unknown",
+              };
+            },
+            onRevoked: () => {
+              console.warn("[DRM] Session revoked by server");
+            },
+          });
+          sessionRef.current.start();
+        }
+
+        setPlayerReady(true);
+        if (autoPlay) videoRef.current?.play().catch(() => {});
+      } catch (e) {
+        if (!playerRef.current) return; // destroyed
+        const reason = e instanceof Error ? e.message : String(e);
+        console.warn("[DRM] FairPlay EME failed, falling back to key prompt:", e);
+        setError(`FairPlay DRM failed: ${reason}`);
+        setNeedsKey(true);
+      }
+    })();
+  }, [pendingFairPlay, playerReady, needsKey]);
 
   // Auto-enter compare mode when compareSrc is provided via URL param
   const compareSrcTriggered = useRef(false);
