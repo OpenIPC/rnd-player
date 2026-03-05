@@ -425,11 +425,25 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
       : extractParameterSets(initSegment);
     console.log("[QP worker] paramSets: %d NALUs", paramSets.length);
 
-    // Build Annex B buffer with param sets + sample NALUs
+    // Build Annex B buffer with param sets + VCL NALUs only.
+    // Filter out non-VCL NALUs (SPS/PPS/SEI/AUD) from samples since paramSets
+    // already provides SPS/PPS, and SEI/AUD are irrelevant for QP extraction
+    // and can cause JM to hang on certain SEI payloads.
+    const isHevc = codec === "h265";
     const allNalus: Uint8Array[] = [];
     for (const sample of samplesToFeed) {
       const nalus = sampleToNalUnits(sample);
       for (const nalu of nalus) {
+        if (nalu.length === 0) continue;
+        if (isHevc) {
+          // HEVC: 6-bit type in bits [1..6], VCL NALUs: types 0–31
+          const naluType = (nalu[0] >> 1) & 0x3f;
+          if (naluType > 31) continue;
+        } else {
+          // H.264: 5-bit type in bits [0..4], VCL NALUs: types 1–5
+          const naluType = nalu[0] & 0x1f;
+          if (naluType < 1 || naluType > 5) continue;
+        }
         allNalus.push(nalu);
       }
     }
