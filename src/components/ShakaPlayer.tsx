@@ -694,8 +694,6 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
     let fpSessionId: string | undefined;
     let fpRenewalS = 30;
-    let fpCleanup: (() => void) | undefined;
-
     (async () => {
       try {
         const video = videoRef.current;
@@ -707,7 +705,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         await player.detach();
 
         // Set up legacy WebKit EME (the only API that works for FairPlay in Safari)
-        fpCleanup = await setupFairPlay({
+        await setupFairPlay({
           video,
           licenseUrl: drmConfig.licenseUrl,
           sessionToken: drmConfig.sessionToken,
