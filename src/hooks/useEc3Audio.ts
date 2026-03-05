@@ -106,9 +106,7 @@ export function useEc3Audio(
 
   // Spawn worker on activation
   useEffect(() => {
-    console.log("[ec3] effect: active=%s trackId=%s videoEl=%s", active, activeTrackId, !!videoEl);
     if (!active || !videoEl) {
-      console.log("[ec3] effect: inactive, cleaning up");
       if (workerRef.current) {
         workerRef.current.terminate();
         workerRef.current = null;

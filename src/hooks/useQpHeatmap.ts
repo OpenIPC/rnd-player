@@ -245,8 +245,8 @@ export function useQpHeatmap(
 
   // Trigger on seeked (when paused) and on activation while paused
   useEffect(() => {
-    console.debug("[QP heatmap] trigger effect: enabled=%s paused=%s available=%s", enabled, paused, available);
     if (!enabled || !paused || !available) return;
+    console.debug("[QP heatmap] trigger effect: enabled=%s paused=%s available=%s", enabled, paused, available);
 
     // Trigger immediately for current frame
     requestQpMap();
