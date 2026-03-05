@@ -238,9 +238,7 @@ export function useAudioPlayback(
 
   // Event handlers
   useEffect(() => {
-    console.log("[playback] effect: enabled=%s videoEl=%s", enabled, !!videoEl);
     if (!videoEl || !enabled) {
-      console.log("[playback] effect: disabled, cleaning up (mutedByUs=%s)", mutedByUsRef.current);
       // Cleanup
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       cancelAllScheduled();
@@ -261,7 +259,7 @@ export function useAudioPlayback(
     const ctx = getAudioContext();
     if (!ctx) return;
 
-    console.log("[playback] effect: setup, ctx.state=%s videoEl.paused=%s volume=%s", ctx.state, videoEl.paused, videoEl.volume);
+    console.log("[playback] setup: ctx.state=%s videoEl.paused=%s volume=%s", ctx.state, videoEl.paused, videoEl.volume);
     // Save current volume — muting is deferred until first chunk is scheduled
     // to avoid a silence gap while segments are being fetched and decoded
     prevVolumeRef.current = videoEl.volume;
