@@ -377,7 +377,36 @@ User loads manifest
 
 ## Implementation Phases
 
-### Phase 1 — Foundation + Timeline Analysis
+### Phase 0 — Stream Error Diagnostics (DONE)
+
+**Goal**: Replace cryptic Shaka error messages with structured, actionable diagnostics for network/segment errors. First foundation piece of the analytics engine.
+
+**Motivation**: A buggy ISM origin server returned HTTP 404 for segments past the first 2-3 (cross-track TFRA time mismatches in `SegmentTimeline`), but the player showed only "Failed to load video (HTTP 500). Check the stream URL." — no indication that the manifest loaded fine and the problem was at the segment level.
+
+**Implemented:**
+
+1. **`src/utils/streamDiagnostics.ts`** — Pure diagnostic functions
+   - `StreamError` type: `{ summary, details[], url?, httpStatus? }`
+   - `diagnoseNetworkError(shakaError, context)` — Analyzes Shaka error code 1001 (BAD_HTTP_STATUS), 1002 (HTTP_ERROR), 1003 (TIMEOUT) with request type awareness (manifest vs segment vs license)
+   - `simpleError(message)` — Wraps plain strings for non-network errors (DRM, decode, CORS)
+   - Context-aware: accepts `segmentSuccessCount` (how many segments loaded before failure) and `manifestUrl`
+   - Pattern detection: ISM URL patterns (`.ism`, `/Q()/F()`) trigger specific guidance about cross-track TFRA time mismatches
+   - URL shortening for display: `host/.../{last 3 path segments}`
+
+2. **`ShakaPlayer.tsx` integration**
+   - Error state changed from `string` to `StreamError`
+   - Segment success counter via Shaka networking engine response filter
+   - All error paths updated: network errors use `diagnoseNetworkError()`, others use `simpleError()`
+   - Error overlay renders structured output: red summary headline + detail lines + monospaced URLs
+
+3. **`ShakaPlayer.css` error overlay styles**
+   - `.vp-error-summary` — red, bold headline
+   - `.vp-error-details` — smaller detail lines with dimmer color
+   - `.vp-error-url` — monospaced, word-break for long URLs
+
+4. **Unit tests** — 16 tests in `src/utils/streamDiagnostics.test.ts` covering manifest/segment errors, ISM patterns, timeouts, URL shortening, edge cases
+
+### Phase 1 — Validator Panel + Timeline Analysis
 
 **Goal**: Ship the validator panel UI, the orchestrator, and the first set of checks that require zero additional fetching.
 

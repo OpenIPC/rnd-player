@@ -12,6 +12,7 @@ import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { DrmConfig, WatermarkToken } from "../drm/types";
 import { fetchLicense } from "../drm/drmClient";
+import { diagnoseNetworkError, simpleError, type StreamError } from "../utils/streamDiagnostics";
 import { parseManifestDrm } from "../drm/diagnostics/parseManifestDrm";
 import { parseInitSegmentDrm } from "../drm/diagnostics/parseInitSegmentDrm";
 import type { DrmDiagnosticsState } from "../drm/diagnostics/types";
@@ -92,24 +93,6 @@ function findBox(data: Uint8Array, fourcc: string): boolean {
 
 let polyfillsInstalled = false;
 
-function describeLoadError(e: shaka.util.Error): string {
-  // BAD_HTTP_STATUS (1001): data = [uri, httpStatus, responseText, headers, requestType]
-  if (e.code === 1001 && e.data?.[1]) {
-    const httpStatus = e.data[1] as number;
-    if (httpStatus === 410) {
-      return "The video stream has expired (HTTP 410 Gone). Try obtaining a fresh CDN link.";
-    }
-    if (httpStatus === 403) {
-      return "Access denied (HTTP 403). The stream URL may have expired or require authentication.";
-    }
-    if (httpStatus === 404) {
-      return "Video not found (HTTP 404). The stream may have been removed.";
-    }
-    return `Failed to load video (HTTP ${httpStatus}). Check the stream URL.`;
-  }
-  return `Failed to load video (code ${e.code}).`;
-}
-
 function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, compareSrc, compareQa, compareQb, compareZoom, comparePx, comparePy, compareSplit, compareHx, compareHy, compareHw, compareHh, compareCmode, compareCfi, compareAmp, comparePal, compareVmodel, moduleConfig, deviceProfile, onModuleConfigChange, sceneData, onSceneDataChange, onLoadSceneData, onLoadSceneFile, scenesUrl }: ShakaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -122,7 +105,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const [safariMSE, setSafariMSE] = useState(false);
   const [ec3Tracks, setEc3Tracks] = useState<Ec3TrackInfo[]>([]);
   const [allAudioTracks, setAllAudioTracks] = useState<Ec3TrackInfo[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<StreamError | null>(null);
+  const segmentCountRef = useRef(0);
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [pendingDrmKey, setPendingDrmKey] = useState<string | null>(null);
@@ -208,22 +192,25 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         if (detail.severity === 2) {
           // severity 2 = CRITICAL
           if (detail.category === 6) {
-            setError("DRM error: unable to decrypt content. Check that the decryption keys are correct.");
+            setError(simpleError("DRM error: unable to decrypt content. Check that the decryption keys are correct."));
           } else if (detail.category === 3) {
-            setError(
+            setError(simpleError(
               kidRef.current
                 ? "Media decode error: content could not be decrypted. The provided key may be incorrect."
                 : "Media decode error: the video could not be played.",
-            );
+            ));
           } else if (detail.category === 1) {
             const blockedHost = getCorsBlockedOrigin(src);
             if (blockedHost) {
-              setError(`${blockedHost} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+              setError(simpleError(`${blockedHost} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`));
             } else {
-              setError(describeLoadError(detail));
+              setError(diagnoseNetworkError(detail, {
+                segmentSuccessCount: segmentCountRef.current,
+                manifestUrl: src,
+              }));
             }
           } else {
-            setError(`Playback error (code ${detail.code}): the video could not be played.`);
+            setError(simpleError(`Playback error (code ${detail.code}): the video could not be played.`));
           }
         }
       });
@@ -251,6 +238,19 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       // rejection on segment CDN origins that differ from the manifest origin.
       installCorsSchemePlugin();
 
+      // Track successful segment loads for diagnostics context
+      segmentCountRef.current = 0;
+      {
+        const net = player.getNetworkingEngine();
+        if (net) {
+          net.registerResponseFilter((type) => {
+            if (type === shaka.net.NetworkingEngine.RequestType.SEGMENT) {
+              segmentCountRef.current++;
+            }
+          });
+        }
+      }
+
       // Fetch manifest and extract cenc:default_KID for ClearKey DRM
       const { text: manifestText } = await fetchWithCorsRetry(src);
       if (destroyed) return;
@@ -258,7 +258,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       if (!manifestText) {
         const corsBlocked = getCorsBlockedOrigin(src);
         if (corsBlocked) {
-          setError(`${corsBlocked} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`);
+          setError(simpleError(`${corsBlocked} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`));
           return;
         }
       }
@@ -509,9 +509,12 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         if (destroyed) return;
         if (e instanceof shaka.util.Error) {
           console.error("Error loading manifest:", e.code, e.message, "data=", e.data);
-          setError(describeLoadError(e));
+          setError(diagnoseNetworkError(e, {
+            segmentSuccessCount: segmentCountRef.current,
+            manifestUrl: src,
+          }));
         } else {
-          setError("Failed to load video.");
+          setError(simpleError("Failed to load video."));
         }
       }
     });
@@ -592,9 +595,12 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
     } catch (e: unknown) {
       if (e instanceof shaka.util.Error) {
         console.error("Error loading manifest:", e.code, e.message, "data=", e.data);
-        setError(describeLoadError(e));
+        setError(diagnoseNetworkError(e, {
+          segmentSuccessCount: segmentCountRef.current,
+          manifestUrl: src,
+        }));
       } else {
-        setError("Failed to load video.");
+        setError(simpleError("Failed to load video."));
       }
     }
   };
@@ -671,7 +677,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         if (!playerRef.current) return; // destroyed
         const reason = e instanceof Error ? e.message : String(e);
         console.warn("[DRM] Widevine EME failed, falling back to key prompt:", e);
-        setError(`Widevine DRM failed: ${reason}`);
+        setError(simpleError(`Widevine DRM failed: ${reason}`));
         setNeedsKey(true);
       }
     })();
@@ -761,7 +767,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         if (!playerRef.current) return; // destroyed
         const reason = e instanceof Error ? e.message : String(e);
         console.warn("[DRM] FairPlay EME failed, falling back to key prompt:", e);
-        setError(`FairPlay DRM failed: ${reason}`);
+        setError(simpleError(`FairPlay DRM failed: ${reason}`));
         setNeedsKey(true);
       }
     })();
@@ -882,7 +888,16 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           )}
         {error && (
           <div className="vp-error-overlay">
-            <div className="vp-error-message">{error}</div>
+            <div className="vp-error-message">
+              <div className="vp-error-summary">{error.summary}</div>
+              {error.details.length > 0 && (
+                <div className="vp-error-details">
+                  {error.details.map((line, i) => (
+                    <div key={i} className={`vp-error-detail-line${line.startsWith("URL:") || line.startsWith("Failed URL:") ? " vp-error-url" : ""}`}>{line}</div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
         {playerReady &&
