@@ -110,10 +110,7 @@ static void capture_qp_map(QpContext *ctx) {
  * finishes decoding, BEFORE store_picture_in_dpb. At this point mb_data
  * is guaranteed to have the just-decoded frame's QP values.
  */
-static int g_frame_callback_count = 0;
-
 void jm264_on_frame_decoded(void) {
-    g_frame_callback_count++;
     if (g_active_ctx && g_active_ctx->initialized) {
         /* Only capture the FIRST frame (IDR) — it has the richest per-MB QP
          * variation from the encoder's adaptive quantization. Subsequent P/B
@@ -146,11 +143,9 @@ _Noreturn void exit(int status) {
     _Exit(status);
 }
 
-static int g_error_call_count = 0;
-
 void error(char *text, int code) {
-    g_error_call_count++;
-    fprintf(stderr, "\n!ERR#%d(%d): %s\n", g_error_call_count, code, text);
+    (void)text;
+    (void)code;
     /* Just return — caller will continue with potentially corrupt state.
      * This is safe for QP extraction purposes. */
 }
@@ -258,38 +253,14 @@ int jm264_qp_decode(QpContext *ctx, const uint8_t *annexb_buf, int len) {
     /* Ensure non_conforming_stream stays set (SPS parsing may reset it) */
     p_Vid->non_conforming_stream = 1;
 
-    /* Verify data integrity — checksum the Annex B buffer in WASM memory */
-    {
-        uint32_t cksum = 0;
-        for (int i = 0; i < len; i++) cksum = cksum * 31 + annexb_buf[i];
-        fprintf(stderr, "[JM] annexb: len=%d cksum=%u head=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-            len, cksum,
-            annexb_buf[0], annexb_buf[1], annexb_buf[2], annexb_buf[3],
-            annexb_buf[4], annexb_buf[5], annexb_buf[6], annexb_buf[7]);
-    }
-
     /* Decode frames until buffer is exhausted.
      * QP data is captured via exit_picture() → jm264_on_frame_decoded()
      * callback (Layer 2) which fires for each complete frame. */
     DecodedPicList *pDecPicList = NULL;
     int iRet;
-    int loop_count = 0;
-    g_frame_callback_count = 0;
-    g_error_call_count = 0;
     do {
         iRet = DecodeOneFrame(&pDecPicList);
-        loop_count++;
-        int mb = (int)p_Vid->num_dec_mb;
-        int total = (int)p_Vid->PicSizeInMbs;
-        int complete = (mb == total) ? 1 : 0;
-        /* Log every frame compactly */
-        fprintf(stderr, "F%d:mb=%d/%d%s ", loop_count, mb, total,
-            complete ? "✓" : "");
-        if (loop_count % 10 == 0) fprintf(stderr, "\n");
     } while (iRet == DEC_SUCCEED);
-
-    fprintf(stderr, "\n[JM] done: %d iters, %d complete, %d errors, frame_ready=%d\n",
-        loop_count, g_frame_callback_count, g_error_call_count, ctx->frame_ready);
 
     g_active_ctx = NULL;
 

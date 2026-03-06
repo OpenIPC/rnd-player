@@ -9,11 +9,9 @@
  * the caller passes an entire Annex B bitstream (SPS + PPS + slices with
  * 00 00 00 01 start codes) in a single decodeFrame() call.
  *
- * Error recovery: JM may call error() → exit() on spec violations. The JS
- * wrapper catches the resulting WasiExit and reads QP data that was captured
- * before the error via two mechanisms:
- *   1. write_out_picture → jm264_on_frame_output callback (captures during output)
- *   2. error() itself copies QP to a recovery buffer before exit()
+ * Error recovery: JM may call exit() on spec violations. The JS wrapper
+ * catches the resulting WasiExit and reads QP data that was captured
+ * before the error via the exit_picture → jm264_on_frame_decoded callback.
  *
  * Exports:
  *   - jm264_qp_create() → ptr
@@ -28,17 +26,6 @@
  *   - jm264_qp_set_output(buf, max) → void
  *   - jm264_qp_get_error_recovery() → ptr to recovery struct
  */
-
-/** Send log lines to Vite dev server for terminal output via sync XHR (immune to event loop blocking) */
-function devLog(...args: unknown[]) {
-  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-  console.log(msg);
-  try {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/__log', false); // synchronous — works even if WASM blocks event loop
-    xhr.send(JSON.stringify([msg]));
-  } catch { /* ignore */ }
-}
 
 export interface Jm264QpInstance {
   /** Decode an entire Annex B buffer (SPS+PPS+slices with start codes). Returns true when a frame has been decoded. */
@@ -87,17 +74,14 @@ async function loadWasmModule(): Promise<WebAssembly.Module> {
 
   wasmLoadPromise = (async () => {
     // Vite serves public/ at root — use absolute path (works in both main thread and workers)
-    devLog("[JM264] fetching WASM...");
     const response = await fetch("/jm264-qp.wasm");
     if (!response.ok) {
       throw new Error(
         `JM264 QP WASM fetch failed: ${response.status}. Build it with: cd wasm && ./build-jm264.sh`,
       );
     }
-    devLog("[JM264] compiling WASM...");
     const bytes = await response.arrayBuffer();
     wasmModule = await WebAssembly.compile(bytes);
-    devLog("[JM264] WASM compiled");
     return wasmModule;
   })();
 
@@ -143,7 +127,6 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
   // Capture WASM stdout/stderr so we can see JM's error messages
   let capturedOutput = "";
 
-  devLog("[JM264] instantiating WASM...");
   const instance = await WebAssembly.instantiate(mod, {
     env: {
       emscripten_notify_memory_growth: () => {},
@@ -199,28 +182,18 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
   memRef.current = exports.memory;
 
   // Initialize WASM runtime
-  devLog("[JM264] calling _start()...");
   try {
     exports._start();
-    devLog("[JM264] _start() returned normally");
   } catch (e) {
     if (!(e instanceof WasiExit)) throw e;
-    devLog("[JM264] _start() exited with code:", (e as InstanceType<typeof WasiExit>).code,
-      capturedOutput.trim() ? "output: " + capturedOutput.trim().slice(0, 500) : "(no output)");
   }
-  // Clear init-time output; only capture decode-time messages
   capturedOutput = "";
 
-  devLog("[JM264] calling jm264_qp_create()...");
   const ctxPtr = exports.jm264_qp_create();
-  if (capturedOutput.trim()) {
-    devLog("[JM264] create output:", capturedOutput.trim().slice(0, 500));
-  }
   capturedOutput = "";
   if (ctxPtr === 0) {
     throw new Error("Failed to create JM264 QP decoder instance");
   }
-  devLog("[JM264] decoder created, ctxPtr:", ctxPtr);
 
   // Allocate buffers in WASM memory
   const annexBPtr = exports.jm264_qp_malloc(MAX_ANNEXB_SIZE);
@@ -277,32 +250,14 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
       capturedOutput = "";
 
       try {
-        const result = exports.jm264_qp_decode(ctxPtr, annexBPtr, annexB.byteLength) === 1;
-        if (capturedOutput.trim()) {
-          // Filter to show only compact frame log, errors, and diagnostics
-          const lines = capturedOutput.split("\n")
-            .filter(l => /^F\d|^!ERR|^\[JM\]/.test(l))
-            .join("\n");
-          if (lines) devLog("[JM264] decode:\n" + lines);
-        }
-        return result;
+        return exports.jm264_qp_decode(ctxPtr, annexBPtr, annexB.byteLength) === 1;
       } catch (e) {
         if (e instanceof WasiExit) {
-          devLog("[JM264] decode aborted:", (e as InstanceType<typeof WasiExit>).message);
           const hasRecovery = readErrorRecovery();
           destroyed = true;
           return hasRecovery;
         }
-        // RuntimeError: unreachable — WASM trap from assertion or __builtin_trap.
-        // Decoder state is corrupted; mark destroyed so a fresh instance is created.
         if (e instanceof WebAssembly.RuntimeError) {
-          devLog("[JM264] WASM trap during decode:", (e as Error).message);
-          if (capturedOutput.trim()) {
-            const lines = capturedOutput.split("\n")
-              .filter(l => /^F\d|^!ERR|^\[JM\]/.test(l))
-              .join("\n");
-            if (lines) devLog("[JM264] output before trap:\n" + lines);
-          }
           destroyed = true;
           return false;
         }
