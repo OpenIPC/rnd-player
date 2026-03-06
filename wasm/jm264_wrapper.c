@@ -114,13 +114,13 @@ static int g_frame_callback_count = 0;
 
 void jm264_on_frame_decoded(void) {
     g_frame_callback_count++;
-    fprintf(stderr, "[JM] frame_decoded callback #%d\n", g_frame_callback_count);
     if (g_active_ctx && g_active_ctx->initialized) {
-        capture_qp_map(g_active_ctx);
-        fprintf(stderr, "[JM]   frame_ready=%d w=%d h=%d\n",
-            g_active_ctx->frame_ready,
-            g_active_ctx->cached_width_mbs,
-            g_active_ctx->cached_height_mbs);
+        /* Only capture the FIRST frame (IDR) — it has the richest per-MB QP
+         * variation from the encoder's adaptive quantization. Subsequent P/B
+         * frames have minimal spatial variation (row-level QP only). */
+        if (!g_active_ctx->frame_ready) {
+            capture_qp_map(g_active_ctx);
+        }
     }
 }
 
