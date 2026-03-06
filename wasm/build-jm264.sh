@@ -116,25 +116,19 @@ print("    annexb.c patched successfully")
 PYEOF
 fi
 
-# Patch 3: output.c — Capture QP via callback + suppress YUV file writes
+# Patch 3: output.c — Suppress YUV file writes
 OUTPUT_SRC="${JM_DIR}/ldecod/src/output.c"
-if ! grep -q "jm264_on_frame_output" "${OUTPUT_SRC}" 2>/dev/null; then
-  echo "  Patch 3: output.c — QP capture callback + suppress YUV file writes"
+if ! grep -q "WASM: suppress YUV" "${OUTPUT_SRC}" 2>/dev/null; then
+  echo "  Patch 3: output.c — suppress YUV file writes"
 
   python3 -c "
 import re
 with open('${OUTPUT_SRC}', 'r') as f:
     src = f.read()
 
-# Replace write_out_picture with QP capture callback + early return.
-# If previously patched with just 'WASM: suppress', this replaces that too.
 old_pattern = r'(static\s+void\s+write_out_picture\s*\([^)]*\)\s*\{)'
 replacement = r'''\1
-  /* WASM: capture QP data before frame leaves the decoder pipeline,
-   * then suppress YUV output. This fires BEFORE DPB management which
-   * might trigger error(), ensuring we have QP data even on errors. */
-  extern void jm264_on_frame_output(void);
-  jm264_on_frame_output();
+  /* WASM: suppress YUV output — we only need QP data */
   (void)p_Vid; (void)p; (void)p_out;
   return;
 '''
@@ -143,6 +137,44 @@ src = re.sub(old_pattern, replacement, src, count=1)
 with open('${OUTPUT_SRC}', 'w') as f:
     f.write(src)
 "
+fi
+
+# Patch 3b: image.c — Capture QP via callback in exit_picture()
+# The callback is placed AFTER the completeness check (num_dec_mb == PicSizeInMbs)
+# so we only capture QP from fully-decoded frames. Incomplete frames from
+# error recovery (longjmp) have partial mb_data and are skipped.
+IMAGE_EXIT_SRC="${JM_DIR}/ldecod/src/image.c"
+if ! grep -q "jm264_on_frame_decoded" "${IMAGE_EXIT_SRC}" 2>/dev/null; then
+  echo "  Patch 3b: image.c — QP capture callback in exit_picture()"
+
+  IMAGE_EXIT_SRC_PATH="${IMAGE_EXIT_SRC}" python3 << 'PYEOF'
+import re, os
+
+src_path = os.environ.get("IMAGE_EXIT_SRC_PATH")
+with open(src_path, "r") as f:
+    src = f.read()
+
+# Insert callback AFTER the early-return completeness check, not at function entry.
+# The check is: if (*dec_picture==NULL || (num_dec_mb != PicSizeInMbs && ...)) return;
+# We insert right after the closing brace of this if block.
+old_pattern = r"(if \(\*dec_picture==NULL \|\| \(p_Vid->num_dec_mb != p_Vid->PicSizeInMbs && \(p_Vid->yuv_format != YUV444 \|\| !p_Vid->separate_colour_plane_flag\)\)\)\s*\{\s*return;\s*\})"
+replacement = r"""\1
+
+  /* WASM: capture QP from mb_data for complete frames only.
+   * At this point all MBs have been decoded (num_dec_mb == PicSizeInMbs),
+   * so mb_data has valid QP for every macroblock. */
+  {
+    extern void jm264_on_frame_decoded(void);
+    jm264_on_frame_decoded();
+  }"""
+src, n = re.subn(old_pattern, replacement, src, count=1)
+assert n == 1, f"exit_picture completeness-check patch failed to match (n={n})"
+
+with open(src_path, "w") as f:
+    f.write(src)
+
+print("    image.c patched: QP capture after completeness check in exit_picture()")
+PYEOF
 fi
 
 # Patch 4: configfile.c — Skip CLI/config parsing
@@ -304,6 +336,99 @@ print("    image.c patched: picture loss error now non-fatal")
 PYEOF
 fi
 
+# Patch 10: macroblock.c — Initialize currMB->qp in start_macroblock().
+# JM only sets currMB->qp via update_qp() when mb_qp_delta is parsed.
+# For skip/direct MBs, qp is never set and stays 0 (from calloc). Since
+# mb_data is allocated once and never zeroed between frames, skip MBs
+# inherit stale values. Fix: set currMB->qp = currSlice->qp at MB start.
+MACROBLOCK_SRC="${JM_DIR}/ldecod/src/macroblock.c"
+if ! grep -q "WASM: init QP" "${MACROBLOCK_SRC}" 2>/dev/null; then
+  echo "  Patch 10: macroblock.c — init currMB->qp for skip MBs"
+
+  MACROBLOCK_SRC_PATH="${MACROBLOCK_SRC}" python3 << 'PYEOF'
+import re, os
+
+src_path = os.environ.get("MACROBLOCK_SRC_PATH")
+with open(src_path, "r", encoding="latin-1") as f:
+    src = f.read()
+
+# Insert qp initialization right after delta_quant = 0 in start_macroblock
+old = '  (*currMB)->delta_quant     = 0;'
+new = '''  (*currMB)->delta_quant     = 0;
+  /* WASM: init QP - skip/direct MBs don't parse mb_qp_delta, so
+   * update_qp() is never called for them. Initialize to slice QP. */
+  update_qp(*currMB, currSlice->qp);'''
+src = src.replace(old, new, 1)
+
+with open(src_path, "w", encoding="latin-1") as f:
+    f.write(src)
+
+print("    macroblock.c patched: currMB->qp initialized in start_macroblock")
+PYEOF
+fi
+
+# Patch 11: Make intra prediction mode errors non-fatal.
+# Real-world encoders (x264, etc.) produce streams where JM's strict
+# prediction availability checks fail. These errors are harmless for QP
+# extraction — we only need QP values, not correct pixel output.
+# Replace error() calls with printf() + return in:
+#   - intra16x16_pred_normal.c (VERT/HOR/PLANE_16)
+#   - intra16x16_pred.c (same, for generic path)
+#   - intra16x16_pred_mbaff.c (same, for MBAFF)
+#   - intra_chroma_pred.c (HOR/VERT/PLANE_8)
+#   - intra_chroma_pred_mbaff.c (same, for MBAFF)
+
+INTRA16_NORMAL="${JM_DIR}/ldecod/src/intra16x16_pred_normal.c"
+INTRA16_GENERIC="${JM_DIR}/ldecod/src/intra16x16_pred.c"
+INTRA16_MBAFF="${JM_DIR}/ldecod/src/intra16x16_pred_mbaff.c"
+CHROMA_PRED="${JM_DIR}/ldecod/src/intra_chroma_pred.c"
+CHROMA_MBAFF="${JM_DIR}/ldecod/src/intra_chroma_pred_mbaff.c"
+
+for f in "${INTRA16_NORMAL}" "${INTRA16_GENERIC}" "${INTRA16_MBAFF}"; do
+  if [ -f "$f" ] && grep -q 'error.*"invalid 16x16 intra pred Mode' "$f" 2>/dev/null; then
+    echo "  Patch 11: $(basename $f) — make intra16x16 prediction errors non-fatal"
+    sed -i.bak \
+      -e 's/error ("invalid 16x16 intra pred Mode VERT_PRED_16",500);/printf("warning: 16x16 VERT_PRED_16 not available\\n"); return DECODING_OK;/' \
+      -e 's/error ("invalid 16x16 intra pred Mode HOR_PRED_16",500);/printf("warning: 16x16 HOR_PRED_16 not available\\n"); return DECODING_OK;/' \
+      -e 's/error ("invalid 16x16 intra pred Mode PLANE_16",500);/printf("warning: 16x16 PLANE_16 not available\\n"); return DECODING_OK;/' \
+      "$f"
+  fi
+done
+
+for f in "${CHROMA_PRED}" "${CHROMA_MBAFF}"; do
+  if [ -f "$f" ] && grep -q 'error("unexpected.*chroma intra prediction mode' "$f" 2>/dev/null; then
+    echo "  Patch 11: $(basename $f) — make chroma prediction errors non-fatal"
+    sed -i.bak \
+      -e 's/error("unexpected HOR_PRED_8 chroma intra prediction mode",-1);/{ printf("warning: chroma HOR_PRED_8 not available\\n"); return; }/' \
+      -e 's/error("unexpected VERT_PRED_8 chroma intra prediction mode",-1);/{ printf("warning: chroma VERT_PRED_8 not available\\n"); return; }/' \
+      -e 's/error("unexpected PLANE_8 chroma intra prediction mode",-1);/{ printf("warning: chroma PLANE_8 not available\\n"); return; }/' \
+      "$f"
+  fi
+done
+
+# Also make RefPicList "no reference picture" non-fatal in image.c
+IMAGE_REFPIC="${JM_DIR}/ldecod/src/image.c"
+if grep -q "error.*RefPicList0.*no reference picture.*invalid bitstream" "${IMAGE_REFPIC}" 2>/dev/null; then
+  echo "  Patch 11: image.c — make RefPicList errors non-fatal"
+  IMAGE_REFPIC_PATH="${IMAGE_REFPIC}" python3 << 'PYEOF'
+import os
+src_path = os.environ.get("IMAGE_REFPIC_PATH")
+with open(src_path, "r") as f:
+    src = f.read()
+src = src.replace(
+    '''error("RefPicList0[ num_ref_idx_l0_active_minus1 ] is equal to 'no reference picture', invalid bitstream",500);''',
+    '''printf("warning: RefPicList0 has no reference picture\\n");'''
+)
+src = src.replace(
+    '''error("RefPicList1[ num_ref_idx_l1_active_minus1 ] is equal to 'no reference picture', invalid bitstream",500);''',
+    '''printf("warning: RefPicList1 has no reference picture\\n");'''
+)
+with open(src_path, "w") as f:
+    f.write(src)
+print("    image.c patched: RefPicList errors non-fatal")
+PYEOF
+fi
+
 # ── Collect source files ──
 echo ""
 echo "Collecting source files..."
@@ -356,6 +481,7 @@ emcc -O2 \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s MALLOC=emmalloc \
   -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
+  -s SUPPORT_LONGJMP=0 \
   -std=gnu99 \
   -fno-strict-aliasing \
   -fsigned-char \

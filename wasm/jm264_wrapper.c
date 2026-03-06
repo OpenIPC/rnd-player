@@ -8,21 +8,22 @@
  * QP values are extracted from p_Vid->mb_data[mb_addr].qp after each
  * frame decode completes.
  *
- * Error recovery strategy (3 layers):
+ * Error recovery strategy (2 layers):
  *
  *   Layer 1 — Prevent errors at source:
- *     - conceal_mode=1: JM fills frame gaps with placeholder references
  *     - non_conforming_stream=1: reference picture warnings are printf, not error()
  *     - mbuffer.c patches: DPB size violations are clamped, not fatal
- *     - mb_prediction.c/mc_direct.c patches: temporal direct errors use fallback
+ *     - intra prediction patches: mode errors are printf + return, not error()
  *
- *   Layer 2 — Capture QP during frame output:
- *     - write_out_picture() calls jm264_on_frame_output() which captures QP
- *       from p_Vid->mb_data BEFORE any DPB management that might trigger error()
+ *   Layer 2 — Capture QP at frame decode completion:
+ *     - exit_picture() calls jm264_on_frame_decoded() which captures QP
+ *       from p_Vid->mb_data right after decode, before store_picture_in_dpb
  *
- *   Layer 3 — Error recovery:
- *     - error() captures QP to the output buffer before calling exit()
- *     - JS reads the recovery struct from WASM linear memory after WasiExit
+ *   error() override: just prints the message and returns. Since most fatal
+ *   errors are already patched to non-fatal (Layer 1), error() is rarely
+ *   called. When it is, returning may leave JM in an inconsistent state,
+ *   but for QP extraction we only need update_qp()/start_macroblock() to
+ *   run — pixel correctness doesn't matter.
  *
  * Build: see build-jm264.sh
  */
@@ -34,7 +35,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
 /* ── Memory buffer for Annex B input (referenced by patched annexb.c) ── */
 const unsigned char *g_mem_buf = NULL;
 int g_mem_pos = 0;
@@ -106,43 +106,53 @@ static void capture_qp_map(QpContext *ctx) {
 }
 
 /**
- * Called from patched write_out_picture() in output.c when JM outputs a frame.
- * This fires BEFORE DPB management which might trigger error(), ensuring we
- * capture QP data even if the decode loop errors out afterward.
+ * Called from patched exit_picture() in image.c right after a picture
+ * finishes decoding, BEFORE store_picture_in_dpb. At this point mb_data
+ * is guaranteed to have the just-decoded frame's QP values.
  */
-void jm264_on_frame_output(void) {
+static int g_frame_callback_count = 0;
+
+void jm264_on_frame_decoded(void) {
+    g_frame_callback_count++;
+    fprintf(stderr, "[JM] frame_decoded callback #%d\n", g_frame_callback_count);
     if (g_active_ctx && g_active_ctx->initialized) {
         capture_qp_map(g_active_ctx);
+        fprintf(stderr, "[JM]   frame_ready=%d w=%d h=%d\n",
+            g_active_ctx->frame_ready,
+            g_active_ctx->cached_width_mbs,
+            g_active_ctx->cached_height_mbs);
     }
 }
 
 /**
  * Override JM's error() function.
  *
- * Before calling exit(), captures any available QP data to the pre-allocated
- * output buffer so JS can read it from WASM linear memory after WasiExit.
+ * Just prints the error and returns. Most fatal errors have already been
+ * patched to non-fatal (prediction modes, DPB size, RefPicList, picture loss).
+ * Returning from error() may leave JM in an inconsistent state, but for QP
+ * extraction we only need start_macroblock()/update_qp() to run — pixel
+ * correctness doesn't matter.
+ *
+ * Previously used longjmp (SUPPORT_LONGJMP=wasm) but this caused different
+ * behavior in Chrome Web Worker vs Node.js V8 — see docs/qp-heatmap-browser-bug.md.
  */
+/**
+ * Override exit() to prevent atexit handlers from corrupting heap state.
+ * When _start() calls exit(0) after main() returns, the default exit()
+ * runs atexit handlers (which may free allocator metadata) before calling
+ * _Exit → proc_exit. By overriding, we skip straight to _Exit.
+ */
+_Noreturn void exit(int status) {
+    _Exit(status);
+}
+
+static int g_error_call_count = 0;
+
 void error(char *text, int code) {
-    fprintf(stderr, "JM error(%d): %s\n", code, text);
-
-    /* Try to capture QP data before dying */
-    if (g_active_ctx && g_active_ctx->initialized) {
-        capture_qp_map(g_active_ctx);
-        if (g_active_ctx->frame_ready && g_qp_out_buf) {
-            int total = g_active_ctx->cached_width_mbs * g_active_ctx->cached_height_mbs;
-            if (total > g_qp_out_max) total = g_qp_out_max;
-            if (total > g_active_ctx->qp_cache_size) total = g_active_ctx->qp_cache_size;
-            if (total > 0) {
-                memcpy(g_qp_out_buf, g_active_ctx->qp_cache, total);
-                g_error_recovery.valid = 1;
-                g_error_recovery.count = total;
-                g_error_recovery.width_mbs = g_active_ctx->cached_width_mbs;
-                g_error_recovery.height_mbs = g_active_ctx->cached_height_mbs;
-            }
-        }
-    }
-
-    exit(code);
+    g_error_call_count++;
+    fprintf(stderr, "\n!ERR#%d(%d): %s\n", g_error_call_count, code, text);
+    /* Just return — caller will continue with potentially corrupt state.
+     * This is safe for QP extraction purposes. */
 }
 
 /* ── Exported API ── */
@@ -248,22 +258,38 @@ int jm264_qp_decode(QpContext *ctx, const uint8_t *annexb_buf, int len) {
     /* Ensure non_conforming_stream stays set (SPS parsing may reset it) */
     p_Vid->non_conforming_stream = 1;
 
+    /* Verify data integrity — checksum the Annex B buffer in WASM memory */
+    {
+        uint32_t cksum = 0;
+        for (int i = 0; i < len; i++) cksum = cksum * 31 + annexb_buf[i];
+        fprintf(stderr, "[JM] annexb: len=%d cksum=%u head=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+            len, cksum,
+            annexb_buf[0], annexb_buf[1], annexb_buf[2], annexb_buf[3],
+            annexb_buf[4], annexb_buf[5], annexb_buf[6], annexb_buf[7]);
+    }
+
     /* Decode frames until buffer is exhausted.
-     * QP data is captured in two places:
-     *   1. write_out_picture → jm264_on_frame_output → capture_qp_map
-     *   2. After each DecodeOneFrame return (backup)
-     * If JM encounters a fatal error, error() copies QP to the output
-     * buffer before exit(), and JS reads it from WASM memory. */
+     * QP data is captured via exit_picture() → jm264_on_frame_decoded()
+     * callback (Layer 2) which fires for each complete frame. */
     DecodedPicList *pDecPicList = NULL;
     int iRet;
+    int loop_count = 0;
+    g_frame_callback_count = 0;
+    g_error_call_count = 0;
     do {
         iRet = DecodeOneFrame(&pDecPicList);
-
-        /* Backup capture: also capture after successful return */
-        if (iRet == DEC_SUCCEED || iRet == DEC_EOS) {
-            capture_qp_map(ctx);
-        }
+        loop_count++;
+        int mb = (int)p_Vid->num_dec_mb;
+        int total = (int)p_Vid->PicSizeInMbs;
+        int complete = (mb == total) ? 1 : 0;
+        /* Log every frame compactly */
+        fprintf(stderr, "F%d:mb=%d/%d%s ", loop_count, mb, total,
+            complete ? "✓" : "");
+        if (loop_count % 10 == 0) fprintf(stderr, "\n");
     } while (iRet == DEC_SUCCEED);
+
+    fprintf(stderr, "\n[JM] done: %d iters, %d complete, %d errors, frame_ready=%d\n",
+        loop_count, g_frame_callback_count, g_error_call_count, ctx->frame_ready);
 
     g_active_ctx = NULL;
 
@@ -289,11 +315,6 @@ int jm264_qp_flush(QpContext *ctx) {
 
     DecodedPicList *pDecPicList = NULL;
     FinitDecoder(&pDecPicList);
-
-    VideoParameters *p_Vid = p_Dec->p_Vid;
-    if (p_Vid->mb_data && p_Vid->PicWidthInMbs > 0) {
-        capture_qp_map(ctx);
-    }
 
     g_active_ctx = NULL;
     return ctx->frame_ready;

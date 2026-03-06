@@ -11,6 +11,8 @@ export interface QpMapDecodeRequest {
   height: number;
   /** Codec type: h264 uses JM decoder, h265 uses HM decoder, av1 uses dav1d decoder. */
   codec: "h264" | "h265" | "av1";
+  /** ClearKey hex string for CENC decryption (32 hex chars). */
+  clearKeyHex?: string;
 }
 
 export type QpMapWorkerRequest = QpMapDecodeRequest;

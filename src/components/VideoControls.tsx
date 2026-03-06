@@ -253,7 +253,7 @@ export default function VideoControls({
   const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio);
 
   // ── QP heatmap (H.264 macroblock QP visualization) ──
-  const qpHeatmap = useQpHeatmap(player, videoEl, showQpHeatmap && moduleConfig.qpHeatmap, !playing);
+  const qpHeatmap = useQpHeatmap(player, videoEl, showQpHeatmap && moduleConfig.qpHeatmap, !playing, clearKey);
 
   // Identify active Track A in allAudioTracks (for AudioCompare filtering/sorting)
   const trackAId = useMemo(() => {
