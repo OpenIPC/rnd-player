@@ -139,7 +139,8 @@ function generateTestStream(qp, size = "320x240", frames = 3) {
   try {
     execSync(
       `ffmpeg -f lavfi -i "testsrc=duration=${frames / 25}:size=${size}:rate=25" ` +
-      `-c:v libx264 -qp ${qp} -g 25 -bf 0 -pix_fmt yuv420p -y "${outPath}" 2>/dev/null`,
+      `-c:v libx264 -x264-params "qp=${qp}:ipratio=1.0:pbratio=1.0:ref=1:bframes=0" ` +
+      `-pix_fmt yuv420p -y "${outPath}" 2>/dev/null`,
       { stdio: "pipe" },
     );
     return outPath;
@@ -411,7 +412,7 @@ async function testFmp4Pipeline(exp) {
   try {
     execSync(
       `ffmpeg -f lavfi -i "testsrc=duration=0.12:size=320x240:rate=25" ` +
-      `-c:v libx264 -qp 27 -g 25 -bf 0 -pix_fmt yuv420p ` +
+      `-c:v libx264 -x264-params "qp=27:ipratio=1.0:pbratio=1.0:ref=1:bframes=0" -pix_fmt yuv420p ` +
       `-movflags +frag_keyframe+default_base_moof -y "${fmp4Path}" 2>/dev/null`,
       { stdio: "pipe" },
     );
