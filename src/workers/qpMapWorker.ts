@@ -23,17 +23,6 @@ import {
 } from "./cencDecrypt";
 import type { QpMapWorkerRequest, QpMapWorkerResponse } from "../types/qpMapWorker.types";
 
-/** Send worker logs to Vite dev server terminal via sync XHR (immune to event loop blocking) */
-function wLog(...args: unknown[]) {
-  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-  console.log(msg);
-  try {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/__log', false); // synchronous
-    xhr.send(JSON.stringify([msg]));
-  } catch { /* ignore */ }
-}
-
 /** 4-byte Annex B start code. */
 const START_CODE = new Uint8Array([0x00, 0x00, 0x00, 0x01]);
 
@@ -407,9 +396,7 @@ async function extractSamplesDirectly(
 }
 
 async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
-  const { initSegment, mediaSegment, targetTime, codec, clearKeyHex } = msg;
-  wLog("[QP worker] handleDecode: codec=%s targetTime=%f, init=%d bytes, media=%d bytes, encrypted=%s",
-    codec, targetTime, initSegment.byteLength, mediaSegment.byteLength, !!clearKeyHex);
+  const { initSegment, mediaSegment, codec, clearKeyHex } = msg;
 
   let widthMbs: number;
   let heightMbs: number;
@@ -420,7 +407,6 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
   if (codec === "av1") {
     // AV1 path: uses mp4box.js for sample extraction (no decode-order dependency)
     const samples = await extractAllSamples(initSegment, mediaSegment);
-    wLog("[QP worker] AV1 samples: %d", samples.length);
     if (samples.length === 0) {
       const response: QpMapWorkerResponse = { type: "error", message: "No video samples found in segment" };
       self.postMessage(response);
@@ -434,8 +420,6 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
       self.postMessage(response);
       return;
     }
-    wLog("[QP worker] av1C config OBUs: %d bytes", configObus.length);
-
     // AV1 samples contain raw OBUs — concatenate all sample data
     let totalSampleSize = 0;
     for (const sample of samplesToFeed) {
@@ -451,32 +435,23 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     }
 
     const obuBuffer = buildObuBuffer(configObus, sampleData);
-    wLog("[QP worker] OBU buffer: %d bytes (%d config + %d sample)",
-      obuBuffer.length, configObus.length, sampleData.length);
 
     let decoder;
     try {
       decoder = await createDav1dQpDecoder();
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      wLog("[QP worker] dav1d decoder creation failed:", errMsg);
       const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
       self.postMessage(response);
       return;
     }
 
     try {
-      wLog("[QP worker] calling dav1d decodeFrame (%d bytes)...", obuBuffer.length);
-      const t0 = performance.now();
       const frameReady = decoder.decodeFrame(obuBuffer);
-      wLog("[QP worker] dav1d decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
-        frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
 
       let hasFrame = frameReady;
       if (!hasFrame) {
-        const flushed = decoder.flush();
-        wLog("[QP worker] dav1d flush → %s", flushed);
-        if (flushed) hasFrame = true;
+        if (decoder.flush()) hasFrame = true;
       }
 
       if (!hasFrame) {
@@ -500,7 +475,6 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     const paramSets = isHevc
       ? extractParameterSetsHEVC(initSegment)
       : extractParameterSets(initSegment);
-    wLog("[QP worker] paramSets: %d NALUs", paramSets.length);
 
     const mediaData = new Uint8Array(mediaSegment);
 
@@ -525,16 +499,12 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
       sencSamples = parseSencFromSegment(mediaSegment, ivSize);
       if (sencSamples.length > 0) {
         cryptoKey = await importClearKey(clearKeyHex);
-        wLog("[QP worker] CENC: ivSize=%d, senc samples=%d", ivSize, sencSamples.length);
-      } else {
-        wLog("[QP worker] no senc box — segment may be unencrypted");
       }
     }
 
     // Extract VCL NALUs directly from trun/mdat (bypasses mp4box.js which
     // reorders samples by CTS, breaking the decode-order requirement).
     const allNalus = await extractSamplesDirectly(mediaData, 4, isHevc, cryptoKey, sencSamples);
-    wLog("[QP worker] extracted %d VCL NALUs (direct trun/mdat)", allNalus.length);
 
     const annexB = buildAnnexB(paramSets, allNalus);
 
@@ -546,24 +516,17 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
         decoder = await createHm265QpDecoder();
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        wLog("[QP worker] HM decoder creation failed:", errMsg);
         const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
         self.postMessage(response);
         return;
       }
 
       try {
-        wLog("[QP worker] calling HM decodeFrame (%d bytes)...", annexB.length);
-        const t0 = performance.now();
         const frameReady = decoder.decodeFrame(annexB);
-        wLog("[QP worker] HM decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
-          frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
 
         let hasFrame = frameReady;
         if (!hasFrame) {
-          const flushed = decoder.flush();
-          wLog("[QP worker] HM flush → %s", flushed);
-          if (flushed) hasFrame = true;
+          if (decoder.flush()) hasFrame = true;
         }
 
         if (!hasFrame) {
@@ -583,29 +546,20 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     } else {
       let decoder;
       try {
-        wLog("[QP worker] creating JM decoder...");
         decoder = await createJm264QpDecoder();
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        wLog("[QP worker] JM decoder creation failed:", errMsg);
-        if (err instanceof Error && err.stack) wLog("[QP worker] stack:", err.stack);
         const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
         self.postMessage(response);
         return;
       }
 
       try {
-        wLog("[QP worker] calling JM decodeFrame (%d bytes)...", annexB.length);
-        const t0 = performance.now();
         const frameReady = decoder.decodeFrame(annexB);
-        wLog("[QP worker] JM decodeFrame → %s, widthMbs=%d, heightMbs=%d (%.0fms)",
-          frameReady, decoder.getWidthMbs(), decoder.getHeightMbs(), performance.now() - t0);
 
         let hasFrame = frameReady;
         if (!hasFrame) {
-          const flushed = decoder.flush();
-          wLog("[QP worker] JM flush → %s", flushed);
-          if (flushed) hasFrame = true;
+          if (decoder.flush()) hasFrame = true;
         }
 
         if (!hasFrame) {
@@ -660,10 +614,6 @@ self.onmessage = async (e: MessageEvent<QpMapWorkerRequest>) => {
     }
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    wLog("[QP worker] uncaught error:", msg);
-    if (err instanceof Error && err.stack) {
-      wLog("[QP worker] stack:", err.stack);
-    }
     const response: QpMapWorkerResponse = {
       type: "error",
       message: msg,
