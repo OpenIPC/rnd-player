@@ -1,6 +1,30 @@
 import { execSync } from 'child_process'
-import { defineConfig, loadEnv } from 'vite'
+import { appendFileSync } from 'fs'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+
+/** Dev-only plugin: receives browser console logs via POST /__log and writes to file */
+function devLogRelay(): Plugin {
+  return {
+    name: 'dev-log-relay',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/__log', (req, res) => {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        let body = ''
+        req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        req.on('end', () => {
+          try {
+            const lines = JSON.parse(body) as string[]
+            for (const line of lines) console.log('[browser]', line)
+            appendFileSync('/tmp/qp-browser-log.txt', lines.join('\n') + '\n')
+          } catch { console.log('[browser]', body) }
+          res.writeHead(200); res.end('ok')
+        })
+      })
+    },
+  }
+}
 
 function getGitCommitHash(): string {
   try {
@@ -84,7 +108,7 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       allowedHosts: ['localhost'],
     },
-    plugins: [react()],
+    plugins: [react(), devLogRelay()],
     test: {
       globals: true,
       environment: 'jsdom',
