@@ -3,6 +3,13 @@ import shaka from "shaka-player";
 import { extractInitSegmentUrl } from "../utils/extractInitSegmentUrl";
 import type { QpMapWorkerRequest, QpMapWorkerResponse } from "../types/qpMapWorker.types";
 
+/** Relay logs to Vite dev server terminal */
+function qpLog(...args: unknown[]) {
+  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  console.log(msg);
+  fetch(`/__log`, { method: 'POST', body: JSON.stringify([msg]) }).catch(() => {});
+}
+
 export interface QpHeatmapData {
   qpValues: Uint8Array;
   widthMbs: number;
@@ -31,6 +38,7 @@ export function useQpHeatmap(
   videoEl: HTMLVideoElement,
   enabled: boolean,
   paused: boolean,
+  clearKey?: string,
 ): UseQpHeatmapResult {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<QpHeatmapData | null>(null);
@@ -77,7 +85,7 @@ export function useQpHeatmap(
         { type: "module" },
       );
       w.onerror = (e) => {
-        console.error("[QP heatmap] worker error:", e.message ?? e);
+        qpLog("[QP heatmap] worker error:", e.message ?? e);
       };
       workerRef.current = w;
     }
@@ -89,18 +97,18 @@ export function useQpHeatmap(
 
   const requestQpMap = useCallback(async () => {
     if (!enabled || !paused || !available) {
-      console.debug("[QP heatmap] skip: enabled=%s paused=%s available=%s", enabled, paused, available);
+      qpLog("[QP heatmap] skip: enabled=%s paused=%s available=%s", enabled, paused, available);
       return;
     }
     const worker = workerRef.current;
     if (!worker) {
-      console.debug("[QP heatmap] skip: worker not ready");
+      qpLog("[QP heatmap] skip: worker not ready");
       return;
     }
 
     const manifest = player.getManifest();
     if (!manifest?.variants?.length) {
-      console.debug("[QP heatmap] skip: no manifest/variants");
+      qpLog("[QP heatmap] skip: no manifest/variants");
       return;
     }
 
@@ -108,7 +116,7 @@ export function useQpHeatmap(
     const tracks = player.getVariantTracks();
     const active = tracks.find((t) => t.active);
     if (!active) {
-      console.debug("[QP heatmap] skip: no active track");
+      qpLog("[QP heatmap] skip: no active track");
       return;
     }
 
@@ -120,14 +128,14 @@ export function useQpHeatmap(
       }
     }
     if (!videoStream) {
-      console.debug("[QP heatmap] skip: no matching video stream for %dx%d", active.width, active.height);
+      qpLog("[QP heatmap] skip: no matching video stream for %dx%d", active.width, active.height);
       return;
     }
 
     await videoStream.createSegmentIndex();
     const segmentIndex = videoStream.segmentIndex;
     if (!segmentIndex) {
-      console.debug("[QP heatmap] skip: no segment index");
+      qpLog("[QP heatmap] skip: no segment index");
       return;
     }
 
@@ -137,18 +145,18 @@ export function useQpHeatmap(
     const iter = segmentIndex[Symbol.iterator]();
     const firstResult = iter.next();
     if (firstResult.done) {
-      console.debug("[QP heatmap] skip: empty segment index");
+      qpLog("[QP heatmap] skip: empty segment index");
       return;
     }
     const firstRef = firstResult.value;
     if (!firstRef) {
-      console.debug("[QP heatmap] skip: null first segment ref");
+      qpLog("[QP heatmap] skip: null first segment ref");
       return;
     }
 
     const initSegmentUrl = extractInitSegmentUrl(firstRef);
     if (!initSegmentUrl) {
-      console.debug("[QP heatmap] skip: no init segment URL");
+      qpLog("[QP heatmap] skip: no init segment URL");
       return;
     }
 
@@ -167,13 +175,13 @@ export function useQpHeatmap(
       }
     }
     if (!targetRef) {
-      console.debug("[QP heatmap] skip: no segment for time %f", currentTime);
+      qpLog("[QP heatmap] skip: no segment for time %f", currentTime);
       return;
     }
 
     const uris = targetRef.getUris();
     if (uris.length === 0) {
-      console.debug("[QP heatmap] skip: segment has no URIs");
+      qpLog("[QP heatmap] skip: segment has no URIs");
       return;
     }
 
@@ -208,11 +216,12 @@ export function useQpHeatmap(
         width: active.width ?? 0,
         height: active.height ?? 0,
         codec: isAv1 ? "av1" : isH265 ? "h265" : "h264",
+        clearKeyHex: clearKey,
       };
 
       worker.onmessage = (e: MessageEvent<QpMapWorkerResponse>) => {
         if (requestIdRef.current !== requestId) {
-          console.debug("[QP heatmap] dropping stale response (id %d, current %d): %s",
+          qpLog("[QP heatmap] dropping stale response (id %d, current %d): %s",
             requestId, requestIdRef.current, e.data.type === "error" ? e.data.message : e.data.type);
           return;
         }
@@ -227,26 +236,26 @@ export function useQpHeatmap(
             maxQp: e.data.maxQp,
           });
         } else if (e.data.type === "error") {
-          console.warn("[QP heatmap]", e.data.message);
+          qpLog("[QP heatmap]", e.data.message);
           setData(null);
         }
       };
 
-      console.debug("[QP heatmap] posting to worker: time=%f, init=%d bytes, media=%d bytes",
-        currentTime, initSegment.byteLength, mediaSegment.byteLength);
+      qpLog("[QP heatmap] posting to worker: time=%f, init=%d bytes, media=%d bytes, encrypted=%s",
+        currentTime, initSegment.byteLength, mediaSegment.byteLength, !!clearKey);
       worker.postMessage(msg, [initSegment, mediaSegment]);
     } catch (err) {
       if (requestIdRef.current === requestId) {
         setLoading(false);
-        console.warn("[QP heatmap] fetch error:", err);
+        qpLog("[QP heatmap] fetch error:", err);
       }
     }
-  }, [player, videoEl, enabled, paused, available, isH265, isAv1]);
+  }, [player, videoEl, enabled, paused, available, isH265, isAv1, clearKey]);
 
   // Trigger on seeked (when paused) and on activation while paused
   useEffect(() => {
     if (!enabled || !paused || !available) return;
-    console.debug("[QP heatmap] trigger effect: enabled=%s paused=%s available=%s", enabled, paused, available);
+    qpLog("[QP heatmap] trigger effect: enabled=%s paused=%s available=%s", enabled, paused, available);
 
     // Trigger immediately for current frame
     requestQpMap();
