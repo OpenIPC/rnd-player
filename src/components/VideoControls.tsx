@@ -1694,13 +1694,13 @@ export default function VideoControls({
         </Suspense>
       )}
 
-      {/* QP heatmap overlay — portaled into containerEl, positioned over video */}
-      {moduleConfig.qpHeatmap && showQpHeatmap && qpHeatmap.data &&
+      {/* QP heatmap overlay — portaled into video's parent (.vp-video-area), not full container */}
+      {moduleConfig.qpHeatmap && showQpHeatmap && qpHeatmap.data && videoEl.parentElement &&
         createPortal(
           <Suspense fallback={null}>
             <QpHeatmapOverlay videoEl={videoEl} data={qpHeatmap.data} />
           </Suspense>,
-          containerEl
+          videoEl.parentElement
         )}
 
       {/* Help modal — portaled to body */}
