@@ -12,14 +12,13 @@
 
 import { createFile, MP4BoxBuffer } from "mp4box";
 import type { Sample } from "mp4box";
-import { createJm264QpDecoder, type Jm264QpInstance } from "../wasm/jm264Decoder";
-import { createHm265QpDecoder, type Hm265QpInstance } from "../wasm/hm265Decoder";
-import { createDav1dQpDecoder, type Dav1dQpInstance } from "../wasm/dav1dDecoder";
+import { createJm264QpDecoder } from "../wasm/jm264Decoder";
+import { createHm265QpDecoder } from "../wasm/hm265Decoder";
+import { createDav1dQpDecoder } from "../wasm/dav1dDecoder";
 import {
   importClearKey,
   parseSencFromSegment,
   decryptSample,
-  findBoxData,
   extractTenc,
 } from "./cencDecrypt";
 import type { QpMapWorkerRequest, QpMapWorkerResponse } from "../types/qpMapWorker.types";
@@ -39,31 +38,10 @@ function wLog(...args: unknown[]) {
 const START_CODE = new Uint8Array([0x00, 0x00, 0x00, 0x01]);
 
 /**
- * Cached decoder instances — reused across decode requests to avoid
- * repeatedly allocating a new 64MB WASM instance.
- * Nulled after WasiExit (decoder destroyed); recreated on next request.
+ * Fresh decoder per request — JM/HM accumulate internal state (DPB, frame_num
+ * counters) that corrupts subsequent decodes when segments jump in time.
+ * WASM module is cached at the loader level so re-instantiation is cheap.
  */
-let cachedJmDecoder: Jm264QpInstance | null = null;
-let cachedHmDecoder: Hm265QpInstance | null = null;
-let cachedDav1dDecoder: Dav1dQpInstance | null = null;
-
-async function getJmDecoder(): Promise<Jm264QpInstance> {
-  if (cachedJmDecoder) return cachedJmDecoder;
-  cachedJmDecoder = await createJm264QpDecoder();
-  return cachedJmDecoder;
-}
-
-async function getHmDecoder(): Promise<Hm265QpInstance> {
-  if (cachedHmDecoder) return cachedHmDecoder;
-  cachedHmDecoder = await createHm265QpDecoder();
-  return cachedHmDecoder;
-}
-
-async function getDav1dDecoder(): Promise<Dav1dQpInstance> {
-  if (cachedDav1dDecoder) return cachedDav1dDecoder;
-  cachedDav1dDecoder = await createDav1dQpDecoder();
-  return cachedDav1dDecoder;
-}
 
 /**
  * Extract ALL samples from a media segment using the init segment.
@@ -478,7 +456,7 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
 
     let decoder;
     try {
-      decoder = await getDav1dDecoder();
+      decoder = await createDav1dQpDecoder();
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       wLog("[QP worker] dav1d decoder creation failed:", errMsg);
@@ -487,35 +465,35 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
       return;
     }
 
-    wLog("[QP worker] calling dav1d decodeFrame (%d bytes)...", obuBuffer.length);
-    const t0 = performance.now();
-    const frameReady = decoder.decodeFrame(obuBuffer);
-    wLog("[QP worker] dav1d decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
-      frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
+    try {
+      wLog("[QP worker] calling dav1d decodeFrame (%d bytes)...", obuBuffer.length);
+      const t0 = performance.now();
+      const frameReady = decoder.decodeFrame(obuBuffer);
+      wLog("[QP worker] dav1d decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
+        frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
 
-    let hasFrame = frameReady;
-    if (!hasFrame) {
-      const flushed = decoder.flush();
-      wLog("[QP worker] dav1d flush → %s", flushed);
-      if (flushed) hasFrame = true;
+      let hasFrame = frameReady;
+      if (!hasFrame) {
+        const flushed = decoder.flush();
+        wLog("[QP worker] dav1d flush → %s", flushed);
+        if (flushed) hasFrame = true;
+      }
+
+      if (!hasFrame) {
+        const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
+        self.postMessage(response);
+        return;
+      }
+
+      const result = decoder.copyQps();
+      qpValues = result.qpValues;
+      count = result.count;
+      widthMbs = decoder.getWidthBlocks();
+      heightMbs = decoder.getHeightBlocks();
+      blockSize = 8;
+    } finally {
+      if (!decoder.destroyed) decoder.destroy();
     }
-
-    if (decoder.destroyed) {
-      cachedDav1dDecoder = null;
-    }
-
-    if (!hasFrame) {
-      const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
-      self.postMessage(response);
-      return;
-    }
-
-    const result = decoder.copyQps();
-    qpValues = result.qpValues;
-    count = result.count;
-    widthMbs = decoder.getWidthBlocks();
-    heightMbs = decoder.getHeightBlocks();
-    blockSize = 8;
   } else {
     // H.264/H.265 path: Annex B with NALU parsing
     const isHevc = codec === "h265";
@@ -565,7 +543,7 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
     if (isH265) {
       let decoder;
       try {
-        decoder = await getHmDecoder();
+        decoder = await createHm265QpDecoder();
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         wLog("[QP worker] HM decoder creation failed:", errMsg);
@@ -574,40 +552,39 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
         return;
       }
 
-      wLog("[QP worker] calling HM decodeFrame (%d bytes)...", annexB.length);
-      const t0 = performance.now();
-      const frameReady = decoder.decodeFrame(annexB);
-      wLog("[QP worker] HM decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
-        frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
+      try {
+        wLog("[QP worker] calling HM decodeFrame (%d bytes)...", annexB.length);
+        const t0 = performance.now();
+        const frameReady = decoder.decodeFrame(annexB);
+        wLog("[QP worker] HM decodeFrame → %s, widthBlocks=%d, heightBlocks=%d (%.0fms)",
+          frameReady, decoder.getWidthBlocks(), decoder.getHeightBlocks(), performance.now() - t0);
 
-      let hasFrame = frameReady;
-      if (!hasFrame) {
-        const flushed = decoder.flush();
-        wLog("[QP worker] HM flush → %s", flushed);
-        if (flushed) hasFrame = true;
+        let hasFrame = frameReady;
+        if (!hasFrame) {
+          const flushed = decoder.flush();
+          wLog("[QP worker] HM flush → %s", flushed);
+          if (flushed) hasFrame = true;
+        }
+
+        if (!hasFrame) {
+          const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
+          self.postMessage(response);
+          return;
+        }
+
+        const result = decoder.copyQps();
+        qpValues = result.qpValues;
+        count = result.count;
+        widthMbs = decoder.getWidthBlocks();
+        heightMbs = decoder.getHeightBlocks();
+      } finally {
+        if (!decoder.destroyed) decoder.destroy();
       }
-
-      if (decoder.destroyed) {
-        cachedHmDecoder = null;
-      }
-
-      if (!hasFrame) {
-        const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
-        self.postMessage(response);
-        return;
-      }
-
-      const result = decoder.copyQps();
-      qpValues = result.qpValues;
-      count = result.count;
-      widthMbs = decoder.getWidthBlocks();
-      heightMbs = decoder.getHeightBlocks();
     } else {
       let decoder;
       try {
-        wLog("[QP worker] getting JM decoder...");
-        decoder = await getJmDecoder();
-        wLog("[QP worker] JM decoder ready, destroyed=", decoder.destroyed);
+        wLog("[QP worker] creating JM decoder...");
+        decoder = await createJm264QpDecoder();
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         wLog("[QP worker] JM decoder creation failed:", errMsg);
@@ -617,34 +594,34 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
         return;
       }
 
-      wLog("[QP worker] calling JM decodeFrame (%d bytes)...", annexB.length);
-      const t0 = performance.now();
-      const frameReady = decoder.decodeFrame(annexB);
-      wLog("[QP worker] JM decodeFrame → %s, widthMbs=%d, heightMbs=%d (%.0fms)",
-        frameReady, decoder.getWidthMbs(), decoder.getHeightMbs(), performance.now() - t0);
+      try {
+        wLog("[QP worker] calling JM decodeFrame (%d bytes)...", annexB.length);
+        const t0 = performance.now();
+        const frameReady = decoder.decodeFrame(annexB);
+        wLog("[QP worker] JM decodeFrame → %s, widthMbs=%d, heightMbs=%d (%.0fms)",
+          frameReady, decoder.getWidthMbs(), decoder.getHeightMbs(), performance.now() - t0);
 
-      let hasFrame = frameReady;
-      if (!hasFrame) {
-        const flushed = decoder.flush();
-        wLog("[QP worker] JM flush → %s", flushed);
-        if (flushed) hasFrame = true;
+        let hasFrame = frameReady;
+        if (!hasFrame) {
+          const flushed = decoder.flush();
+          wLog("[QP worker] JM flush → %s", flushed);
+          if (flushed) hasFrame = true;
+        }
+
+        if (!hasFrame) {
+          const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
+          self.postMessage(response);
+          return;
+        }
+
+        const result = decoder.copyQps();
+        qpValues = result.qpValues;
+        count = result.count;
+        widthMbs = decoder.getWidthMbs();
+        heightMbs = decoder.getHeightMbs();
+      } finally {
+        if (!decoder.destroyed) decoder.destroy();
       }
-
-      if (decoder.destroyed) {
-        cachedJmDecoder = null;
-      }
-
-      if (!hasFrame) {
-        const response: QpMapWorkerResponse = { type: "error", message: "No frame decoded from segment" };
-        self.postMessage(response);
-        return;
-      }
-
-      const result = decoder.copyQps();
-      qpValues = result.qpValues;
-      count = result.count;
-      widthMbs = decoder.getWidthMbs();
-      heightMbs = decoder.getHeightMbs();
     }
 
     blockSize = isHevc ? 8 : 16;
