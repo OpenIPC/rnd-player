@@ -38,6 +38,12 @@ export interface Jm264QpInstance {
   getWidthMbs(): number;
   /** Height in macroblocks (each MB = 16 pixels). */
   getHeightMbs(): number;
+  /** Enable multi-frame QP capture mode (captures all frames, not just IDR). */
+  setMultiFrame(enable: boolean): void;
+  /** Get number of frames captured in multi-frame mode. */
+  getFrameCount(): number;
+  /** Copy QP values for a specific frame index (multi-frame mode). */
+  copyFrameQps(index: number): { qpValues: Uint8Array; count: number };
   /** True after WasiExit (error during decode) — instance is no longer usable. */
   readonly destroyed: boolean;
   /** Release all resources. */
@@ -58,6 +64,9 @@ interface WasmExports {
   jm264_qp_free: (ptr: number) => void;
   jm264_qp_set_output: (buf: number, max: number) => void;
   jm264_qp_get_error_recovery: () => number;
+  jm264_qp_set_multi_frame: (ctx: number, enable: number) => void;
+  jm264_qp_get_frame_count: (ctx: number) => number;
+  jm264_qp_copy_frame_qps: (ctx: number, frameIdx: number, out: number, max: number) => number;
 }
 
 /** Max Annex B buffer size (8MB should cover any segment's worth of NALUs). */
@@ -314,6 +323,24 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
     getHeightMbs(): number {
       if (destroyed) return recoveryHeightMbs;
       return exports.jm264_qp_get_height_mbs(ctxPtr);
+    },
+
+    setMultiFrame(enable: boolean) {
+      if (destroyed) return;
+      exports.jm264_qp_set_multi_frame(ctxPtr, enable ? 1 : 0);
+    },
+
+    getFrameCount(): number {
+      if (destroyed) return 0;
+      return exports.jm264_qp_get_frame_count(ctxPtr);
+    },
+
+    copyFrameQps(index: number): { qpValues: Uint8Array; count: number } {
+      if (destroyed) return { qpValues: new Uint8Array(0), count: 0 };
+      const count = exports.jm264_qp_copy_frame_qps(ctxPtr, index, qpOutPtr, MAX_MBS);
+      const qpValues = new Uint8Array(count);
+      qpValues.set(new Uint8Array(exports.memory.buffer, qpOutPtr, count));
+      return { qpValues, count };
     },
 
     destroy() {

@@ -21,7 +21,7 @@ import {
   decryptSample,
   extractTenc,
 } from "./cencDecrypt";
-import type { QpMapWorkerRequest, QpMapWorkerResponse } from "../types/qpMapWorker.types";
+import type { QpMapWorkerRequest, QpMapWorkerResponse, PerFrameQp, QpMapSegmentResult } from "../types/qpMapWorker.types";
 
 /** 4-byte Annex B start code. */
 const START_CODE = new Uint8Array([0x00, 0x00, 0x00, 0x01]);
@@ -581,10 +581,279 @@ async function handleDecode(msg: QpMapWorkerRequest & { type: "decode" }) {
   self.postMessage(response, { transfer: [qpValues.buffer] });
 }
 
+async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSegmentQp" }) {
+  const { initSegment, mediaSegment, codec, clearKeyHex } = msg;
+
+  let widthMbs: number;
+  let heightMbs: number;
+  let blockSize: number;
+  let frameCount: number;
+
+  if (codec === "av1") {
+    const samples = await extractAllSamples(initSegment, mediaSegment);
+    if (samples.length === 0) {
+      const response: QpMapWorkerResponse = { type: "error", message: "No video samples found in segment" };
+      self.postMessage(response);
+      return;
+    }
+    const samplesToFeed = [...samples].sort((a, b) => a.dts - b.dts);
+
+    const configObus = extractConfigOBUsAV1(initSegment);
+    if (!configObus || configObus.length === 0) {
+      const response: QpMapWorkerResponse = { type: "error", message: "No av1C config OBUs found in init segment" };
+      self.postMessage(response);
+      return;
+    }
+
+    let totalSampleSize = 0;
+    for (const sample of samplesToFeed) {
+      if (sample.data) totalSampleSize += sample.data.byteLength;
+    }
+    const sampleData = new Uint8Array(totalSampleSize);
+    let offset = 0;
+    for (const sample of samplesToFeed) {
+      if (sample.data) {
+        sampleData.set(new Uint8Array(sample.data), offset);
+        offset += sample.data.byteLength;
+      }
+    }
+
+    const obuBuffer = buildObuBuffer(configObus, sampleData);
+
+    let decoder;
+    try {
+      decoder = await createDav1dQpDecoder();
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
+      self.postMessage(response);
+      return;
+    }
+
+    try {
+      decoder.setMultiFrame(true);
+      decoder.decodeFrame(obuBuffer);
+      if (!decoder.destroyed) decoder.flush();
+
+      frameCount = decoder.getFrameCount();
+      widthMbs = decoder.getWidthBlocks();
+      heightMbs = decoder.getHeightBlocks();
+      blockSize = 8;
+
+      if (frameCount === 0) {
+        const response: QpMapWorkerResponse = { type: "error", message: "No frames decoded from segment" };
+        self.postMessage(response);
+        return;
+      }
+
+      const frames: PerFrameQp[] = [];
+      const transferables: ArrayBuffer[] = [];
+      let globalMinQp = 255;
+      let globalMaxQp = 0;
+
+      for (let i = 0; i < frameCount; i++) {
+        const { qpValues, count } = decoder.copyFrameQps(i);
+        let minQp = 255, maxQp = 0, sum = 0;
+        for (let j = 0; j < count; j++) {
+          if (qpValues[j] < minQp) minQp = qpValues[j];
+          if (qpValues[j] > maxQp) maxQp = qpValues[j];
+          sum += qpValues[j];
+        }
+        if (minQp < globalMinQp) globalMinQp = minQp;
+        if (maxQp > globalMaxQp) globalMaxQp = maxQp;
+        frames.push({ qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp });
+        transferables.push(qpValues.buffer as ArrayBuffer);
+      }
+
+      const response: QpMapSegmentResult = {
+        type: "qpSegment",
+        frames,
+        widthMbs,
+        heightMbs,
+        blockSize,
+        globalMinQp,
+        globalMaxQp,
+      };
+      self.postMessage(response, { transfer: transferables });
+    } finally {
+      if (!decoder.destroyed) decoder.destroy();
+    }
+  } else {
+    // H.264/H.265 path
+    const isHevc = codec === "h265";
+    const paramSets = isHevc
+      ? extractParameterSetsHEVC(initSegment)
+      : extractParameterSets(initSegment);
+
+    const mediaData = new Uint8Array(mediaSegment);
+
+    // Set up CENC decryption if needed
+    let cryptoKey: CryptoKey | undefined;
+    let sencSamples: import("./cencDecrypt").SencSample[] | undefined;
+    if (clearKeyHex) {
+      const mp4Init = createFile();
+      let ivSize = 8;
+      mp4Init.onReady = (info) => {
+        const vt = info.videoTracks[0];
+        if (vt) {
+          const tencInfo = extractTenc(mp4Init, vt.id);
+          if (tencInfo) ivSize = tencInfo.defaultPerSampleIVSize || 8;
+        }
+      };
+      const initSlice = MP4BoxBuffer.fromArrayBuffer(initSegment.slice(0), 0);
+      mp4Init.appendBuffer(initSlice);
+      mp4Init.flush();
+
+      sencSamples = parseSencFromSegment(mediaSegment, ivSize);
+      if (sencSamples.length > 0) {
+        cryptoKey = await importClearKey(clearKeyHex);
+      }
+    }
+
+    const allNalus = await extractSamplesDirectly(mediaData, 4, isHevc, cryptoKey, sencSamples);
+    const annexB = buildAnnexB(paramSets, allNalus);
+
+    if (isHevc) {
+      let decoder;
+      try {
+        decoder = await createHm265QpDecoder();
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
+        self.postMessage(response);
+        return;
+      }
+
+      try {
+        decoder.setMultiFrame(true);
+        decoder.decodeFrame(annexB);
+        if (!decoder.destroyed) decoder.flush();
+
+        frameCount = decoder.getFrameCount();
+        widthMbs = decoder.getWidthBlocks();
+        heightMbs = decoder.getHeightBlocks();
+        blockSize = 8;
+      } catch {
+        frameCount = decoder.getFrameCount();
+        widthMbs = decoder.getWidthBlocks();
+        heightMbs = decoder.getHeightBlocks();
+        blockSize = 8;
+      }
+
+      if (frameCount === 0) {
+        if (!decoder.destroyed) decoder.destroy();
+        const response: QpMapWorkerResponse = { type: "error", message: "No frames decoded from segment" };
+        self.postMessage(response);
+        return;
+      }
+
+      const frames: PerFrameQp[] = [];
+      const transferables: ArrayBuffer[] = [];
+      let globalMinQp = 255;
+      let globalMaxQp = 0;
+
+      for (let i = 0; i < frameCount; i++) {
+        const { qpValues, count } = decoder.copyFrameQps(i);
+        let minQp = 255, maxQp = 0, sum = 0;
+        for (let j = 0; j < count; j++) {
+          if (qpValues[j] < minQp) minQp = qpValues[j];
+          if (qpValues[j] > maxQp) maxQp = qpValues[j];
+          sum += qpValues[j];
+        }
+        if (minQp < globalMinQp) globalMinQp = minQp;
+        if (maxQp > globalMaxQp) globalMaxQp = maxQp;
+        frames.push({ qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp });
+        transferables.push(qpValues.buffer as ArrayBuffer);
+      }
+
+      if (!decoder.destroyed) decoder.destroy();
+
+      const response: QpMapSegmentResult = {
+        type: "qpSegment",
+        frames,
+        widthMbs,
+        heightMbs,
+        blockSize,
+        globalMinQp,
+        globalMaxQp,
+      };
+      self.postMessage(response, { transfer: transferables });
+    } else {
+      // H.264
+      let decoder;
+      try {
+        decoder = await createJm264QpDecoder();
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const response: QpMapWorkerResponse = { type: "error", message: `Decoder init failed: ${errMsg}` };
+        self.postMessage(response);
+        return;
+      }
+
+      try {
+        decoder.setMultiFrame(true);
+        decoder.decodeFrame(annexB);
+        if (!decoder.destroyed) decoder.flush();
+
+        frameCount = decoder.getFrameCount();
+        widthMbs = decoder.getWidthMbs();
+        heightMbs = decoder.getHeightMbs();
+        blockSize = 16;
+      } catch {
+        frameCount = decoder.getFrameCount();
+        widthMbs = decoder.getWidthMbs();
+        heightMbs = decoder.getHeightMbs();
+        blockSize = 16;
+      }
+
+      if (frameCount === 0) {
+        if (!decoder.destroyed) decoder.destroy();
+        const response: QpMapWorkerResponse = { type: "error", message: "No frames decoded from segment" };
+        self.postMessage(response);
+        return;
+      }
+
+      const frames: PerFrameQp[] = [];
+      const transferables: ArrayBuffer[] = [];
+      let globalMinQp = 255;
+      let globalMaxQp = 0;
+
+      for (let i = 0; i < frameCount; i++) {
+        const { qpValues, count } = decoder.copyFrameQps(i);
+        let minQp = 255, maxQp = 0, sum = 0;
+        for (let j = 0; j < count; j++) {
+          if (qpValues[j] < minQp) minQp = qpValues[j];
+          if (qpValues[j] > maxQp) maxQp = qpValues[j];
+          sum += qpValues[j];
+        }
+        if (minQp < globalMinQp) globalMinQp = minQp;
+        if (maxQp > globalMaxQp) globalMaxQp = maxQp;
+        frames.push({ qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp });
+        transferables.push(qpValues.buffer as ArrayBuffer);
+      }
+
+      if (!decoder.destroyed) decoder.destroy();
+
+      const response: QpMapSegmentResult = {
+        type: "qpSegment",
+        frames,
+        widthMbs,
+        heightMbs,
+        blockSize,
+        globalMinQp,
+        globalMaxQp,
+      };
+      self.postMessage(response, { transfer: transferables });
+    }
+  }
+}
+
 self.onmessage = async (e: MessageEvent<QpMapWorkerRequest>) => {
   try {
     if (e.data.type === "decode") {
       await handleDecode(e.data);
+    } else if (e.data.type === "decodeSegmentQp") {
+      await handleDecodeSegmentQp(e.data);
     }
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);

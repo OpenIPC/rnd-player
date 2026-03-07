@@ -45,14 +45,21 @@ extern DecoderParams *p_Dec;
 
 /* ── QP extraction context ── */
 
+#define MAX_QP_FRAMES 128
+
 typedef struct {
     int initialized;
-    /* Cached QP map from last decoded frame */
+    /* Cached QP map from last decoded frame (single-frame legacy API) */
     uint8_t *qp_cache;
     int qp_cache_size;
     int cached_width_mbs;
     int cached_height_mbs;
     int frame_ready;
+    /* Multi-frame QP maps (Phase 2: per-frame QP for segment decode) */
+    uint8_t *qp_frames[MAX_QP_FRAMES];
+    int qp_frame_sizes[MAX_QP_FRAMES];
+    int qp_frame_count;
+    int multi_frame_mode;
 } QpContext;
 
 /* ── Active context & output buffer (for error recovery and frame callback) ── */
@@ -112,11 +119,27 @@ static void capture_qp_map(QpContext *ctx) {
  */
 void jm264_on_frame_decoded(void) {
     if (g_active_ctx && g_active_ctx->initialized) {
-        /* Only capture the FIRST frame (IDR) — it has the richest per-MB QP
-         * variation from the encoder's adaptive quantization. Subsequent P/B
-         * frames have minimal spatial variation (row-level QP only). */
-        if (!g_active_ctx->frame_ready) {
+        if (g_active_ctx->multi_frame_mode) {
+            /* Multi-frame mode: capture every frame's QP map */
             capture_qp_map(g_active_ctx);
+            if (g_active_ctx->frame_ready &&
+                g_active_ctx->qp_frame_count < MAX_QP_FRAMES) {
+                int total = g_active_ctx->cached_width_mbs * g_active_ctx->cached_height_mbs;
+                if (total > 0) {
+                    int idx = g_active_ctx->qp_frame_count;
+                    g_active_ctx->qp_frames[idx] = (uint8_t *)malloc(total);
+                    if (g_active_ctx->qp_frames[idx]) {
+                        memcpy(g_active_ctx->qp_frames[idx], g_active_ctx->qp_cache, total);
+                        g_active_ctx->qp_frame_sizes[idx] = total;
+                        g_active_ctx->qp_frame_count++;
+                    }
+                }
+            }
+        } else {
+            /* Single-frame mode (legacy): capture only IDR frame */
+            if (!g_active_ctx->frame_ready) {
+                capture_qp_map(g_active_ctx);
+            }
         }
     }
 }
@@ -319,12 +342,50 @@ int jm264_qp_get_height_mbs(QpContext *ctx) {
     return ctx->cached_height_mbs;
 }
 
+/** Enable multi-frame QP capture mode. Must be called before decode. */
+__attribute__((export_name("jm264_qp_set_multi_frame")))
+void jm264_qp_set_multi_frame(QpContext *ctx, int enable) {
+    if (!ctx) return;
+    ctx->multi_frame_mode = enable;
+    /* Clear any previous multi-frame data */
+    for (int i = 0; i < ctx->qp_frame_count; i++) {
+        free(ctx->qp_frames[i]);
+        ctx->qp_frames[i] = NULL;
+    }
+    ctx->qp_frame_count = 0;
+}
+
+/** Get number of QP frames captured in multi-frame mode. */
+__attribute__((export_name("jm264_qp_get_frame_count")))
+int jm264_qp_get_frame_count(QpContext *ctx) {
+    if (!ctx) return 0;
+    return ctx->qp_frame_count;
+}
+
+/** Copy QP values for a specific frame index (multi-frame mode). */
+__attribute__((export_name("jm264_qp_copy_frame_qps")))
+int jm264_qp_copy_frame_qps(QpContext *ctx, int frame_idx, uint8_t *out, int max_mbs) {
+    if (!ctx || frame_idx < 0 || frame_idx >= ctx->qp_frame_count) return 0;
+    if (!ctx->qp_frames[frame_idx] || !out) return 0;
+
+    int total = ctx->qp_frame_sizes[frame_idx];
+    if (total > max_mbs) total = max_mbs;
+
+    memcpy(out, ctx->qp_frames[frame_idx], total);
+    return total;
+}
+
 __attribute__((export_name("jm264_qp_destroy")))
 void jm264_qp_destroy(QpContext *ctx) {
     if (!ctx) return;
 
     if (ctx->initialized && p_Dec) {
         CloseDecoder();
+    }
+
+    /* Free multi-frame QP caches */
+    for (int i = 0; i < ctx->qp_frame_count; i++) {
+        free(ctx->qp_frames[i]);
     }
 
     free(ctx->qp_cache);

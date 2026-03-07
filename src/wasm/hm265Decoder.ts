@@ -35,6 +35,12 @@ export interface Hm265QpInstance {
   getWidthBlocks(): number;
   /** Height in 8x8 blocks. */
   getHeightBlocks(): number;
+  /** Enable multi-frame QP capture mode. */
+  setMultiFrame(enable: boolean): void;
+  /** Get number of frames captured in multi-frame mode. */
+  getFrameCount(): number;
+  /** Copy QP values for a specific frame index (multi-frame mode). */
+  copyFrameQps(index: number): { qpValues: Uint8Array; count: number };
   /** True after WasiExit (error during decode) — instance is no longer usable. */
   readonly destroyed: boolean;
   /** Release all resources. */
@@ -55,6 +61,9 @@ interface WasmExports {
   hm265_qp_free: (ptr: number) => void;
   hm265_qp_set_output: (buf: number, max: number) => void;
   hm265_qp_get_error_recovery: () => number;
+  hm265_qp_set_multi_frame: (ctx: number, enable: number) => void;
+  hm265_qp_get_frame_count: (ctx: number) => number;
+  hm265_qp_copy_frame_qps: (ctx: number, frameIdx: number, out: number, max: number) => number;
 }
 
 /** Max Annex B buffer size (8MB should cover any segment's worth of NALUs). */
@@ -304,6 +313,24 @@ export async function createHm265QpDecoder(): Promise<Hm265QpInstance> {
     getHeightBlocks(): number {
       if (destroyed) return recoveryHeightBlocks;
       return exports.hm265_qp_get_height_mbs(ctxPtr);
+    },
+
+    setMultiFrame(enable: boolean) {
+      if (destroyed) return;
+      exports.hm265_qp_set_multi_frame(ctxPtr, enable ? 1 : 0);
+    },
+
+    getFrameCount(): number {
+      if (destroyed) return 0;
+      return exports.hm265_qp_get_frame_count(ctxPtr);
+    },
+
+    copyFrameQps(index: number): { qpValues: Uint8Array; count: number } {
+      if (destroyed) return { qpValues: new Uint8Array(0), count: 0 };
+      const count = exports.hm265_qp_copy_frame_qps(ctxPtr, index, qpOutPtr, MAX_BLOCKS);
+      const qpValues = new Uint8Array(count);
+      qpValues.set(new Uint8Array(exports.memory.buffer, qpOutPtr, count));
+      return { qpValues, count };
     },
 
     destroy() {
