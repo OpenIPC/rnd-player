@@ -101,6 +101,53 @@ validate_manifest_codecs "$OUT_DIR/manifest.mpd"
 echo "==> Plaintext DASH fixture ready in $OUT_DIR"
 ls -lh "$OUT_DIR"
 
+# --- AVC with Adaptive Quantization (AQ) ---
+
+echo "==> Generating AVC + AQ fixture (veryfast preset, aq-mode=2)..."
+
+AQ_DIR="$OUT_DIR/aq"
+mkdir -p "$AQ_DIR"
+
+AQ_SOURCE="$OUT_DIR/source_aq_1080p.mp4"
+
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
+  -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -c:v libx264 -preset veryfast \
+  -x264-params "aq-mode=2:aq-strength=1.0" \
+  -g "$FPS" -keyint_min "$FPS" \
+  -pix_fmt yuv420p \
+  -c:a aac -b:a 128k \
+  "$AQ_SOURCE"
+
+ffmpeg -y -loglevel error \
+  -i "$AQ_SOURCE" \
+  -filter_complex "\
+    [0:v]split=5[v1][v2][v3][v4][v5];\
+    [v1]scale=1920:1080[out1];\
+    [v2]scale=1280:720[out2];\
+    [v3]scale=854:480[out3];\
+    [v4]scale=640:360[out4];\
+    [v5]scale=426:240[out5]\
+  " \
+  -map "[out1]" -c:v:0 libx264 -b:v:0 3000k -preset veryfast -x264-params "aq-mode=2:aq-strength=1.0" -g "$FPS" -keyint_min "$FPS" \
+  -map "[out2]" -c:v:1 libx264 -b:v:1 1500k -preset veryfast -x264-params "aq-mode=2:aq-strength=1.0" -g "$FPS" -keyint_min "$FPS" \
+  -map "[out3]" -c:v:2 libx264 -b:v:2 500k  -preset veryfast -x264-params "aq-mode=2:aq-strength=1.0" -g "$FPS" -keyint_min "$FPS" \
+  -map "[out4]" -c:v:3 libx264 -b:v:3 400k  -preset veryfast -x264-params "aq-mode=2:aq-strength=1.0" -g "$FPS" -keyint_min "$FPS" \
+  -map "[out5]" -c:v:4 libx264 -b:v:4 300k  -preset veryfast -x264-params "aq-mode=2:aq-strength=1.0" -g "$FPS" -keyint_min "$FPS" \
+  -map 0:a -c:a aac -b:a 128k \
+  -use_timeline 1 -use_template 1 \
+  -seg_duration 2 \
+  -adaptation_sets "id=0,streams=v id=1,streams=a" \
+  -f dash "$AQ_DIR/manifest.mpd"
+
+rm -f "$AQ_SOURCE"
+
+validate_manifest_codecs "$AQ_DIR/manifest.mpd"
+echo "==> AVC + AQ DASH fixture ready in $AQ_DIR"
+ls -lh "$AQ_DIR"
+
 # --- Encrypted DASH via Shaka Packager ---
 
 if ! command -v packager &>/dev/null; then
@@ -243,6 +290,64 @@ rm -f "$HEVC_DIR/manifest.mpd.bak"
 validate_manifest_codecs "$HEVC_DIR/manifest.mpd"
 echo "==> HEVC DASH fixture ready in $HEVC_DIR"
 ls -lh "$HEVC_DIR"
+
+# --- HEVC with Adaptive Quantization (AQ) ---
+
+echo "==> Generating HEVC + AQ fixture (veryfast preset, aq-mode=2)..."
+
+HEVC_AQ_DIR="$OUT_DIR/hevc-aq"
+mkdir -p "$HEVC_AQ_DIR"
+
+HEVC_AQ_SOURCE="$OUT_DIR/source_hevc_aq_1080p.mp4"
+
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
+  -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -c:v libx265 -preset veryfast -tag:v hvc1 \
+  -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
+  -pix_fmt yuv420p \
+  -c:a aac -b:a 128k \
+  "$HEVC_AQ_SOURCE"
+
+ffmpeg -y -loglevel error \
+  -i "$HEVC_AQ_SOURCE" \
+  -filter_complex "\
+    [0:v]split=2[v1][v2];\
+    [v1]scale=1920:1080[out1];\
+    [v2]scale=854:480[out2]\
+  " \
+  -map "[out1]" -c:v:0 libx265 -b:v:0 2000k -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
+  -map "[out2]" -c:v:1 libx265 -b:v:1 400k  -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
+  -map 0:a -c:a aac -b:a 128k \
+  -use_timeline 1 -use_template 1 \
+  -seg_duration 2 \
+  -adaptation_sets "id=0,streams=v id=1,streams=a" \
+  -f dash "$HEVC_AQ_DIR/manifest.mpd"
+
+rm -f "$HEVC_AQ_SOURCE"
+
+# Fix HEVC codec strings (same as above)
+echo "==> Fixing HEVC codec strings in AQ manifest..."
+for init in "$HEVC_AQ_DIR"/init-stream*.m4s; do
+  stream_id="${init##*init-stream}"
+  stream_id="${stream_id%.m4s}"
+  codec_type=$(ffprobe -v error -select_streams 0 \
+    -show_entries stream=codec_type -of csv=p=0 "$init" 2>/dev/null)
+  [ "$codec_type" != "video" ] && continue
+  level=$(ffprobe -v error -select_streams v \
+    -show_entries stream=level -of csv=p=0 "$init" 2>/dev/null)
+  [ -z "$level" ] && continue
+  codec_str="hvc1.1.6.L${level}.90"
+  sed -i.bak "/<Representation id=\"${stream_id}\"/s/codecs=\"hvc1\"/codecs=\"${codec_str}\"/" \
+    "$HEVC_AQ_DIR/manifest.mpd"
+  echo "  stream $stream_id: $codec_str"
+done
+rm -f "$HEVC_AQ_DIR/manifest.mpd.bak"
+
+validate_manifest_codecs "$HEVC_AQ_DIR/manifest.mpd"
+echo "==> HEVC + AQ DASH fixture ready in $HEVC_AQ_DIR"
+ls -lh "$HEVC_AQ_DIR"
 
 # --- AV1 DASH fixture ---
 
