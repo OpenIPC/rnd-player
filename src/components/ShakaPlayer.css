@@ -2554,7 +2554,114 @@ video::-webkit-media-text-track-container {
   z-index: 1;
 }
 
+/* ── QP toggle button ── */
+
+.vp-segment-qp-toggle {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: monospace;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vp-segment-qp-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.vp-segment-qp-toggle-active {
+  background: rgba(60, 130, 255, 0.25);
+  color: rgb(100, 170, 255);
+  border-color: rgba(60, 130, 255, 0.4);
+}
+
+.vp-segment-qp-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  border-top-color: rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  animation: vp-qp-spin 0.8s linear infinite;
+}
+
+@keyframes vp-qp-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── QP legend strip ── */
+
+.vp-segment-qp-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 16px;
+  font-size: 10px;
+  font-family: monospace;
+  color: rgba(255, 255, 255, 0.5);
+  flex-shrink: 0;
+}
+
+.vp-segment-qp-legend-label {
+  font-weight: bold;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.vp-segment-qp-legend-bar {
+  width: 100px;
+  height: 8px;
+  border-radius: 2px;
+  background: linear-gradient(to right,
+    rgb(0, 0, 255),
+    rgb(0, 255, 255) 25%,
+    rgb(0, 255, 0) 50%,
+    rgb(255, 255, 0) 75%,
+    rgb(255, 0, 0)
+  );
+}
+
+.vp-segment-qp-legend-range {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* ── QP heatmap overlay on frame thumbnail ── */
+
+.vp-segment-frame-qp-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.vp-segment-frame-qp {
+  color: rgba(100, 170, 255, 0.8);
+  font-size: 10px;
+}
+
 /* ── Full-size frame preview ── */
+
+.vp-frame-preview-canvas-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.vp-frame-preview-qp-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
 
 .vp-frame-preview-overlay {
   position: fixed;

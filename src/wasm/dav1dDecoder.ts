@@ -36,6 +36,12 @@ export interface Dav1dQpInstance {
   getWidthBlocks(): number;
   /** Height in 8x8 blocks. */
   getHeightBlocks(): number;
+  /** Enable multi-frame QP capture mode. */
+  setMultiFrame(enable: boolean): void;
+  /** Get number of frames captured in multi-frame mode. */
+  getFrameCount(): number;
+  /** Copy QP values for a specific frame index (multi-frame mode). */
+  copyFrameQps(index: number): { qpValues: Uint8Array; count: number };
   /** True after WasiExit (error during decode) — instance is no longer usable. */
   readonly destroyed: boolean;
   /** Release all resources. */
@@ -56,6 +62,9 @@ interface WasmExports {
   dav1d_qp_free: (ptr: number) => void;
   dav1d_qp_set_output: (buf: number, max: number) => void;
   dav1d_qp_get_error_recovery: () => number;
+  dav1d_qp_set_multi_frame: (ctx: number, enable: number) => void;
+  dav1d_qp_get_frame_count: (ctx: number) => number;
+  dav1d_qp_copy_frame_qps: (ctx: number, frameIdx: number, out: number, max: number) => number;
 }
 
 /** Max OBU buffer size (8MB should cover any segment). */
@@ -305,6 +314,24 @@ export async function createDav1dQpDecoder(): Promise<Dav1dQpInstance> {
     getHeightBlocks(): number {
       if (destroyed) return recoveryHeightBlocks;
       return exports.dav1d_qp_get_height_mbs(ctxPtr);
+    },
+
+    setMultiFrame(enable: boolean) {
+      if (destroyed) return;
+      exports.dav1d_qp_set_multi_frame(ctxPtr, enable ? 1 : 0);
+    },
+
+    getFrameCount(): number {
+      if (destroyed) return 0;
+      return exports.dav1d_qp_get_frame_count(ctxPtr);
+    },
+
+    copyFrameQps(index: number): { qpValues: Uint8Array; count: number } {
+      if (destroyed) return { qpValues: new Uint8Array(0), count: 0 };
+      const count = exports.dav1d_qp_copy_frame_qps(ctxPtr, index, qpOutPtr, MAX_BLOCKS);
+      const qpValues = new Uint8Array(count);
+      qpValues.set(new Uint8Array(exports.memory.buffer, qpOutPtr, count));
+      return { qpValues, count };
     },
 
     destroy() {

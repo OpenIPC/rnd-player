@@ -1540,6 +1540,8 @@ export default function FilmstripTimeline({
           segmentEndTime={segmentModal.endTime}
           decodeSegmentFrames={decodeSegmentFrames}
           cancelDecodeSegment={cancelDecodeSegment}
+          player={player}
+          clearKey={clearKey}
           onClose={() => setSegmentModal(null)}
         />
       )}

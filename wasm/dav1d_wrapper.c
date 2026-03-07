@@ -45,6 +45,8 @@ int g_qp_capture_active = 0;
 
 /* ── QP extraction context ── */
 
+#define MAX_QP_FRAMES 128
+
 struct QpContext {
   int initialized;
   Dav1dContext *decoder;
@@ -56,6 +58,11 @@ struct QpContext {
   int cached_width_blocks;   /* width in 8x8 blocks */
   int cached_height_blocks;  /* height in 8x8 blocks */
   int frame_ready;
+  /* Multi-frame QP maps (Phase 2) */
+  uint8_t *qp_frames[MAX_QP_FRAMES];
+  int qp_frame_sizes[MAX_QP_FRAMES];
+  int qp_frame_count;
+  int multi_frame_mode;
 };
 
 /* ── Error recovery struct ── */
@@ -116,6 +123,22 @@ static void expand_sb_to_8x8(struct QpContext *ctx) {
   ctx->cached_width_blocks = widthBlocks;
   ctx->cached_height_blocks = heightBlocks;
   ctx->frame_ready = 1;
+}
+
+static void maybe_append_multi_frame(struct QpContext *ctx) {
+  if (ctx->multi_frame_mode && ctx->frame_ready &&
+      ctx->qp_frame_count < MAX_QP_FRAMES) {
+    int total = ctx->cached_width_blocks * ctx->cached_height_blocks;
+    if (total > 0) {
+      int idx = ctx->qp_frame_count;
+      ctx->qp_frames[idx] = (uint8_t *)malloc(total);
+      if (ctx->qp_frames[idx]) {
+        memcpy(ctx->qp_frames[idx], ctx->qp_cache, total);
+        ctx->qp_frame_sizes[idx] = total;
+        ctx->qp_frame_count++;
+      }
+    }
+  }
 }
 
 /* ── dav1d data free callback (no-op, we manage memory ourselves) ── */
@@ -188,37 +211,47 @@ int dav1d_qp_decode(struct QpContext *ctx, const uint8_t *obu_buf, int len) {
     return 0;
   }
 
-  /* Feed data to dav1d */
+  /* Feed data to dav1d and capture pictures */
   while (data.sz > 0) {
     res = dav1d_send_data(ctx->decoder, &data);
     if (res < 0 && res != DAV1D_ERR(EAGAIN)) {
       break;
     }
 
-    /* Try to get a decoded picture */
+    /* Drain all available pictures */
     Dav1dPicture pic;
-    memset(&pic, 0, sizeof(pic));
-    res = dav1d_get_picture(ctx->decoder, &pic);
-    if (res == 0) {
-      /* Got a picture — capture dimensions and expand QP grid */
-      g_qp_frame_w = pic.p.w;
-      g_qp_frame_h = pic.p.h;
-      expand_sb_to_8x8(ctx);
-      dav1d_picture_unref(&pic);
-      g_qp_capture_active = 0;
-      return ctx->frame_ready;
-    }
+    do {
+      memset(&pic, 0, sizeof(pic));
+      res = dav1d_get_picture(ctx->decoder, &pic);
+      if (res == 0) {
+        g_qp_frame_w = pic.p.w;
+        g_qp_frame_h = pic.p.h;
+        expand_sb_to_8x8(ctx);
+        maybe_append_multi_frame(ctx);
+        dav1d_picture_unref(&pic);
+        if (!ctx->multi_frame_mode) {
+          g_qp_capture_active = 0;
+          return ctx->frame_ready;
+        }
+      }
+    } while (res == 0);
   }
 
-  /* Drain remaining pictures */
-  Dav1dPicture pic;
-  memset(&pic, 0, sizeof(pic));
-  res = dav1d_get_picture(ctx->decoder, &pic);
-  if (res == 0) {
-    g_qp_frame_w = pic.p.w;
-    g_qp_frame_h = pic.p.h;
-    expand_sb_to_8x8(ctx);
-    dav1d_picture_unref(&pic);
+  /* Drain remaining pictures after all data sent */
+  {
+    Dav1dPicture pic;
+    int drain_res;
+    do {
+      memset(&pic, 0, sizeof(pic));
+      drain_res = dav1d_get_picture(ctx->decoder, &pic);
+      if (drain_res == 0) {
+        g_qp_frame_w = pic.p.w;
+        g_qp_frame_h = pic.p.h;
+        expand_sb_to_8x8(ctx);
+        maybe_append_multi_frame(ctx);
+        dav1d_picture_unref(&pic);
+      }
+    } while (drain_res == 0);
   }
 
   g_qp_capture_active = 0;
@@ -242,6 +275,7 @@ int dav1d_qp_flush(struct QpContext *ctx) {
       g_qp_frame_w = pic.p.w;
       g_qp_frame_h = pic.p.h;
       expand_sb_to_8x8(ctx);
+      maybe_append_multi_frame(ctx);
       dav1d_picture_unref(&pic);
       got_frame = 1;
     }
@@ -281,12 +315,44 @@ int dav1d_qp_get_height_mbs(struct QpContext *ctx) {
   return ctx->cached_height_blocks;
 }
 
+__attribute__((export_name("dav1d_qp_set_multi_frame")))
+void dav1d_qp_set_multi_frame(struct QpContext *ctx, int enable) {
+  if (!ctx) return;
+  ctx->multi_frame_mode = enable;
+  for (int i = 0; i < ctx->qp_frame_count; i++) {
+    free(ctx->qp_frames[i]);
+    ctx->qp_frames[i] = NULL;
+  }
+  ctx->qp_frame_count = 0;
+}
+
+__attribute__((export_name("dav1d_qp_get_frame_count")))
+int dav1d_qp_get_frame_count(struct QpContext *ctx) {
+  if (!ctx) return 0;
+  return ctx->qp_frame_count;
+}
+
+__attribute__((export_name("dav1d_qp_copy_frame_qps")))
+int dav1d_qp_copy_frame_qps(struct QpContext *ctx, int frame_idx, uint8_t *out, int max_blocks) {
+  if (!ctx || frame_idx < 0 || frame_idx >= ctx->qp_frame_count) return 0;
+  if (!ctx->qp_frames[frame_idx] || !out) return 0;
+
+  int total = ctx->qp_frame_sizes[frame_idx];
+  if (total > max_blocks) total = max_blocks;
+
+  memcpy(out, ctx->qp_frames[frame_idx], total);
+  return total;
+}
+
 __attribute__((export_name("dav1d_qp_destroy")))
 void dav1d_qp_destroy(struct QpContext *ctx) {
   if (!ctx) return;
 
   if (ctx->decoder) {
     dav1d_close(&ctx->decoder);
+  }
+  for (int i = 0; i < ctx->qp_frame_count; i++) {
+    free(ctx->qp_frames[i]);
   }
   free(ctx->qp_cache);
   ctx->qp_cache = NULL;
