@@ -90,42 +90,83 @@ function parseUrlParams(): {
   };
 }
 
-const DEMO_STREAMS = [
+interface DemoStream {
+  name: string;
+  description: string;
+  url: string;
+}
+
+interface DemoGroup {
+  label: string;
+  streams: DemoStream[];
+}
+
+const FIXTURES_BASE = "https://openipc.github.io/rnd-player/fixtures/frames";
+
+const DEMO_GROUPS: DemoGroup[] = [
   {
-    name: "Multi-Res 1080p",
-    description:
-      "Multi-resolution multi-rate up to 1080p. AVC, live profile.",
-    url: "https://dash.akamaized.net/dash264/TestCasesHD/2b/qualcomm/1/MultiResMPEG2.mpd",
+    label: "Frame Counter",
+    streams: [
+      {
+        name: "AVC (H.264)",
+        description:
+          "60 s, 5 renditions (240p\u20131080p), 30 fps. Ultrafast preset, no AQ \u2014 QP heatmap shows flat horizontal bands.",
+        url: `${FIXTURES_BASE}/manifest.mpd`,
+      },
+      {
+        name: "AVC + Adaptive QP",
+        description:
+          "Same content, veryfast preset with aq-mode=2. QP heatmap shows per-macroblock spatial variation around the counter digits.",
+        url: `${FIXTURES_BASE}/aq/manifest.mpd`,
+      },
+      {
+        name: "HEVC (H.265)",
+        description:
+          "60 s, 2 renditions (480p\u20131080p), 30 fps with B-frames. Ultrafast preset, no AQ.",
+        url: `${FIXTURES_BASE}/hevc/manifest.mpd`,
+      },
+      {
+        name: "HEVC + Adaptive QP",
+        description:
+          "Same content, veryfast preset with aq-mode=2. Compare QP heatmap spatial variation vs the ultrafast HEVC stream.",
+        url: `${FIXTURES_BASE}/hevc-aq/manifest.mpd`,
+      },
+      {
+        name: "AV1",
+        description:
+          "60 s, 2 renditions (480p\u20131080p), 30 fps AV1. Tests AV1-specific QP heatmap extraction via dav1d WASM decoder.",
+        url: `${FIXTURES_BASE}/av1/manifest.mpd`,
+      },
+    ],
   },
   {
-    name: "Single-Res Multi-Rate",
-    description:
-      "Single resolution with multiple bitrates. Tests bitrate switching without resolution change.",
-    url: "https://dash.akamaized.net/dash264/TestCases/1b/qualcomm/1/MultiRatePatched.mpd",
-  },
-  {
-    name: "UHD Multi-Rate",
-    description:
-      "10-bit Ultra-HD (SDR) live profile with multiple representations for high-resolution ABR.",
-    url: "https://dash.akamaized.net/dash264/TestCasesUHD/2b/11/MultiRate.mpd",
-  },
-  {
-    name: "Low-Latency Live",
-    description:
-      "DASH-IF low-latency chunked transfer with single AVC video and AAC audio.",
-    url: "https://livesim.dashif.org/livesim/chunkdur_1/ato_7/testpic4_8s/Manifest.mpd",
-  },
-  {
-    name: "Frame Counter",
-    description:
-      "60 s, 5 renditions (240p\u20131080p), 30 fps AVC with 4-digit frame counter overlay. Built-in test fixture.",
-    url: "https://openipc.github.io/rnd-player/fixtures/frames/manifest.mpd",
-  },
-  {
-    name: "Frame Counter (HEVC)",
-    description:
-      "60 s, 2 renditions (480p\u20131080p), 30 fps HEVC with B-frames and frame counter overlay. Tests HEVC-specific seek behavior.",
-    url: "https://openipc.github.io/rnd-player/fixtures/frames/hevc/manifest.mpd",
+    label: "Reference Streams",
+    streams: [
+      {
+        name: "Multi-Res 1080p",
+        description:
+          "Multi-resolution multi-rate up to 1080p. AVC, live profile.",
+        url: "https://dash.akamaized.net/dash264/TestCasesHD/2b/qualcomm/1/MultiResMPEG2.mpd",
+      },
+      {
+        name: "Single-Res Multi-Rate",
+        description:
+          "Single resolution with multiple bitrates. Tests bitrate switching without resolution change.",
+        url: "https://dash.akamaized.net/dash264/TestCases/1b/qualcomm/1/MultiRatePatched.mpd",
+      },
+      {
+        name: "UHD Multi-Rate",
+        description:
+          "10-bit Ultra-HD (SDR) live profile with multiple representations for high-resolution ABR.",
+        url: "https://dash.akamaized.net/dash264/TestCasesUHD/2b/11/MultiRate.mpd",
+      },
+      {
+        name: "Low-Latency Live",
+        description:
+          "DASH-IF low-latency chunked transfer with single AVC video and AAC audio.",
+        url: "https://livesim.dashif.org/livesim/chunkdur_1/ato_7/testpic4_8s/Manifest.mpd",
+      },
+    ],
   },
 ];
 
@@ -298,18 +339,23 @@ function App() {
                 </button>
               </div>
               <div className="demo-list">
-                {DEMO_STREAMS.map((s) => (
-                  <button
-                    key={s.url}
-                    className="demo-item"
-                    onClick={() => {
-                      setShowDemo(false);
-                      setSrc(s.url);
-                    }}
-                  >
-                    <span className="demo-item-name">{s.name}</span>
-                    <span className="demo-item-desc">{s.description}</span>
-                  </button>
+                {DEMO_GROUPS.map((g) => (
+                  <div key={g.label}>
+                    <div className="demo-group-label">{g.label}</div>
+                    {g.streams.map((s) => (
+                      <button
+                        key={s.url}
+                        className="demo-item"
+                        onClick={() => {
+                          setShowDemo(false);
+                          setSrc(s.url);
+                        }}
+                      >
+                        <span className="demo-item-name">{s.name}</span>
+                        <span className="demo-item-desc">{s.description}</span>
+                      </button>
+                    ))}
+                  </div>
                 ))}
               </div>
             </div>
