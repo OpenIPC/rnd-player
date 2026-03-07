@@ -176,32 +176,6 @@ function extractParameterSetsHEVC(initBuf: ArrayBuffer): Uint8Array[] {
   return nalus;
 }
 
-/**
- * Convert mp4box sample data (which contains length-prefixed NALUs) to
- * individual NAL units.
- */
-function sampleToNalUnits(sample: Sample): Uint8Array[] {
-  if (!sample.data) return [];
-  const data = new Uint8Array(sample.data);
-  const nalus: Uint8Array[] = [];
-  let offset = 0;
-  const naluLengthSize = 4; // Standard for avcC
-
-  while (offset + naluLengthSize <= data.length) {
-    const len =
-      (data[offset] << 24) |
-      (data[offset + 1] << 16) |
-      (data[offset + 2] << 8) |
-      data[offset + 3];
-    offset += naluLengthSize;
-    if (len > 0 && offset + len <= data.length) {
-      nalus.push(data.subarray(offset, offset + len));
-    }
-    offset += len;
-  }
-
-  return nalus;
-}
 
 /**
  * Build a single Annex B buffer from parameter sets and sample NALUs.
@@ -384,9 +358,9 @@ async function extractSamplesDirectly(
 
     // Decrypt if CENC encryption is present
     if (cryptoKey && sencSamples && i < sencSamples.length) {
-      sampleBytes = await decryptSample(
+      sampleBytes = new Uint8Array(await decryptSample(
         cryptoKey, sencSamples[i].iv, sampleBytes, sencSamples[i].subsamples,
-      );
+      ));
     }
 
     nalus.push(...extractNalusFromSample(sampleBytes, naluLengthSize, isHevc));
