@@ -110,31 +110,31 @@ const DEMO_GROUPS: DemoGroup[] = [
       {
         name: "AVC (H.264)",
         description:
-          "Mandelbrot fractal with frame counter. 60 s, 5 renditions (240p\u20131080p), 30 fps. Ultrafast preset (no AQ) \u2014 QP heatmap shows flat row bands.",
+          "Frame counter, 60 s, 5 renditions (240p\u20131080p), 30 fps. Ultrafast preset (no AQ) \u2014 QP heatmap shows flat row bands.",
         url: `${FIXTURES_BASE}/manifest.mpd`,
       },
       {
         name: "AVC + Adaptive QP",
         description:
-          "Same content, veryfast preset with aq-mode=2. QP heatmap shows per-macroblock spatial variation following fractal detail.",
+          "Mandelbrot fractal + counter, veryfast preset with aq-mode=2. QP heatmap shows per-macroblock spatial variation following fractal detail.",
         url: `${FIXTURES_BASE}/aq/manifest.mpd`,
       },
       {
         name: "HEVC (H.265)",
         description:
-          "Mandelbrot + counter. 60 s, 2 renditions (480p\u20131080p), 30 fps. Ultrafast preset (no AQ).",
+          "Frame counter, 60 s, 2 renditions (480p\u20131080p), 30 fps. Ultrafast preset (no AQ).",
         url: `${FIXTURES_BASE}/hevc/manifest.mpd`,
       },
       {
         name: "HEVC + Adaptive QP",
         description:
-          "Same content, veryfast preset with aq-mode=2. Compare QP heatmap spatial variation vs the ultrafast HEVC stream.",
+          "Mandelbrot fractal + counter, veryfast preset with aq-mode=2. Compare QP heatmap spatial variation vs the ultrafast HEVC stream.",
         url: `${FIXTURES_BASE}/hevc-aq/manifest.mpd`,
       },
       {
         name: "AV1",
         description:
-          "Mandelbrot + counter. 60 s, 2 renditions (480p\u20131080p), 30 fps. Tests AV1-specific QP heatmap extraction via dav1d WASM decoder.",
+          "Frame counter, 60 s, 2 renditions (480p\u20131080p), 30 fps. Tests AV1-specific QP heatmap extraction via dav1d WASM decoder.",
         url: `${FIXTURES_BASE}/av1/manifest.mpd`,
       },
     ],
