@@ -10,7 +10,18 @@
  *   - QP values are in valid range [1..51]
  *   - Multiple random segments decode consistently
  *
- * Usage: node wasm/test-realworld-dash.mjs
+ * Usage:
+ *   DASH_MANIFEST_BASE="https://example.com/.../output.ism" \
+ *   DASH_REPS='[{"id":"1","width":1024,"height":428,"widthMbs":64,"heightMbs":27,"bandwidth":1384453}]' \
+ *   DASH_TIMESCALE=10000000 DASH_SEG_TICKS=29999952 DASH_TOTAL_SEGS=2880 \
+ *   node wasm/test-realworld-dash.mjs
+ *
+ * Environment variables:
+ *   DASH_MANIFEST_BASE  — ISM base URL (required, no default)
+ *   DASH_REPS           — JSON array of representations (required)
+ *   DASH_TIMESCALE      — segment timeline timescale (default: 10000000)
+ *   DASH_SEG_TICKS      — segment duration in ticks (default: 29999952)
+ *   DASH_TOTAL_SEGS     — total segment count (default: 2880)
  *
  * Prerequisites:
  *   - public/jm264-qp.wasm (run: cd wasm && ./build-jm264.sh)
@@ -24,19 +35,24 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WASM_PATH = join(__dirname, "../public/jm264-qp.wasm");
 
-const MANIFEST_BASE = "https://msk2-cdp11.playfamily.ru/vod/cid/439139261-2000000000-lyiEiJUEMn6CYBVbicKt1A/storage127/clr/m/shfpbw/52351efc-f1c9-4770-b21b-fdf5408a74f5/output.ism";
+const MANIFEST_BASE = process.env.DASH_MANIFEST_BASE;
+if (!MANIFEST_BASE) {
+  console.error("DASH_MANIFEST_BASE env var is required. See usage in file header.");
+  process.exit(1);
+}
 
-// Representations from the manifest
-const REPRESENTATIONS = [
-  { id: "3", width: 1024, height: 428, widthMbs: 64, heightMbs: 27, bandwidth: 1384453 },
-  { id: "4", width: 1280, height: 536, widthMbs: 80, heightMbs: 34, bandwidth: 2215108 },
-  { id: "5", width: 1920, height: 804, widthMbs: 120, heightMbs: 51, bandwidth: 3964892 },
-];
+let REPRESENTATIONS;
+try {
+  REPRESENTATIONS = JSON.parse(process.env.DASH_REPS);
+} catch {
+  console.error("DASH_REPS env var is required (JSON array). See usage in file header.");
+  process.exit(1);
+}
 
-// Segment timeline: d=29999952, timescale=10000000, 2879 segments (r=2878) + 1 short
-const TIMESCALE = 10000000;
-const SEG_DURATION_TICKS = 29999952;
-const TOTAL_SEGMENTS = 2880;
+// Segment timeline (configurable via env, sensible defaults for ISM streams)
+const TIMESCALE = parseInt(process.env.DASH_TIMESCALE || "10000000", 10);
+const SEG_DURATION_TICKS = parseInt(process.env.DASH_SEG_TICKS || "29999952", 10);
+const TOTAL_SEGMENTS = parseInt(process.env.DASH_TOTAL_SEGS || "2880", 10);
 
 // Number of random segments to test per representation
 const SEGMENTS_PER_REP = 3;
