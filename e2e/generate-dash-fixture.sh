@@ -63,10 +63,9 @@ esac
 
 echo "==> Generating 1080p source with frame counter and audio ($DURATION s @ $FPS fps)..."
 ffmpeg -y -loglevel error \
-  -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
+  -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
-  -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black:boxborderw=150:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v libx264 -preset ultrafast -tune zerolatency \
   -g "$FPS" -keyint_min "$FPS" \
   -pix_fmt yuv420p \
@@ -238,10 +237,9 @@ mkdir -p "$HEVC_DIR"
 HEVC_SOURCE="$OUT_DIR/source_hevc_1080p.mp4"
 
 ffmpeg -y -loglevel error \
-  -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
+  -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
-  -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black:boxborderw=150:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v libx265 -preset ultrafast -tag:v hvc1 \
   -x265-params "keyint=30:min-keyint=30" \
   -pix_fmt yuv420p \
@@ -379,10 +377,9 @@ mkdir -p "$AV1_DIR"
 AV1_SOURCE="$OUT_DIR/source_av1_1080p.mp4"
 
 ffmpeg -y -loglevel error \
-  -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
+  -f lavfi -i "color=c=black:s=1920x1080:d=$DURATION:r=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
-  -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black:boxborderw=150:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v "$AV1_ENCODER" $AV1_EXTRA_FLAGS \
   -g "$FPS" -keyint_min "$FPS" \
   -pix_fmt yuv420p \

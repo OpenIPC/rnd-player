@@ -34,19 +34,15 @@ test.afterAll(async () => {
 
 test.describe("encrypted seek verification", () => {
   for (const [seekTime, expectedFrame] of [
-    [0, 0],
-    [5, 150],
+    [0, "0000"],
+    [5, "0150"],
   ] as const) {
-    test(`displays frame ~${String(expectedFrame).padStart(4, "0")} at t=${seekTime}s`, async ({
+    test(`displays frame ${expectedFrame} at t=${seekTime}s`, async ({
       page,
     }) => {
       await loadPlayerWithEncryptedDash(page);
       await seekTo(page, seekTime);
-      const actual = parseInt(await readFrameNumber(page, ocr), 10);
-      expect(
-        Math.abs(actual - expectedFrame),
-        `expected frame ~${expectedFrame}, got ${actual}`,
-      ).toBeLessThanOrEqual(3);
+      expect(await readFrameNumber(page, ocr)).toBe(expectedFrame);
     });
   }
 });
@@ -58,8 +54,7 @@ test.describe("encrypted frame stepping", () => {
     await loadPlayerWithEncryptedDash(page);
     await seekTo(page, 0);
     await pressKeyAndSettle(page, "ArrowRight");
-    const actual = parseInt(await readFrameNumber(page, ocr), 10);
-    expect(Math.abs(actual - 1), `expected ~1, got ${actual}`).toBeLessThanOrEqual(3);
+    expect(await readFrameNumber(page, ocr)).toBe("0001");
   });
 });
 
