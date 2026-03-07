@@ -173,7 +173,7 @@ FilmstripTimeline (has player, clearKey)
 
 ### Backward Compatibility
 
-- Single-frame QP mode (main video overlay via `useQpHeatmap`) is unchanged
+- Main video overlay (`useQpHeatmap`) now also uses multi-frame mode (`decodeSegmentQp`) with per-segment caching — frame-stepping shows per-frame QP variation instead of always showing the IDR frame
 - WASM wrappers default to `multi_frame_mode=0` — existing `decode`/`copyQps` API works identically
 - Existing validation tests (32 tests), real-world tests (8 tests), and DASH tests (9 tests) all pass
 

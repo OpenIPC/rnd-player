@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import shaka from "shaka-player";
 import { extractInitSegmentUrl } from "../utils/extractInitSegmentUrl";
-import type { QpMapWorkerRequest, QpMapWorkerResponse } from "../types/qpMapWorker.types";
+import type { QpMapWorkerRequest, QpMapWorkerResponse, QpMapSegmentResult } from "../types/qpMapWorker.types";
 
 export interface QpHeatmapData {
   qpValues: Uint8Array;
@@ -26,6 +26,14 @@ interface UseQpHeatmapResult {
   data: QpHeatmapData | null;
 }
 
+/** Cached segment QP result keyed by media segment URL. */
+interface SegmentQpCache {
+  mediaUrl: string;
+  segmentStart: number;
+  segmentEnd: number;
+  result: QpMapSegmentResult;
+}
+
 export function useQpHeatmap(
   player: shaka.Player,
   videoEl: HTMLVideoElement,
@@ -38,9 +46,11 @@ export function useQpHeatmap(
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
   const prevPausedRef = useRef(paused);
+  const cacheRef = useRef<SegmentQpCache | null>(null);
+  /** URL of the segment currently being decoded by the worker (in-flight guard). */
+  const pendingUrlRef = useRef<string | null>(null);
 
   // Derive codec availability from player state (no effect needed)
-  // Codec check — always computed so the menu item can be hidden for unsupported codecs
   const codecInfo = useMemo(() => {
     const tracks = player.getVariantTracks();
     const active = tracks.find((t) => t.active);
@@ -57,9 +67,10 @@ export function useQpHeatmap(
   const { isH264, isH265, isAv1 } = codecInfo;
   const available = enabled && (isH264 || isH265 || isAv1);
 
-  // Clear data when playback resumes (transition from paused→playing)
+  // Clear data and cache when playback resumes (transition from paused→playing)
   if (prevPausedRef.current && !paused) {
     setData(null);
+    cacheRef.current = null;
   }
   prevPausedRef.current = paused;
 
@@ -70,6 +81,8 @@ export function useQpHeatmap(
         workerRef.current.terminate();
         workerRef.current = null;
       }
+      cacheRef.current = null;
+      pendingUrlRef.current = null;
       return;
     }
     if (!workerRef.current) {
@@ -85,8 +98,36 @@ export function useQpHeatmap(
     return () => {
       workerRef.current?.terminate();
       workerRef.current = null;
+      cacheRef.current = null;
+      pendingUrlRef.current = null;
     };
   }, [enabled]);
+
+  /**
+   * Select the per-frame QP data from a cached segment result based on currentTime.
+   * Maps time position within the segment to a frame index.
+   */
+  const selectFrameFromCache = useCallback((cache: SegmentQpCache, currentTime: number) => {
+    const { result, segmentStart, segmentEnd } = cache;
+    const frameCount = result.frames.length;
+    if (frameCount === 0) return;
+
+    const segDuration = segmentEnd - segmentStart;
+    const timeInSegment = Math.max(0, currentTime - segmentStart);
+    const frameIndex = Math.min(
+      frameCount - 1,
+      Math.max(0, Math.floor((timeInSegment / segDuration) * frameCount)),
+    );
+
+    const frame = result.frames[frameIndex];
+    setData({
+      qpValues: frame.qpValues,
+      widthMbs: result.widthMbs,
+      heightMbs: result.heightMbs,
+      minQp: result.globalMinQp,
+      maxQp: result.globalMaxQp,
+    });
+  }, []);
 
   const requestQpMap = useCallback(async () => {
     if (!enabled || !paused || !available) return;
@@ -144,53 +185,72 @@ export function useQpHeatmap(
 
     const uris = targetRef.getUris();
     if (uris.length === 0) return;
+    const mediaUrl = uris[0];
+
+    // Cache hit — same segment, just select the right frame
+    const cache = cacheRef.current;
+    if (cache && cache.mediaUrl === mediaUrl) {
+      selectFrameFromCache(cache, currentTime);
+      return;
+    }
+
+    // Already decoding this segment — skip duplicate request
+    if (pendingUrlRef.current === mediaUrl) return;
 
     const requestId = ++requestIdRef.current;
+    pendingUrlRef.current = mediaUrl;
     setLoading(true);
 
     try {
       const [initResp, mediaResp] = await Promise.all([
         fetch(initSegmentUrl),
-        fetch(uris[0]),
+        fetch(mediaUrl),
       ]);
       if (!initResp.ok || !mediaResp.ok) {
+        pendingUrlRef.current = null;
         setLoading(false);
         return;
       }
 
-      // Check if this request is still current
-      if (requestIdRef.current !== requestId) return;
+      if (requestIdRef.current !== requestId) { pendingUrlRef.current = null; return; }
 
       const [initSegment, mediaSegment] = await Promise.all([
         initResp.arrayBuffer(),
         mediaResp.arrayBuffer(),
       ]);
 
-      if (requestIdRef.current !== requestId) return;
+      if (requestIdRef.current !== requestId) { pendingUrlRef.current = null; return; }
 
       const msg: QpMapWorkerRequest = {
-        type: "decode",
+        type: "decodeSegmentQp",
         initSegment,
         mediaSegment,
-        targetTime: currentTime,
-        width: active.width ?? 0,
-        height: active.height ?? 0,
         codec: isAv1 ? "av1" : isH265 ? "h265" : "h264",
         clearKeyHex: clearKey,
       };
 
+      const segmentStart = targetRef.getStartTime();
+      const segmentEnd = targetRef.getEndTime();
+
       worker.onmessage = (e: MessageEvent<QpMapWorkerResponse>) => {
         if (requestIdRef.current !== requestId) return;
         setLoading(false);
+        pendingUrlRef.current = null;
 
-        if (e.data.type === "qpMap") {
-          setData({
-            qpValues: e.data.qpValues,
-            widthMbs: e.data.widthMbs,
-            heightMbs: e.data.heightMbs,
-            minQp: e.data.minQp,
-            maxQp: e.data.maxQp,
-          });
+        if (e.data.type === "qpSegment") {
+          const segResult = e.data as QpMapSegmentResult;
+
+          // Cache the full segment result
+          const newCache: SegmentQpCache = {
+            mediaUrl,
+            segmentStart,
+            segmentEnd,
+            result: segResult,
+          };
+          cacheRef.current = newCache;
+
+          // Select the frame for the current time
+          selectFrameFromCache(newCache, videoEl.currentTime);
         } else if (e.data.type === "error") {
           setData(null);
         }
@@ -198,11 +258,12 @@ export function useQpHeatmap(
 
       worker.postMessage(msg, [initSegment, mediaSegment]);
     } catch (err) {
+      pendingUrlRef.current = null;
       if (requestIdRef.current === requestId) {
         setLoading(false);
       }
     }
-  }, [player, videoEl, enabled, paused, available, isH265, isAv1, clearKey]);
+  }, [player, videoEl, enabled, paused, available, isH265, isAv1, clearKey, selectFrameFromCache]);
 
   // Trigger on seeked (when paused) and on activation while paused
   useEffect(() => {
