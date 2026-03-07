@@ -291,6 +291,54 @@ function diagnoseSegmentError(
   };
 }
 
+/**
+ * Detect PlayReady OPM (Output Protection Management) failure.
+ *
+ * PlayReady CDM on Windows requires OPM to query the display driver's HDCP
+ * status. Over Remote Desktop (RDP), OPM is unavailable — the display driver
+ * is a virtual device that doesn't support output protection queries.
+ *
+ * The failure chain:
+ *   Windows Media Foundation → "The driver does not support OPM (0xC0262500)"
+ *   → video element MEDIA_ERR_DECODE
+ *   → Shaka wraps as error 3014 (category 3) or 6008 (category 6)
+ *   → player shows cryptic "media decode error"
+ *
+ * The license exchange succeeds (key status = "usable"), but decryption is
+ * blocked at the MF renderer level. The same failure affects ALL PlayReady
+ * content on the machine — including Microsoft's own test streams.
+ */
+export function diagnoseDrmPlaybackError(
+  error: ShakaErrorLike,
+): StreamError | null {
+  // Serialize error data to search for OPM-related strings
+  const errStr = JSON.stringify(error.data ?? []);
+  const isOpmPattern =
+    error.code === 6008 ||
+    (error.code === 3014 && error.category === 3) ||
+    /output.?protect/i.test(errStr) ||
+    /\bOPM\b/.test(errStr) ||
+    /0xC0262500/i.test(errStr);
+
+  if (!isOpmPattern) return null;
+
+  return {
+    summary: "PlayReady DRM: display does not support Output Protection (OPM)",
+    details: [
+      "PlayReady requires Output Protection Management (OPM) to verify the " +
+        "display connection supports HDCP. This check fails over Remote Desktop " +
+        "(RDP) because the virtual display driver does not support OPM.",
+      "This is a Windows system-level restriction — all PlayReady content " +
+        "will fail on this machine, including Microsoft's own test streams.",
+      "The DRM license was accepted (key status \"usable\"), but decryption " +
+        "is blocked at the Windows Media Foundation renderer level.",
+      "To fix: connect a real display (HDMI/DisplayPort) and test without " +
+        "Remote Desktop. Alternatively, use ClearKey DRM which does not " +
+        "require output protection.",
+    ],
+  };
+}
+
 /** Convert a plain string error message to a StreamError. */
 export function simpleError(message: string): StreamError {
   return { summary: message, details: [] };
