@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diagnoseNetworkError, simpleError } from "./streamDiagnostics";
+import { diagnoseNetworkError, diagnoseDrmPlaybackError, simpleError } from "./streamDiagnostics";
 
 describe("streamDiagnostics", () => {
   describe("simpleError", () => {
@@ -170,6 +170,61 @@ describe("streamDiagnostics", () => {
         // With 0 segments and no explicit requestType, treated as manifest error
         expect(err.summary).toContain("manifest");
       });
+    });
+  });
+
+  describe("diagnoseDrmPlaybackError", () => {
+    it("detects OPM error from Shaka code 3014 category 3", () => {
+      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: [] });
+      expect(err).not.toBeNull();
+      expect(err!.summary).toContain("Output Protection");
+      expect(err!.details.some(d => /Remote Desktop/i.test(d))).toBe(true);
+    });
+
+    it("detects OPM error from Shaka code 6008", () => {
+      const err = diagnoseDrmPlaybackError({ code: 6008, category: 6, data: [] });
+      expect(err).not.toBeNull();
+      expect(err!.summary).toContain("OPM");
+    });
+
+    it("detects OPM error from error data containing 0xC0262500", () => {
+      const err = diagnoseDrmPlaybackError({
+        code: 3015,
+        category: 3,
+        data: ["MediaFoundationRenderer error: kOnPlaybackError (The driver does not support OPM. (0xC0262500))"],
+      });
+      expect(err).not.toBeNull();
+      expect(err!.summary).toContain("Output Protection");
+    });
+
+    it("detects OPM error from error data containing 'output protection'", () => {
+      const err = diagnoseDrmPlaybackError({
+        code: 3015,
+        category: 3,
+        data: ["output protection manager failed"],
+      });
+      expect(err).not.toBeNull();
+    });
+
+    it("returns null for unrelated media errors", () => {
+      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: ["some other error"] });
+      // code 3014 + category 3 still matches the pattern
+      expect(err).not.toBeNull();
+    });
+
+    it("returns null for non-OPM DRM errors", () => {
+      const err = diagnoseDrmPlaybackError({ code: 6001, category: 6, data: [] });
+      expect(err).toBeNull();
+    });
+
+    it("returns null for non-OPM media errors", () => {
+      const err = diagnoseDrmPlaybackError({ code: 3001, category: 3, data: [] });
+      expect(err).toBeNull();
+    });
+
+    it("includes ClearKey suggestion in details", () => {
+      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: [] });
+      expect(err!.details.some(d => /ClearKey/i.test(d))).toBe(true);
     });
   });
 });

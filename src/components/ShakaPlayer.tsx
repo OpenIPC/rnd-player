@@ -12,7 +12,7 @@ import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { DrmConfig, WatermarkToken } from "../drm/types";
 import { fetchLicense } from "../drm/drmClient";
-import { diagnoseNetworkError, simpleError, type StreamError } from "../utils/streamDiagnostics";
+import { diagnoseNetworkError, diagnoseDrmPlaybackError, simpleError, type StreamError } from "../utils/streamDiagnostics";
 import { parseManifestDrm } from "../drm/diagnostics/parseManifestDrm";
 import { parseInitSegmentDrm } from "../drm/diagnostics/parseInitSegmentDrm";
 import type { DrmDiagnosticsState } from "../drm/diagnostics/types";
@@ -191,7 +191,13 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         );
         if (detail.severity === 2) {
           // severity 2 = CRITICAL
-          if (detail.category === 6) {
+          // Check for PlayReady OPM/RDP failure first — it surfaces as
+          // category 3 (MEDIA, code 3014) or category 6 (DRM, code 6008)
+          // but the real issue is the display driver, not the content or keys.
+          const opmError = diagnoseDrmPlaybackError(detail);
+          if (opmError) {
+            setError(opmError);
+          } else if (detail.category === 6) {
             setError(simpleError("DRM error: unable to decrypt content. Check that the decryption keys are correct."));
           } else if (detail.category === 3) {
             setError(simpleError(

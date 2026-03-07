@@ -406,6 +406,15 @@ User loads manifest
 
 4. **Unit tests** — 16 tests in `src/utils/streamDiagnostics.test.ts` covering manifest/segment errors, ISM patterns, timeouts, URL shortening, edge cases
 
+5. **PlayReady OPM/RDP detection** — `diagnoseDrmPlaybackError(shakaError)`
+   - Detects PlayReady Output Protection Management (OPM) failures that occur over Windows Remote Desktop (RDP)
+   - **Problem**: PlayReady CDM requires OPM to query the display driver's HDCP status. Over RDP, the virtual display driver doesn't support OPM → Windows Media Foundation blocks decryption → Shaka surfaces as cryptic error 3014 (MEDIA, category 3) or 6008 (DRM, category 6)
+   - **Detection**: matches Shaka codes 3014+cat3 / 6008, or error data containing `output protection`, `OPM`, `0xC0262500`
+   - **What the user sees**: instead of "Media decode error: the video could not be played", the player explains the real issue — the display doesn't support output protection — and advises testing on a real display or using ClearKey DRM
+   - The DRM license exchange succeeds (key status = "usable"); decryption is blocked at the Windows MF renderer level. This affects ALL PlayReady content on the machine, including Microsoft's own test streams
+   - 8 unit tests covering all detection patterns
+   - See `../free-drm/docs/playready-cdm-debugging.md` issue #21 for full investigation
+
 ### Phase 1 — Validator Panel + Timeline Analysis
 
 **Goal**: Ship the validator panel UI, the orchestrator, and the first set of checks that require zero additional fetching.
