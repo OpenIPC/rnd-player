@@ -66,7 +66,7 @@ ffmpeg -y -loglevel error \
   -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
   -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=20:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v libx264 -preset ultrafast -tune zerolatency \
   -g "$FPS" -keyint_min "$FPS" \
   -pix_fmt yuv420p \
@@ -115,7 +115,7 @@ ffmpeg -y -loglevel error \
   -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
   -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=20:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v libx264 -preset veryfast \
   -x264-params "aq-mode=2:aq-strength=1.0" \
   -g "$FPS" -keyint_min "$FPS" \
@@ -241,7 +241,7 @@ ffmpeg -y -loglevel error \
   -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
   -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=20:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v libx265 -preset ultrafast -tag:v hvc1 \
   -x265-params "keyint=30:min-keyint=30" \
   -pix_fmt yuv420p \
@@ -307,7 +307,7 @@ ffmpeg -y -loglevel error \
   -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
   -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=20:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v libx265 -preset veryfast -tag:v hvc1 \
   -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
   -pix_fmt yuv420p \
@@ -382,7 +382,7 @@ ffmpeg -y -loglevel error \
   -f lavfi -i "mandelbrot=size=1920x1080:rate=$FPS" \
   -f lavfi -i "sine=frequency=440:duration=$DURATION:sample_rate=44100" \
   -t "$DURATION" \
-  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
+  -vf "drawtext=${FONT_OPT}:fontsize=120:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=20:x=(w-text_w)/2:y=(h-text_h)/2:text='%{eif\:n\:d\:4}'" \
   -c:v "$AV1_ENCODER" $AV1_EXTRA_FLAGS \
   -g "$FPS" -keyint_min "$FPS" \
   -pix_fmt yuv420p \
