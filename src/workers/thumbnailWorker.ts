@@ -242,7 +242,7 @@ function extractAllSamplesFromSegment(
  * Classify an array of samples (in decode order) into I/P/B frame types,
  * returning GopFrame[] in display (CTS) order with byte sizes.
  */
-function classifyFrameTypes(samples: { cts: number; is_sync: boolean; data?: { byteLength: number } | null }[]): GopFrame[] {
+function classifyFrameTypes(samples: { cts: number; dts?: number; duration?: number; timescale?: number; is_sync: boolean; data?: { byteLength: number } | null }[]): GopFrame[] {
   const decodeTypes: FrameType[] = [];
   let maxCts = -Infinity;
   for (const s of samples) {
@@ -256,9 +256,18 @@ function classifyFrameTypes(samples: { cts: number; is_sync: boolean; data?: { b
     if (s.cts > maxCts) maxCts = s.cts;
   }
   return samples
-    .map((s, i) => ({ cts: s.cts, type: decodeTypes[i], size: s.data?.byteLength ?? 0 }))
+    .map((s, i) => {
+      const ts = s.timescale || 1;
+      return { cts: s.cts, type: decodeTypes[i], size: s.data?.byteLength ?? 0, dts: s.dts, duration: s.duration, timescale: ts };
+    })
     .sort((a, b) => a.cts - b.cts)
-    .map((x) => ({ type: x.type, size: x.size }));
+    .map((x) => ({
+      type: x.type,
+      size: x.size,
+      cts: x.cts / x.timescale,
+      dts: x.dts != null ? x.dts / x.timescale : undefined,
+      duration: x.duration != null ? x.duration / x.timescale : undefined,
+    }));
 }
 
 /**
@@ -740,8 +749,12 @@ async function handleDecodeSegmentFrames(msg: Extract<WorkerRequest, { type: "de
 
         if (cancelledDecodeRequests.has(requestId)) return;
 
-        const frameType = gopStructure[currentIdx]?.type ?? "P";
-        const sizeBytes = gopStructure[currentIdx]?.size ?? 0;
+        const gf = gopStructure[currentIdx];
+        const frameType = gf?.type ?? "P";
+        const sizeBytes = gf?.size ?? 0;
+        const cts = gf?.cts ?? 0;
+        const dts = gf?.dts ?? 0;
+        const dur = gf?.duration ?? 0;
         const idx = currentIdx;
 
         const p = createImageBitmap(canvas).then((bitmap) => {
@@ -750,7 +763,7 @@ async function handleDecodeSegmentFrames(msg: Extract<WorkerRequest, { type: "de
             return;
           }
           post(
-            { type: "segmentFrame", requestId, frameIndex: idx, totalFrames, bitmap, frameType, sizeBytes },
+            { type: "segmentFrame", requestId, frameIndex: idx, totalFrames, bitmap, frameType, sizeBytes, cts, dts, duration: dur },
             [bitmap],
           );
         });

@@ -3,6 +3,12 @@ export type FrameType = "I" | "P" | "B";
 export interface GopFrame {
   type: FrameType;
   size: number;
+  /** Composition time in seconds (presentation order) */
+  cts?: number;
+  /** Decode time in seconds */
+  dts?: number;
+  /** Frame duration in seconds */
+  duration?: number;
 }
 
 /** Messages from main thread to thumbnail worker */
@@ -74,6 +80,6 @@ export type WorkerResponse =
   | { type: "saveFrameResult"; bitmap: ImageBitmap | null }
   | { type: "intraFrames"; segmentIndex: number; bitmaps: ImageBitmap[]; frameTypes: FrameType[]; gopStructure: GopFrame[]; timestamps: number[] }
   | { type: "gopStructure"; segmentIndex: number; gopStructure: GopFrame[] }
-  | { type: "segmentFrame"; requestId: string; frameIndex: number; totalFrames: number; bitmap: ImageBitmap; frameType: FrameType; sizeBytes: number }
+  | { type: "segmentFrame"; requestId: string; frameIndex: number; totalFrames: number; bitmap: ImageBitmap; frameType: FrameType; sizeBytes: number; cts: number; dts: number; duration: number }
   | { type: "segmentFramesDone"; requestId: string; totalFrames: number }
   | { type: "boundaryPreview"; boundaryTime: number; beforeBitmap: ImageBitmap | null; afterBitmap: ImageBitmap | null };

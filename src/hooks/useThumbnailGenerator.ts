@@ -23,6 +23,9 @@ export interface SegmentFrame {
   bitmap: ImageBitmap;
   frameType: FrameType;
   sizeBytes: number;
+  cts: number;
+  dts: number;
+  duration: number;
 }
 
 export type DecodeSegmentFramesFn = (
@@ -582,6 +585,9 @@ export function useThumbnailGenerator(
                   bitmap: msg.bitmap,
                   frameType: msg.frameType,
                   sizeBytes: msg.sizeBytes,
+                  cts: msg.cts,
+                  dts: msg.dts,
+                  duration: msg.duration,
                 });
               }
               break;
