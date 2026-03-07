@@ -63,17 +63,25 @@ duration: number;   // frame duration in seconds
 **GopFrame** — extend to carry timing:
 No change needed. Timing is sent directly in segmentFrame message from the worker where samples are in scope.
 
-## Phase 2 — Per-Frame QP Maps (WASM Changes)
+## Phase 2 — Per-Frame QP Maps (WASM + Worker Changes)
+
+### Current state
+
+The QP overlay on the main video already works for every segment — each segment starts with a key frame and the worker creates a fresh decoder per request. But each decode produces **one** QP map per segment:
+
+- **H.264 (JM)**: `!frame_ready` guard in `jm264_on_frame_decoded` → captures only the first (IDR) frame
+- **H.265 (HM)**: no guard, `capture_qp_from_list` overwrites on each frame → captures the **last** output frame
+- **AV1 (dav1d)**: single `g_qp_sb_grid` buffer, returns after first `dav1d_get_picture` → captures the key frame
+
+All three decoders decode the full segment but only return one QP map.
 
 ### 2.1 Per-Frame QP Heatmap Overlay
 
-Currently each WASM decoder only captures the IDR frame's QP map (`!frame_ready` guard). Remove this guard to capture QP for every frame in the segment.
+To show QP per frame in the segment frames modal, the WASM wrappers and worker need to return **N QP maps** (one per decoded frame). Changes needed:
 
-- Toggle button in header: "QP" (off by default)
-- When active, runs QP decode for the segment in the qpMapWorker
-- Renders semi-transparent heatmap canvas over each frame thumbnail
-- Consistent color scale across all frames (global min/max for the segment)
-- Shows per-frame avg QP in metadata row
+- **WASM wrappers**: accumulate QP maps into a list (or callback per frame) instead of a single cache. H.264: remove `!frame_ready` guard, append to array. H.265: append instead of overwrite. AV1: capture per-picture instead of returning after first.
+- **Worker API**: new message type `decodeSegmentQp` that returns an array of QP maps indexed by display order
+- **UI**: toggle button in header: "QP" (off by default). When active, runs QP decode, renders semi-transparent heatmap canvas over each frame thumbnail. Consistent color scale across all frames (global min/max for the segment).
 
 ### 2.2 Average QP in Metadata
 
