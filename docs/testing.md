@@ -70,9 +70,37 @@ npx playwright show-report                  # view HTML report after run
 - `probeAv1MseSupport(page)` — checks `MediaSource.isTypeSupported` for av01
 - `probeAv1WebCodecsSupport(page)` — checks `VideoDecoder.isConfigSupported` for av01
 
+## WASM Decoder Tests
+
+Node.js validation suites for the three QP heatmap reference decoders. No browser needed — tests run via `WebAssembly.compile/instantiate` with WASI stubs, using FFmpeg-generated test streams as input.
+
+```bash
+node wasm/test-validate-qp.mjs          # H.264 (JM) — 32 tests
+node wasm/test-validate-qp-h265.mjs     # H.265 (HM) — 32 tests
+node wasm/test-validate-qp-av1.mjs      # AV1 (dav1d) — 36 tests
+node wasm/test-realworld.mjs            # H.264 real-world scenarios — 8 tests
+node wasm/test-realworld-dash.mjs       # H.264 live DASH segments — 9 tests (requires network)
+```
+
+**Prerequisites:** WASM binaries built (`public/*.wasm`), FFmpeg on PATH (with libx264, libx265, libsvtav1 or libaom-av1).
+
+**Test categories per decoder:**
+
+| Category | What's verified |
+|----------|-----------------|
+| Fixed QP | Generate streams with known QP, verify all blocks match (±1 for H.265 CU-level adjustment) |
+| Dimensions | Multiple resolutions → correct width/height in block units (16×16 for H.264, 8×8 for H.265/AV1) |
+| Variable QP (CRF) | Complex content → QP values in valid range, spatial variation present |
+| fMP4 pipeline | Parse init segment (avcC/hvcC/av1C), extract NALUs from mdat, build Annex B/OBU, decode — mirrors browser worker pipeline |
+| Sequential decodes | Fresh WASM instance per decode, verify no state corruption across multiple independent segments |
+
+**Why single-platform is sufficient:** WASM execution is deterministic — the same `.wasm` binary produces identical results across all browsers and Node.js. The WASI shims are trivial (fd_write, proc_exit). Cross-browser differences only affect the JS integration layer (Web Workers, fetch), which is covered by E2E tests.
+
+**CI integration:** The `wasm-build` job in `.github/workflows/ci.yml` runs all three validation suites after building the WASM binaries. Tests use FFmpeg to generate test streams on-the-fly, so no fixtures are checked into the repo.
+
 ## CI Matrix
 
-GitHub Actions (`.github/workflows/ci.yml`) runs 7 jobs: 1 unit test + build job on Ubuntu, plus 6 E2E jobs:
+GitHub Actions (`.github/workflows/ci.yml`) runs 8 jobs: 1 unit test + build job, 1 WASM build + test job, plus 6 E2E jobs:
 
 | Runner | Browser | Notes |
 |--------|---------|-------|
