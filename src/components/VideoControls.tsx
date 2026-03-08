@@ -616,8 +616,10 @@ export default function VideoControls({
       const target = e.target as HTMLElement;
       // Skip programmatic .click() on file inputs (e.g. context menu "Load scene data...")
       if (target.tagName === "INPUT" && (target as HTMLInputElement).type === "file") return;
-      // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-audio-compare") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop") || target.closest(".vp-adaptation-toast") || target.closest(".vp-drm-panel") || target.closest(".vp-mv-panel")) return;
+      // Only toggle play/pause for clicks inside the video area (whitelist).
+      // Panels portaled into containerEl (stats, manifest validator, etc.)
+      // are siblings of vp-video-area, not children, so they're excluded.
+      if (!target.closest("[data-vp-click-toggle]")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();

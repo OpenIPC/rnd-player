@@ -809,7 +809,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
   return (
     <div ref={containerRef} className={`vp-container${needsKey || (error && !playerReady) ? " vp-awaiting-key" : ""}`}>
-      <div className="vp-video-area">
+      <div className="vp-video-area" data-vp-click-toggle>
         <video ref={videoRef} />
         {needsKey && (
           <div className="vp-key-overlay">
