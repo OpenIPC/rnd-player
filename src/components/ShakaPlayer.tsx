@@ -900,6 +900,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         {error && (
           <div className="vp-error-overlay">
             <div className="vp-error-message">
+              <button className="vp-error-dismiss" onClick={() => setError(null)} title="Dismiss">×</button>
               <div className="vp-error-summary">{error.summary}</div>
               {error.details.length > 0 && (
                 <div className="vp-error-details">
