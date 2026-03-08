@@ -91,7 +91,45 @@ export function diagnoseNetworkError(
     };
   }
 
-  // --- Non-1001 network errors ---
+  // --- HTTP_ERROR (code 1002): fetch/XHR failed at network level ---
+  if (error.code === 1002) {
+    const typeName = requestTypeLabel(requestType);
+    const shortUrl = uri ? shortenUrl(uri) : undefined;
+    const details: string[] = [];
+
+    details.push(
+      `${typeName} request failed — the server connection was interrupted before the full response was received.`,
+    );
+    if (context.segmentSuccessCount > 0) {
+      details.push(`${context.segmentSuccessCount} segment(s) loaded successfully before the failure.`);
+    }
+    if (shortUrl) details.push(`Failed URL: ${shortUrl}`);
+
+    // Extract nested error message if available (e.g. TypeError from fetch)
+    const nestedMsg = extractNestedMessage(error);
+    if (nestedMsg) {
+      details.push(`Browser error: ${nestedMsg}`);
+    }
+
+    const isIsm = (uri && isIsmSegmentUrl(uri)) || isIsmManifestUrl(context.manifestUrl);
+    if (isIsm && requestType === 1) {
+      details.push(
+        "Pattern: ISM origin interrupted the response mid-transfer. " +
+        "This can happen when the AES repackaging filter encounters a " +
+        "segment with mismatched senc/trun byte counts (Content-Length " +
+        "mismatch). Run the Manifest Validator deep scan to check for " +
+        "senc/trun issues.",
+      );
+    }
+
+    return {
+      summary: `${typeName} transfer interrupted (network error)`,
+      details,
+      url: uri,
+    };
+  }
+
+  // --- Other non-1001 network errors ---
   if (error.code !== 1001) {
     return {
       summary: `Network error (code ${error.code})`,
@@ -337,6 +375,111 @@ export function diagnoseDrmPlaybackError(
         "require output protection.",
     ],
   };
+}
+
+/**
+ * Extract a human-readable message from Shaka error data array.
+ * Shaka often nests the original Error/TypeError in data[1] or data[0].
+ */
+function extractNestedMessage(error: ShakaErrorLike): string | undefined {
+  if (!error.data) return undefined;
+  for (const item of error.data) {
+    if (item instanceof Error) return item.message;
+    if (typeof item === "object" && item !== null && "message" in item) {
+      return String((item as { message: unknown }).message);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Produce a diagnostic error for unrecognized Shaka error categories.
+ * Extracts whatever useful info is available from the error detail and
+ * the video element's MediaError.
+ */
+export function diagnoseFallbackError(
+  error: ShakaErrorLike,
+  videoError: MediaError | null | undefined,
+  manifestUrl?: string,
+): StreamError {
+  const details: string[] = [];
+
+  // Extract info from Shaka error
+  const nestedMsg = extractNestedMessage(error);
+  if (nestedMsg) {
+    details.push(nestedMsg);
+  }
+
+  // Include the Shaka error code/category if available
+  if (error.code != null || error.category != null) {
+    details.push(`Shaka error: category=${error.category ?? "?"} code=${error.code ?? "?"}`);
+  }
+
+  // Dump Shaka data array — often contains the only clue
+  if (error.data && error.data.length > 0) {
+    const dataDump = error.data.map((item) => {
+      if (item instanceof Error) return item.message;
+      if (typeof item === "string") return item;
+      if (typeof item === "number") return String(item);
+      try { return JSON.stringify(item); } catch { return String(item); }
+    }).join(" | ");
+    details.push(`Error data: ${dataDump}`);
+  }
+
+  // Try to extract message from .message property (shaka.util.Error extends Error)
+  const errObj = error as Record<string, unknown>;
+  if (typeof errObj.message === "string" && errObj.message) {
+    details.push(errObj.message);
+  }
+
+  // Extract info from video element's MediaError
+  if (videoError) {
+    const mediaErrorLabels: Record<number, string> = {
+      1: "MEDIA_ERR_ABORTED",
+      2: "MEDIA_ERR_NETWORK",
+      3: "MEDIA_ERR_DECODE",
+      4: "MEDIA_ERR_SRC_NOT_SUPPORTED",
+    };
+    const label = mediaErrorLabels[videoError.code] ?? `code ${videoError.code}`;
+    details.push(`Video element error: ${label}`);
+    if (videoError.message) {
+      details.push(videoError.message);
+    }
+  }
+
+  // Detect fetch/network failure pattern — browser only exposes generic
+  // "Failed to fetch" for ERR_CONTENT_LENGTH_MISMATCH and similar errors
+  const allText = [nestedMsg, errObj.message, ...(error.data ?? []).map(String)].join(" ");
+  const isFetchFailure = /failed to fetch|networkerror|network\s*error|load failed/i.test(allText);
+
+  if (isFetchFailure && manifestUrl && isIsmManifestUrl(manifestUrl)) {
+    details.push(
+      "Pattern: ISM origin interrupted the response (browser reports \"Failed to fetch\" " +
+      "which can indicate a Content-Length mismatch). This happens when the AES " +
+      "repackaging filter encounters a segment with mismatched senc/trun byte counts. " +
+      "Run the Manifest Validator deep scan to check.",
+    );
+  }
+
+  // Build summary from the best available info
+  let summary: string;
+  if (isFetchFailure) {
+    summary = "Network error: a media request was interrupted mid-transfer";
+  } else if (videoError?.code === 2) {
+    summary = "Network error: the video transfer was interrupted";
+  } else if (videoError?.code === 3) {
+    summary = "Media decode error: the video data could not be decoded";
+  } else if (videoError?.code === 4) {
+    summary = "The video format is not supported by this browser";
+  } else if (error.code != null) {
+    summary = `Playback error (code ${error.code}): the video could not be played`;
+  } else if (nestedMsg) {
+    summary = `Playback error: ${nestedMsg}`;
+  } else {
+    summary = "Playback error: the video could not be played";
+  }
+
+  return { summary, details };
 }
 
 /** Convert a plain string error message to a StreamError. */

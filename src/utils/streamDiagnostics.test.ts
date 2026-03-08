@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diagnoseNetworkError, diagnoseDrmPlaybackError, simpleError } from "./streamDiagnostics";
+import { diagnoseNetworkError, diagnoseDrmPlaybackError, diagnoseFallbackError, simpleError } from "./streamDiagnostics";
 
 describe("streamDiagnostics", () => {
   describe("simpleError", () => {
@@ -135,13 +135,41 @@ describe("streamDiagnostics", () => {
       });
     });
 
-    describe("non-1001 network errors", () => {
-      it("produces generic network error", () => {
+    describe("HTTP_ERROR (code 1002)", () => {
+      it("produces transfer interrupted error with URL", () => {
         const err = diagnoseNetworkError(
           { code: 1002, data: ["https://cdn.example.com/seg.m4s"] },
           baseCtx,
         );
-        expect(err.summary).toBe("Network error (code 1002)");
+        expect(err.summary).toBe("Unknown request transfer interrupted (network error)");
+        expect(err.details.some((d) => d.includes("interrupted"))).toBe(true);
+      });
+
+      it("includes ISM hint for ISM segment URLs", () => {
+        const err = diagnoseNetworkError(
+          { code: 1002, data: ["https://cdn.example.com/video.ism/Q(128000)/F(seg0)", undefined, undefined, undefined, 1] },
+          { ...baseCtx, manifestUrl: "https://cdn.example.com/video.ism/Manifest.mpd" },
+        );
+        expect(err.summary).toBe("Media segment transfer interrupted (network error)");
+        expect(err.details.some((d) => d.includes("senc/trun"))).toBe(true);
+      });
+
+      it("extracts nested error message", () => {
+        const err = diagnoseNetworkError(
+          { code: 1002, data: ["https://cdn.example.com/seg.m4s", new TypeError("Failed to fetch")] },
+          baseCtx,
+        );
+        expect(err.details.some((d) => d.includes("Failed to fetch"))).toBe(true);
+      });
+    });
+
+    describe("other non-1001 network errors", () => {
+      it("produces generic network error", () => {
+        const err = diagnoseNetworkError(
+          { code: 1004, data: ["https://cdn.example.com/seg.m4s"] },
+          baseCtx,
+        );
+        expect(err.summary).toBe("Network error (code 1004)");
       });
     });
 
@@ -225,6 +253,70 @@ describe("streamDiagnostics", () => {
     it("includes ClearKey suggestion in details", () => {
       const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: [] });
       expect(err!.details.some(d => /ClearKey/i.test(d))).toBe(true);
+    });
+  });
+
+  describe("diagnoseFallbackError", () => {
+    it("uses video element MEDIA_ERR_NETWORK for summary", () => {
+      const err = diagnoseFallbackError(
+        { code: 5001, category: 5 },
+        { code: 2, message: "" } as MediaError,
+      );
+      expect(err.summary).toBe("Network error: the video transfer was interrupted");
+      expect(err.details.some((d) => d.includes("MEDIA_ERR_NETWORK"))).toBe(true);
+    });
+
+    it("uses video element MEDIA_ERR_DECODE for summary", () => {
+      const err = diagnoseFallbackError(
+        { code: 3015, category: 3 },
+        { code: 3, message: "PIPELINE_ERROR_DECODE" } as MediaError,
+      );
+      expect(err.summary).toBe("Media decode error: the video data could not be decoded");
+      expect(err.details.some((d) => d.includes("PIPELINE_ERROR_DECODE"))).toBe(true);
+    });
+
+    it("extracts nested Error from Shaka data", () => {
+      const err = diagnoseFallbackError(
+        { code: 3015, category: 3, data: [new TypeError("Failed to fetch")] },
+        null,
+      );
+      expect(err.summary).toBe("Network error: a media request was interrupted mid-transfer");
+      expect(err.details.some((d) => d.includes("Failed to fetch"))).toBe(true);
+    });
+
+    it("detects fetch failure with ISM manifest URL", () => {
+      const err = diagnoseFallbackError(
+        { code: undefined as unknown as number, data: [new TypeError("Failed to fetch")] },
+        null,
+        "https://cdn.example.com/video.ism/Manifest.mpd",
+      );
+      expect(err.summary).toBe("Network error: a media request was interrupted mid-transfer");
+      expect(err.details.some((d) => d.includes("senc/trun"))).toBe(true);
+    });
+
+    it("includes Shaka code/category in details", () => {
+      const err = diagnoseFallbackError(
+        { code: 5001, category: 5 },
+        null,
+      );
+      expect(err.details.some((d) => d.includes("category=5") && d.includes("code=5001"))).toBe(true);
+      expect(err.summary).toBe("Playback error (code 5001): the video could not be played");
+    });
+
+    it("handles undefined code gracefully", () => {
+      const err = diagnoseFallbackError(
+        { code: undefined as unknown as number },
+        null,
+      );
+      expect(err.summary).toBe("Playback error: the video could not be played");
+    });
+
+    it("uses nested message as summary when code is undefined", () => {
+      const err = diagnoseFallbackError(
+        { code: undefined as unknown as number, data: [{ message: "some unusual error" }] },
+        null,
+      );
+      expect(err.summary).toBe("Playback error: some unusual error");
     });
   });
 });

@@ -12,7 +12,7 @@ import type { SceneData } from "../types/sceneData";
 import type { DeviceProfile } from "../utils/detectCapabilities";
 import type { DrmConfig, WatermarkToken } from "../drm/types";
 import { fetchLicense } from "../drm/drmClient";
-import { diagnoseNetworkError, diagnoseDrmPlaybackError, simpleError, type StreamError } from "../utils/streamDiagnostics";
+import { diagnoseNetworkError, diagnoseDrmPlaybackError, diagnoseFallbackError, simpleError, type StreamError } from "../utils/streamDiagnostics";
 import { parseManifestDrm } from "../drm/diagnostics/parseManifestDrm";
 import { parseInitSegmentDrm } from "../drm/diagnostics/parseInitSegmentDrm";
 import type { DrmDiagnosticsState } from "../drm/diagnostics/types";
@@ -189,6 +189,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           detail.code,
           "data=",
           detail.data,
+          "message=",
+          detail.message,
+          "video.error=",
+          video.error,
         );
         if (detail.severity === 2) {
           // severity 2 = CRITICAL
@@ -201,11 +205,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           } else if (detail.category === 6) {
             setError(simpleError("DRM error: unable to decrypt content. Check that the decryption keys are correct."));
           } else if (detail.category === 3) {
-            setError(simpleError(
-              kidRef.current
-                ? "Media decode error: content could not be decrypted. The provided key may be incorrect."
-                : "Media decode error: the video could not be played.",
-            ));
+            const mediaErr = diagnoseFallbackError(detail, video.error, src);
+            if (kidRef.current) {
+              mediaErr.details.push("DRM keys are configured — the key may be incorrect, or the encrypted segment data may be truncated.");
+            }
+            setError(mediaErr);
           } else if (detail.category === 1) {
             const blockedHost = getCorsBlockedOrigin(src);
             if (blockedHost) {
@@ -217,7 +221,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               }));
             }
           } else {
-            setError(simpleError(`Playback error (code ${detail.code}): the video could not be played.`));
+            setError(diagnoseFallbackError(detail, video.error, src));
           }
         }
       });
