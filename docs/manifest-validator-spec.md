@@ -358,6 +358,7 @@ src/
       codecValidator.test.ts           — 16 unit tests (mocked mp4box)
       segmentScanner.ts                — Media segment deep scan (senc/trun, truncation, seq, tfdt)
       segmentScanner.test.ts           — 20 unit tests (synthetic BMFF segments)
+      reportExport.ts                  — Text + HTML report generation (clipboard copy, print-to-PDF)
       dashValidator.ts                 — [Stage 4] MPD XML structure + DASH-IF IOP checks
       hlsValidator.ts                  — [Stage 4] HLS playlist text parsing + RFC 8216 checks
       compatValidator.ts               — [Stage 4] Cross-platform compatibility warnings
@@ -627,18 +628,20 @@ User loads manifest
    - No fetching required
    - Checks: COMPAT-001 through COMPAT-007
 
-### Stage 5 — Export & Polish
+### Stage 5 — Export & Polish (DONE)
 
-**Goal**: Report export, persistent results, and UX refinements.
+**Goal**: Report export and UX refinements.
 
-**Tasks:**
+**Implemented:**
 
-1. **JSON export** — download `ValidationResult` as `.json` file
-2. **Copy report** — copy formatted text summary to clipboard
-3. **Persistent results** — cache validation results in sessionStorage per manifest URL
-4. **Re-validate button** — clear cache and re-run all checks
-5. **Filter controls** — toggle visibility by severity (errors only / errors+warnings / all)
-6. **Issue count badge** — show error count on context menu item (like notification badge)
+1. **Copy report** — formatted plain-text report to clipboard (for pasting into JIRA description)
+2. **Print-to-PDF** — styled HTML report opens in new tab with auto-print trigger (replaces JSON export — PDF is more practical for JIRA attachments). Zero dependencies, uses browser's built-in print-to-PDF.
+3. **Severity filter** — click error/warning/info counts in summary bar to toggle visibility. Dimmed counts = filtered out. At least one severity stays active.
+4. **Issue count badge** — red badge on "Validate manifest" context menu item showing error count. Appears after panel has been opened at least once, persists when panel is closed.
+5. **Re-scan preserves state** — re-scan re-merges deep scan issues, preserves user's expanded/collapsed categories
+6. **Dismissable error overlay** — error overlay has × button so it doesn't block the validator panel
+
+**Files:** `reportExport.ts` (text + HTML generation), `ManifestValidator.tsx` (filter, export, onErrorCount), `ContextMenu.tsx` (badge), `VideoControls.tsx` (error count state)
 
 ### Future stages (out of scope for initial implementation)
 
