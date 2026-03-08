@@ -35,6 +35,19 @@ export default function ManifestValidator({
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
   const runCount = useRef(0);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Native click stopPropagation — React's synthetic stopPropagation doesn't
+  // prevent native addEventListener handlers on parent elements (containerEl's
+  // click-to-play handler). This native handler fires during bubble phase
+  // BEFORE the event reaches containerEl.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const stop = (e: Event) => e.stopPropagation();
+    el.addEventListener("click", stop);
+    return () => el.removeEventListener("click", stop);
+  }, []);
 
   const autoExpand = (issues: ValidationIssue[]) => {
     const cats = new Set<string>();
@@ -152,7 +165,7 @@ export default function ManifestValidator({
   }
 
   return (
-    <div className="vp-mv-panel" onClick={(e) => e.stopPropagation()}>
+    <div ref={panelRef} className="vp-mv-panel">
       <button className="vp-mv-close" onClick={onClose}>
         ×
       </button>
