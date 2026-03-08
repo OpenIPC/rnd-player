@@ -427,7 +427,7 @@ export function diagnoseFallbackError(
   }
 
   // Try to extract message from .message property (shaka.util.Error extends Error)
-  const errObj = error as Record<string, unknown>;
+  const errObj = error as unknown as Record<string, unknown>;
   if (typeof errObj.message === "string" && errObj.message) {
     details.push(errObj.message);
   }
