@@ -3,6 +3,8 @@ import type { ValidationIssue, ValidationResult } from "./types";
 import { validateTimelines, extractTimelinesFromShaka } from "./timelineValidator";
 import { validateBmff, extractStreamsFromShaka } from "./bmffValidator";
 import { validateCodecs } from "./codecValidator";
+import { scanSegments, extractScanTracksFromShaka } from "./segmentScanner";
+import type { ScanProgress } from "./segmentScanner";
 
 /**
  * Run all available validators and collect results.
@@ -62,4 +64,39 @@ export async function runValidation(
       info: issues.filter((i) => i.severity === "info").length,
     },
   };
+}
+
+/**
+ * Run deep scan — fetches media segments and validates internal consistency.
+ * Separate from runValidation because it's user-initiated (expensive).
+ *
+ * Stage 3: senc/trun mismatch, truncation, sequence numbers, tfdt timing.
+ */
+export async function runDeepScan(
+  player: shaka.Player,
+  onProgress?: (progress: ScanProgress) => void,
+  options?: { maxSegmentsPerTrack?: number },
+): Promise<ValidationIssue[]> {
+  const fetchInit = async (url: string): Promise<ArrayBuffer> => {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+    return resp.arrayBuffer();
+  };
+
+  const tracks = await extractScanTracksFromShaka(
+    player,
+    fetchInit,
+    options?.maxSegmentsPerTrack ?? 1,
+  );
+
+  const fetchSegment = async (url: string) => {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+    const contentLengthHeader = resp.headers.get("content-length");
+    const contentLength = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
+    const data = await resp.arrayBuffer();
+    return { data, contentLength };
+  };
+
+  return scanSegments(tracks, fetchSegment, options, onProgress);
 }

@@ -1,7 +1,8 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import shaka from "shaka-player";
 import type { ValidationResult, ValidationIssue, ValidationCategory, Severity } from "../utils/manifestValidation/types";
-import { runValidation } from "../utils/manifestValidation/runValidation";
+import { runValidation, runDeepScan } from "../utils/manifestValidation/runValidation";
+import type { ScanProgress } from "../utils/manifestValidation/segmentScanner";
 
 interface ManifestValidatorProps {
   player: shaka.Player;
@@ -28,6 +29,8 @@ export default function ManifestValidator({
 }: ManifestValidatorProps) {
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [running, setRunning] = useState(false);
+  const [deepScanning, setDeepScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
   const runCount = useRef(0);
@@ -74,6 +77,38 @@ export default function ManifestValidator({
       autoExpand(r.issues);
     });
   };
+
+  const deepScan = useCallback(() => {
+    setDeepScanning(true);
+    setScanProgress(null);
+    runDeepScan(player, (progress) => {
+      setScanProgress(progress);
+    }).then((deepIssues) => {
+      setDeepScanning(false);
+      setScanProgress(null);
+      if (deepIssues.length > 0) {
+        setResult((prev) => {
+          if (!prev) return prev;
+          const allIssues = [...prev.issues, ...deepIssues];
+          return {
+            ...prev,
+            issues: allIssues,
+            summary: {
+              errors: allIssues.filter((i) => i.severity === "error").length,
+              warnings: allIssues.filter((i) => i.severity === "warning").length,
+              info: allIssues.filter((i) => i.severity === "info").length,
+            },
+          };
+        });
+        // Auto-expand Container category if deep scan found issues
+        setExpandedCategories((prev) => {
+          const next = new Set(prev);
+          next.add("Container");
+          return next;
+        });
+      }
+    });
+  }, [player]);
 
   // Run on mount
   useEffect(() => {
@@ -212,6 +247,26 @@ export default function ManifestValidator({
       {/* Running state */}
       {running && !result && (
         <div className="vp-mv-running">Scanning manifest...</div>
+      )}
+
+      {/* Deep scan */}
+      {result && !running && (
+        <div className="vp-mv-deepscan">
+          {deepScanning ? (
+            <span className="vp-mv-deepscan-progress">
+              {scanProgress
+                ? `Scanning ${scanProgress.trackLabel} seg ${scanProgress.segIndex}... (${scanProgress.trackNumber}/${scanProgress.totalTracks} tracks)`
+                : "Preparing deep scan..."}
+            </span>
+          ) : (
+            <button
+              className="vp-mv-deepscan-btn"
+              onClick={deepScan}
+            >
+              Deep Scan Segments
+            </button>
+          )}
+        </div>
       )}
 
       {/* Footer */}

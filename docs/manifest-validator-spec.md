@@ -349,14 +349,15 @@ src/
   utils/
     manifestValidation/
       types.ts                         — ValidationIssue, ValidationResult, Severity enums
-      runValidation.ts                 — Orchestrator: progressive (timeline → BMFF+codec)
+      runValidation.ts                 — Orchestrator: progressive (timeline → BMFF+codec → deep scan)
       timelineValidator.ts             — Gap/overlap/duration checks (pure + Shaka helper)
       timelineValidator.test.ts        — 17 unit tests (incl. ISM pattern scenario)
       bmffValidator.ts                 — ISO BMFF init segment validation + Shaka helper
       bmffValidator.test.ts            — 16 unit tests (mocked mp4box + cencDecrypt)
       codecValidator.ts                — Codec string vs init segment sample entry
       codecValidator.test.ts           — 16 unit tests (mocked mp4box)
-      segmentScanner.ts                — [Stage 3] Media segment deep scan
+      segmentScanner.ts                — Media segment deep scan (senc/trun, truncation, seq, tfdt)
+      segmentScanner.test.ts           — 20 unit tests (synthetic BMFF segments)
       dashValidator.ts                 — [Stage 4] MPD XML structure + DASH-IF IOP checks
       hlsValidator.ts                  — [Stage 4] HLS playlist text parsing + RFC 8216 checks
       compatValidator.ts               — [Stage 4] Cross-platform compatibility warnings
@@ -555,33 +556,41 @@ User loads manifest
 
 6. **Progressive panel UI** — Timeline results appear immediately on panel open. "Scanning..." indicator shows while BMFF/codec checks fetch init segments. Final results replace the partial view.
 
-### Stage 3 — Media Segment Deep Scan
+### Stage 3 — Media Segment Deep Scan (DONE)
 
 **Goal**: Fetch actual media segments and validate internal consistency. This is what directly catches the CDP senc/trun bug. Gated behind a "Deep Scan" button — not auto-run, since fetching is expensive.
 
-**Segment scanner:**
+**Implemented:**
 
-1. **Implement `segmentScanner.ts`**
-   - Configurable: scan first N segments per track (default: 1 — seg0 is the most common failure point per the CDP bug)
-   - For each segment: fetch, parse `moof` → extract `trun` sample sizes and `senc` sub-sample entries
-   - Reuse `cencDecrypt.ts` utilities (`extractTenc`, `parseSencFromSegment`) — they already parse senc
-   - **BMFF-S01**: `senc` sub-sample byte totals ≠ `trun` sample sizes (the exact CDP bug)
-   - **BMFF-S02**: `Content-Length` header vs received bytes mismatch (truncation detection)
-   - **BMFF-S03**: `moof` sequence numbers monotonically increasing
-   - **BMFF-S04**: `tfdt` base media decode time matches expected timeline position
+1. **`src/utils/manifestValidation/segmentScanner.ts`**
+   - `scanSegments(tracks, fetchFn, options, onProgress)` — pure validation, no Shaka dependency
+   - `extractScanTracksFromShaka(player, initFetchFn, maxSegs)` — Shaka integration helper, gets segment URLs + IV sizes from init segment tenc
+   - Internal parsers: `parseTrun` (sample sizes from trun flags), `parseTfhdDefaultSize`, `parseMfhd` (sequence numbers), `parseTfdt` (v0/v1 base decode time)
+   - Reuses `findBoxData`, `parseSencFromSegment`, `extractTenc` from `cencDecrypt.ts`
+   - Configurable `maxSegmentsPerTrack` (default: 1 — seg0 is the most common failure point per the CDP bug)
+   - **BMFF-S01**: `senc` sub-sample byte totals ≠ `trun` sample sizes (the exact CDP bug). Reports count, affected sample indices, and byte shortfall range.
+   - **BMFF-S02**: `Content-Length` header vs received bytes mismatch (truncation detection). Also reports fetch failures.
+   - **BMFF-S03**: `moof` sequence numbers monotonically increasing within a track
+   - **BMFF-S04**: `tfdt` base media decode time matches expected timeline position (0.1s tolerance)
 
-**UX:**
+2. **`src/utils/manifestValidation/runValidation.ts`** — Added `runDeepScan(player, onProgress, options)` export. Uses browser `fetch()` to get both `ArrayBuffer` and `Content-Length` header.
 
-2. "Deep Scan" button in the panel footer (separate from Re-scan which re-runs manifest-level checks)
-3. Progress indicator: "Scanning track 5 seg 0... (3/9 tracks)"
-4. Results appear per-track as they complete
-5. "[View segment details →]" link on BMFF-S01 issues opens expandable table showing per-sample senc vs trun comparison
+3. **`src/components/ManifestValidator.tsx`** — "Deep Scan Segments" button in panel (blue accent, below issues). Progress indicator: "Scanning video 1280x720 seg 0... (3/9 tracks)". Results merge into existing issue list with auto-expand on Container category.
 
-**Worker consideration:**
+4. **20 unit tests** in `segmentScanner.test.ts` — synthetic BMFF segments built from binary helpers (`makeMoof`, `makeTrun`, `makeSenc`, etc.). Tests include:
+   - Individual parser tests (trun, mfhd, tfdt v0/v1, tfhd default size)
+   - BMFF-S01: pattern 10/27 mismatch, matching samples, 8-byte IV CENC, no-senc skip
+   - BMFF-S02: truncation detection, Content-Length match, fetch failure
+   - BMFF-S03: non-monotonic sequence numbers
+   - BMFF-S04: tfdt mismatch, tfdt within tolerance
+   - Full ISM origin scenario: SD track clean + HD track with senc/trun mismatch
+   - Progress callback, maxSegmentsPerTrack option
 
-6. For scanning many segments, consider running in a Web Worker to avoid blocking UI. Can reuse the fetch + moof/mdat parsing pattern from `qpMapWorker`. For Stage 3 initial implementation, main-thread `async/await` is acceptable since segment count is small.
+5. **No production URLs or media segments** — all test data is synthetic, modeled on the ISM origin bug pattern.
 
-7. **Unit tests** with crafted segments containing intentional senc/trun mismatches
+**Future enhancements:**
+- "[View segment details →]" expandable table showing per-sample senc vs trun comparison
+- Web Worker for scanning many segments (current main-thread async/await is fine for small N)
 
 ### Stage 4 — DASH/HLS Manifest Text Validation
 

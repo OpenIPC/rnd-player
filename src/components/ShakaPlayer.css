@@ -3207,6 +3207,29 @@ video::-webkit-media-text-track-container {
   padding: 8px 0;
 }
 
+.vp-mv-deepscan {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+
+.vp-mv-deepscan-btn {
+  background: rgba(100, 170, 255, 0.15);
+  border: 1px solid rgba(100, 170, 255, 0.3);
+  border-radius: 3px;
+  color: #6af;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+  width: 100%;
+}
+.vp-mv-deepscan-btn:hover { background: rgba(100, 170, 255, 0.25); color: #8cf; }
+
+.vp-mv-deepscan-progress {
+  color: #6af;
+  font-size: 11px;
+}
+
 .vp-mv-footer {
   border-top: 1px solid rgba(255, 255, 255, 0.15);
   margin-top: 6px;
