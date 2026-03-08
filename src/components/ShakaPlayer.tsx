@@ -889,29 +889,6 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               />
             </Suspense>
           )}
-        {moduleConfig.drmDiagnostics && showDrmDiagnostics && (
-            <Suspense fallback={null}>
-              <DrmDiagnosticsPanel
-                state={drmDiagnosticsState}
-                onClose={() => setShowDrmDiagnostics(false)}
-              />
-            </Suspense>
-          )}
-        {error && (
-          <div className="vp-error-overlay">
-            <div className="vp-error-message">
-              <button className="vp-error-dismiss" onClick={() => setError(null)} title="Dismiss">×</button>
-              <div className="vp-error-summary">{error.summary}</div>
-              {error.details.length > 0 && (
-                <div className="vp-error-details">
-                  {error.details.map((line, i) => (
-                    <div key={i} className={`vp-error-detail-line${line.startsWith("URL:") || line.startsWith("Failed URL:") ? " vp-error-url" : ""}`}>{line}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
         {playerReady &&
           videoRef.current &&
           containerRef.current &&
@@ -1011,6 +988,29 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           </Suspense>
         )}
       </div>
+      {moduleConfig.drmDiagnostics && showDrmDiagnostics && (
+        <Suspense fallback={null}>
+          <DrmDiagnosticsPanel
+            state={drmDiagnosticsState}
+            onClose={() => setShowDrmDiagnostics(false)}
+          />
+        </Suspense>
+      )}
+      {error && (
+        <div className="vp-error-overlay">
+          <div className="vp-error-message">
+            <button className="vp-error-dismiss" onClick={() => setError(null)} title="Dismiss">×</button>
+            <div className="vp-error-summary">{error.summary}</div>
+            {error.details.length > 0 && (
+              <div className="vp-error-details">
+                {error.details.map((line, i) => (
+                  <div key={i} className={`vp-error-detail-line${line.startsWith("URL:") || line.startsWith("Failed URL:") ? " vp-error-url" : ""}`}>{line}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {moduleConfig.filmstrip &&
         showFilmstrip &&
         playerReady &&
