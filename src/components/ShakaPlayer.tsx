@@ -115,6 +115,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const pendingSessionRef = useRef<{ sessionId: string; renewalS: number } | null>(null);
   const [watermark, setWatermark] = useState<WatermarkToken | null>(null);
   const [showDrmDiagnostics, setShowDrmDiagnostics] = useState(false);
+  const [showManifestValidator, setShowManifestValidator] = useState(false);
   const [drmDiagnosticsState, setDrmDiagnosticsState] = useState<DrmDiagnosticsState>({
     manifest: null,
     initSegment: null,
@@ -258,10 +259,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       }
 
       // Fetch manifest and extract cenc:default_KID for ClearKey DRM
-      const { text: manifestText } = await fetchWithCorsRetry(src);
+      const { text: rawManifest } = await fetchWithCorsRetry(src);
       if (destroyed) return;
 
-      if (!manifestText) {
+      if (!rawManifest) {
         const corsBlocked = getCorsBlockedOrigin(src);
         if (corsBlocked) {
           setError(simpleError(`${corsBlocked} blocked cross-origin access from ${window.location.hostname}. Try loading the player from localhost.`));
@@ -270,17 +271,17 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       }
 
       let defaultKID: string | null = null;
-      if (manifestText) {
-        const doc = new DOMParser().parseFromString(manifestText, "text/xml");
+      if (rawManifest) {
+        const doc = new DOMParser().parseFromString(rawManifest, "text/xml");
         const cp = doc.querySelector("[*|default_KID]");
         defaultKID =
           cp?.getAttribute("cenc:default_KID")?.replaceAll("-", "") ?? null;
 
         // Parse all audio tracks (for AudioCompare)
-        setAllAudioTracks(parseAllAudioTracks(manifestText, src));
+        setAllAudioTracks(parseAllAudioTracks(rawManifest, src));
 
         // Detect EC-3/AC-3 audio tracks that the browser can't decode natively
-        const detectedEc3 = parseEc3Tracks(manifestText, src);
+        const detectedEc3 = parseEc3Tracks(rawManifest, src);
         if (detectedEc3.length > 0) {
           setEc3Tracks(detectedEc3);
           // Register a response filter to strip EC-3 AdaptationSets from the
@@ -303,8 +304,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       kidRef.current = defaultKID;
 
       // --- DRM diagnostics: parse manifest metadata ---
-      if (moduleConfig.drmDiagnostics && manifestText) {
-        const { info: manifestDrmInfo, psshBoxes: manifestPsshBoxes } = parseManifestDrm(manifestText);
+      if (moduleConfig.drmDiagnostics && rawManifest) {
+        const { info: manifestDrmInfo, psshBoxes: manifestPsshBoxes } = parseManifestDrm(rawManifest);
         setDrmDiagnosticsState((prev) => ({
           ...prev,
           manifest: manifestDrmInfo,
@@ -338,7 +339,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       if (defaultKID && !clearKey && drmConfig) {
         // Priority 2: check if manifest has Widevine PSSH → native Widevine EME
         // Otherwise fall back to ClearKey license server fetch.
-        const { info: drmInfo } = parseManifestDrm(manifestText!);
+        const { info: drmInfo } = parseManifestDrm(rawManifest!);
 
         if (hasWidevinePssh(drmInfo)) {
           // Widevine path: defer load to separate useEffect (same pattern
@@ -385,8 +386,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
       // Priority 2b: HLS FairPlay — no defaultKID (HLS doesn't use DASH PSSH),
       // but manifest contains FairPlay key format.
-      if (!defaultKID && drmConfig && manifestText) {
-        const { info: drmInfo } = parseManifestDrm(manifestText);
+      if (!defaultKID && drmConfig && rawManifest) {
+        const { info: drmInfo } = parseManifestDrm(rawManifest);
         console.log("[FP-TRACE] drmInfo:", drmInfo.type, "hlsKeys:", drmInfo.hlsKeys);
         if (hasFairPlayKey(drmInfo)) {
           console.log("[FP-TRACE] FairPlay key detected, computing fingerprint...");
@@ -404,7 +405,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         }
         console.log("[FP-TRACE] hasFairPlayKey returned false");
       } else {
-        console.log("[FP-TRACE] FairPlay check skipped: defaultKID=%s drmConfig=%s manifestText=%s", !!defaultKID, !!drmConfig, !!manifestText);
+        console.log("[FP-TRACE] FairPlay check skipped: defaultKID=%s drmConfig=%s rawManifest=%s", !!defaultKID, !!drmConfig, !!rawManifest);
       }
 
       try {
@@ -947,6 +948,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               allAudioTracks={allAudioTracks}
               showDrmDiagnostics={showDrmDiagnostics}
               onToggleDrmDiagnostics={() => setShowDrmDiagnostics((s) => !s)}
+              showManifestValidator={showManifestValidator}
+              onToggleManifestValidator={() => setShowManifestValidator((s) => !s)}
             />
           )}
         {moduleConfig.qualityCompare &&

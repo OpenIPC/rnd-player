@@ -27,6 +27,7 @@ const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
 const AudioCompare = lazy(() => import("./AudioCompare"));
 const QpHeatmapOverlay = lazy(() => import("./QpHeatmapOverlay"));
+const ManifestValidator = lazy(() => import("./ManifestValidator"));
 const SettingsModal = lazy(() => import("./SettingsModal"));
 import AdaptationToast from "./AdaptationToast";
 import { formatTimecode } from "../utils/formatTime";
@@ -88,6 +89,9 @@ interface VideoControlsProps {
   /** DRM diagnostics panel state. */
   showDrmDiagnostics?: boolean;
   onToggleDrmDiagnostics?: () => void;
+  /** Manifest validator panel state. */
+  showManifestValidator?: boolean;
+  onToggleManifestValidator?: () => void;
 }
 
 interface QualityOption {
@@ -184,6 +188,8 @@ export default function VideoControls({
   allAudioTracks,
   showDrmDiagnostics,
   onToggleDrmDiagnostics,
+  showManifestValidator,
+  onToggleManifestValidator,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -611,7 +617,7 @@ export default function VideoControls({
       // Skip programmatic .click() on file inputs (e.g. context menu "Load scene data...")
       if (target.tagName === "INPUT" && (target as HTMLInputElement).type === "file") return;
       // Ignore clicks on control bar or popups
-      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-audio-compare") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop") || target.closest(".vp-adaptation-toast") || target.closest(".vp-drm-panel")) return;
+      if (target.closest(".vp-bottom-bar") || target.closest(".vp-popup") || target.closest(".vp-stats-panel") || target.closest(".vp-context-menu") || target.closest(".vp-audio-levels") || target.closest(".vp-audio-compare") || target.closest(".vp-filmstrip-panel") || target.closest(".vp-compare-overlay") || target.closest(".vp-compare-modal-overlay") || target.closest(".vp-debug-panel") || target.closest(".vp-export-picker") || target.closest(".vp-export-progress") || target.closest(".vp-subtitle-track") || target.closest(".vp-translate-backdrop") || target.closest(".vp-adaptation-toast") || target.closest(".vp-drm-panel") || target.closest(".vp-mv-panel")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
@@ -1580,6 +1586,10 @@ export default function VideoControls({
             onToggleDrmDiagnostics();
             setContextMenu(null);
           } : undefined}
+          onToggleManifestValidator={onToggleManifestValidator ? () => {
+            onToggleManifestValidator();
+            setContextMenu(null);
+          } : undefined}
           hasMarkers={inPoint != null || outPoint != null}
           hasInOutPoints={inPoint != null && outPoint != null}
           hasActiveSubtitles={activeTextIds.size > 0}
@@ -1592,6 +1602,7 @@ export default function VideoControls({
           showFilmstrip={!!showFilmstrip}
           showQpHeatmap={showQpHeatmap}
           showDrmDiagnostics={!!showDrmDiagnostics}
+          showManifestValidator={!!showManifestValidator}
           isH264={qpHeatmap.isH264}
           isH265={qpHeatmap.isH265}
           isAv1={qpHeatmap.isAv1}
@@ -1649,6 +1660,18 @@ export default function VideoControls({
               player={player}
               videoEl={videoEl}
               onClose={() => setShowStats(false)}
+            />
+          </Suspense>,
+          containerEl
+        )}
+
+      {/* Manifest validator panel — portaled into containerEl so it stays visible when controls auto-hide */}
+      {moduleConfig.manifestValidator && showManifestValidator &&
+        createPortal(
+          <Suspense fallback={null}>
+            <ManifestValidator
+              player={player}
+              onClose={() => onToggleManifestValidator?.()}
             />
           </Suspense>,
           containerEl

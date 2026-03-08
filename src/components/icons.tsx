@@ -295,6 +295,15 @@ export function QpHeatmapIcon() {
   );
 }
 
+export function ManifestValidatorIcon() {
+  return (
+    <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M4 5h12M4 10h12M4 15h8" strokeLinecap="round" />
+      <path d="M15 13l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function DrmDiagnosticsIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

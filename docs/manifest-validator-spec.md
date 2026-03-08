@@ -8,6 +8,45 @@ Implement a multi-protocol manifest validator that checks manifest structure, ti
 
 ---
 
+## Relationship to Stream Diagnostics
+
+The player has two complementary diagnostic features:
+
+| | **Stream Diagnostics** (Phase 0, shipped) | **Manifest Validator** (this spec) |
+|---|---|---|
+| **Trigger** | Reactive — fires during playback on errors | Proactive — user-initiated scan, can run before play |
+| **Scope** | Currently active tracks only | All tracks, all representations |
+| **Data source** | Shaka error events, network responses, buffer state | Raw manifest text + fetched init/media segments |
+| **What it catches** | "Segment 23 failed with HTTP 500", "DRM OPM failure over RDP" | "Track 5 seg0 has 10/27 senc/trun mismatches", "Duration mismatch across representations" |
+| **Analogy** | Browser DevTools Network tab (observes live traffic) | `mediastreamvalidator` / DASH-IF Conformance (scans everything) |
+| **Code** | `src/utils/streamDiagnostics.ts` | `src/utils/manifestValidation/*` |
+
+Stream Diagnostics catches **symptoms** ("HTTP 500 on segment fetch"). The Manifest Validator catches **root causes** ("senc sub-sample bytes don't match trun sample sizes"). They complement each other — a stream engineer sees the playback error in Stream Diagnostics, then opens the Manifest Validator to find the structural issue causing it.
+
+---
+
+## Motivating Example — CDP CBCS Clear Endpoint Bug
+
+A real-world packaging bug that the Manifest Validator would catch at three diagnostic layers:
+
+**Bug**: An ISM origin server's AES body filter truncates the first segment of HD/FHD tracks (720p, 900p, 1080p) mid-mdat. The mezzanine is structurally correct, but the transcoder's CBCS sub-sample generator produces `senc` entries whose byte totals are 2–5 bytes short of actual `trun` sample sizes for specific samples in seg0. The AES filter (which processes even `/clr/` clear content) treats the mismatch as fatal and returns HTTP 500 after headers are sent, causing DPR to truncate the response.
+
+**What the user sees**: SD plays fine, HD/FHD won't load. Player stutters at ABR switch points.
+
+**What Stream Diagnostics (Phase 0) reports**: "HTTP 500 on segment fetch" — the symptom.
+
+**What the Manifest Validator would report at each layer:**
+
+| Layer | Check | Fetching cost | Finding |
+|---|---|---|---|
+| 1. Manifest-level | TL-005 duration mismatch | Zero (Shaka's parsed data) | "Video tracks 5–7: 404.241s vs tracks 3–4: 406.361s — 2.12s difference" |
+| 2. Init segment | BMFF-011 encryption metadata on clear content | One fetch per track | "`tenc.isProtected=1`, KID=`86ac5e...` but content served unencrypted" |
+| 3. Media segment deep scan | BMFF-S01 senc/trun mismatch | N segment fetches | "Track 5 seg0: 10/27 samples have senc sub-sample totals 2–5 bytes short of trun sizes" |
+
+This layered approach — instant manifest checks first, deeper segment scans on demand — drives the staged implementation plan below.
+
+---
+
 ## Industry Tooling Landscape
 
 ### What exists today
@@ -221,6 +260,18 @@ Validate the structure of init segments and (optionally sampled) media segments.
 | BMFF-008 | For encrypted: `tenc` box present with valid `default_isProtected`, `default_Per_Sample_IV_Size`, `default_KID` | Error | CENC spec |
 | BMFF-009 | For encrypted: `schm` box has scheme type `cenc` or `cbcs` | Error | CENC spec |
 | BMFF-010 | `senc` box present in media segments when encrypted | Warning | CENC spec (samples need per-sample IV/subsample info) |
+| BMFF-011 | `tenc.isProtected=1` but content served unencrypted (clear endpoint) | Warning | Encryption metadata present without actual encryption — may trigger AES filter bugs on CDP origins |
+
+#### 4.2 Media Segment Deep Scan (on-demand)
+
+These checks require fetching actual media segments and are gated behind a "Deep Scan" action.
+
+| Rule ID | Check | Severity | Notes |
+|---|---|---|---|
+| BMFF-S01 | `senc` sub-sample byte totals match `trun` sample sizes | Error | Sum of `(clear_bytes + cipher_bytes)` per sample must equal `trun` sample size. Mismatch causes AES filter truncation on CDP. |
+| BMFF-S02 | `Content-Length` matches received bytes | Error | Truncated response detection — headers sent before body error |
+| BMFF-S03 | `moof` sequence numbers are monotonically increasing | Warning | Gaps indicate missing or misordered fragments |
+| BMFF-S04 | `tfdt` base media decode time matches expected timeline position | Warning | Cross-reference with manifest segment timeline |
 
 ### Category 5 — Cross-Platform Compatibility
 
@@ -272,16 +323,17 @@ PlayerModuleConfig {
 - **Soft gate**: none (validation is lightweight, not GPU/memory intensive)
 - **Build preset**: enabled in `full`, disabled in `production` and `minimal`
 - **Default**: `true`
+- **Lazy loading**: `React.lazy()` import in `ShakaPlayer.tsx`, same pattern as all other optional panels. Validator code (types, orchestrator, individual validators) is only loaded when the user opens the panel.
 
 ### Component hierarchy
 
 ```
-ShakaPlayer.tsx
-  └─ ManifestValidator.tsx          — Panel UI (similar to StatsPanel)
-       ├─ ValidationSummary         — Pass/warn/error counts, expandable
-       ├─ ValidationCategory        — Collapsible section per category
-       │    └─ ValidationIssue      — Single issue row (severity icon, message, detail)
-       └─ ValidationActions         — Re-run, export JSON, copy report
+VideoControls.tsx
+  └─ ManifestValidator.tsx          — Panel UI (portaled into containerEl, like StatsPanel)
+       ├─ Summary bar               — Error/warning/info counts + Re-scan button
+       ├─ Category sections          — Collapsible, auto-expand on errors
+       │    └─ Issue rows            — Severity icon, rule ID, message, expandable detail
+       └─ Footer                    — Timing + manifest type
 ```
 
 ### File structure
@@ -289,20 +341,25 @@ ShakaPlayer.tsx
 ```
 src/
   components/
-    ManifestValidator.tsx            — Panel UI component
-    ManifestValidatorIssue.tsx       — Single issue row (reusable)
+    ManifestValidator.tsx              — Panel UI component (lazy loaded in VideoControls)
+    icons.tsx                          — ManifestValidatorIcon added
+    ContextMenu.tsx                    — "Validate manifest" menu item
+    VideoControls.tsx                  — Portal rendering, click-area exclusion
+    ShakaPlayer.css                    — .vp-mv-* panel styles
   utils/
     manifestValidation/
-      types.ts                       — ValidationIssue, ValidationResult, Severity enums
-      runValidation.ts               — Orchestrator: runs all validators, collects results
-      hlsValidator.ts                — HLS playlist text parsing + RFC 8216 checks
-      dashValidator.ts               — MPD XML structure + DASH-IF IOP checks
-      timelineValidator.ts           — Gap/overlap/duration checks (protocol-agnostic)
-      codecValidator.ts              — Codec string vs init segment sample entry
-      bmffValidator.ts               — ISO BMFF box structure checks
-      compatValidator.ts             — Cross-platform compatibility warnings
+      types.ts                         — ValidationIssue, ValidationResult, Severity enums
+      runValidation.ts                 — Orchestrator: progressive (timeline → BMFF+codec)
+      timelineValidator.ts             — Gap/overlap/duration checks (pure + Shaka helper)
+      timelineValidator.test.ts        — 13 unit tests
+      bmffValidator.ts                 — ISO BMFF init segment validation + Shaka helper
+      codecValidator.ts                — Codec string vs init segment sample entry
+      segmentScanner.ts                — [Stage 3] Media segment deep scan
+      dashValidator.ts                 — [Stage 4] MPD XML structure + DASH-IF IOP checks
+      hlsValidator.ts                  — [Stage 4] HLS playlist text parsing + RFC 8216 checks
+      compatValidator.ts               — [Stage 4] Cross-platform compatibility warnings
   types/
-    (add to existing moduleConfig.ts)
+    moduleConfig.ts                    — manifestValidator field added
 ```
 
 ### Data types
@@ -342,42 +399,43 @@ User loads manifest
     ├─ Shaka parses manifest → player.getManifest()
     │                        → player.getManifestType()
     │
-    ├─ Raw manifest text available from initial fetch
-    │
     └─ User opens ManifestValidator panel (via context menu)
          │
-         runValidation() orchestrator
+         runValidation(player, onProgress) orchestrator
          │
-         ├─ hlsValidator(rawText)           — if HLS
-         │   or dashValidator(rawXml)       — if DASH
+         ├─ Stage 1 (instant, no fetching):
+         │   extractTimelinesFromShaka(player)
+         │   └─ validateTimelines(timelines) → TL-001..TL-006
+         │   └─ onProgress(timelineIssues) → panel shows results immediately
          │
-         ├─ timelineValidator(segmentIndex) — protocol-agnostic
+         ├─ Stage 2 (fetches init segments, parallel):
+         │   extractStreamsFromShaka(player) → stream info + init URLs
+         │   ├─ validateBmff(streams, fetch) → BMFF-001..BMFF-011
+         │   │   └─ mp4box parse → ftyp/moov/mvex/tenc/schm checks
+         │   └─ validateCodecs(streams, fetch) → CS-001, CS-003, CS-007
+         │       └─ mp4box parse → stsd sample entry comparison
          │
-         ├─ codecValidator(streams, initSegment)
-         │   └─ fetches init segment → mp4box parse → stsd comparison
-         │
-         ├─ bmffValidator(initSegment)
-         │   └─ reuses fetched init segment from above
-         │
-         └─ compatValidator(streams, manifestType)
-             └─ pure logic, no fetching
+         ├─ [Stage 3] segmentScanner — media segment deep scan (on-demand)
+         ├─ [Stage 4] dashValidator / hlsValidator — manifest text parsing
+         └─ [Stage 4] compatValidator — cross-platform warnings
          │
          ▼
-    ValidationResult → ManifestValidator.tsx renders issues
+    ValidationResult → ManifestValidator.tsx renders final issues
 ```
 
 ### Validation execution
 
 - **On-demand** — validation runs when the user opens the panel, not automatically on every load. Avoids unnecessary network requests and computation.
-- **Cached** — results are cached per manifest URL. Re-run button clears cache and re-validates.
-- **Progressive** — manifest structure and timeline checks run immediately (use already-parsed data). Codec and BMFF checks that require fetching init segments show a loading state and populate asynchronously.
-- **Non-blocking** — all validation logic runs on the main thread (it's fast enough — text parsing and object iteration). If init segment fetching is needed, use `await fetch()` without blocking the UI.
+- **Progressive** — Stage 1 (timeline) results appear instantly via `onProgress` callback. Stage 2 (BMFF/codec) results appear when init segment fetches complete. Panel shows "Scanning..." indicator during Stage 2.
+- **Parallel** — BMFF and codec validators run concurrently via `Promise.all`. Init segment fetches are deduplicated by URL.
+- **Fault-tolerant** — each validator is wrapped in `.catch()`. One validator failing (e.g. CORS on init segment fetch) doesn't block others.
+- **Non-blocking** — all validation logic runs on the main thread (it's fast enough — text parsing and object iteration). Init segment fetching uses `await fetch()`.
 
 ---
 
-## Implementation Phases
+## Implementation Stages
 
-### Phase 0 — Stream Error Diagnostics (DONE)
+### Stage 0 — Stream Error Diagnostics (DONE)
 
 **Goal**: Replace cryptic Shaka error messages with structured, actionable diagnostics for network/segment errors. First foundation piece of the analytics engine.
 
@@ -415,70 +473,116 @@ User loads manifest
    - 8 unit tests covering all detection patterns
    - See `../free-drm/docs/playready-cdm-debugging.md` issue #21 for full investigation
 
-### Phase 1 — Validator Panel + Timeline Analysis
+### Stage 1 — Foundation + Manifest-Level Checks (DONE)
 
-**Goal**: Ship the validator panel UI, the orchestrator, and the first set of checks that require zero additional fetching.
+**Goal**: Ship the validator panel UI, the orchestrator, and the first set of checks that require zero additional fetching. Instant results from Shaka's already-parsed manifest.
 
-**Tasks:**
+**Implemented:**
 
-1. **Add `manifestValidator` to `PlayerModuleConfig`**
-   - Add field to `src/types/moduleConfig.ts`
-   - Update `MODULE_DEFAULTS` (true)
-   - Update `autoConfig.ts` preset mappings (enabled in `full` only)
-   - Add context menu item in `ContextMenu.tsx`
+1. **`manifestValidator` added to `PlayerModuleConfig`**
+   - Added to `src/types/moduleConfig.ts` (interface + `MODULE_DEFAULTS`)
+   - No capability gates needed (pure JS, no special APIs)
+   - Disabled in `production` and `minimal` build presets (`vite.config.ts`)
+   - Context menu item: "Validate manifest" / "Hide manifest validator"
 
-2. **Implement `ValidationResult` types** in `src/utils/manifestValidation/types.ts`
+2. **Lazy loading** — `React.lazy()` import of `ManifestValidator.tsx` in `VideoControls.tsx` (not ShakaPlayer — the panel is portaled into `containerEl` to avoid click-to-play interference). All validation code tree-shakes away when `manifestValidator` is disabled. Separate chunk: 13.8KB (4.8KB gzipped).
 
-3. **Implement `timelineValidator.ts`**
-   - Input: Shaka's `segmentIndex` for each stream
-   - Checks: TL-001 through TL-006 (gaps, overlaps, duration consistency, audio/video alignment)
-   - This is the highest-value, lowest-effort check — the infrastructure already exists in `useBitrateGraph.ts`
+3. **`src/utils/manifestValidation/types.ts`** — `Severity`, `ValidationIssue`, `ValidationResult`, `ValidationCategory`
 
-4. **Implement `ManifestValidator.tsx` panel UI**
-   - Similar to `StatsPanel.tsx` — overlay panel opened from context menu
-   - Severity-ranked issue list with expandable detail rows
-   - Summary bar: X errors, Y warnings, Z info
-   - Color coding: red for errors, yellow for warnings, blue for info
+4. **`src/utils/manifestValidation/runValidation.ts`** — Orchestrator
+   - Accepts Shaka player instance
+   - Progressive: `onProgress` callback reports Stage 1 (timeline) results immediately while Stage 2 (BMFF/codec) fetches init segments in the background
+   - Runs BMFF and codec validators in parallel via `Promise.all`
+   - Catches per-validator failures gracefully (one validator crashing doesn't block others)
 
-5. **Implement `runValidation.ts` orchestrator**
-   - Accepts Shaka player instance + raw manifest text
-   - Routes to available validators, collects results
-   - Returns `ValidationResult`
+5. **`src/utils/manifestValidation/timelineValidator.ts`** — Pure validation logic + Shaka integration helper
+   - `validateTimelines(timelines)` — pure function, easy to unit test with synthetic data
+   - `extractTimelinesFromShaka(player)` — extracts `StreamTimeline[]` from Shaka manifest (deduplicates streams by ID, calls `createSegmentIndex()`)
+   - TL-001: Gap detection (>1ms between consecutive segments)
+   - TL-002: Overlap detection (<-1ms between consecutive segments)
+   - TL-003: Duration variance (>50% from mean, excludes last segment which is often partial)
+   - TL-005: Duration mismatch across video representations (error >2s, warning 0.5–2s). Groups representations by duration for readable messages.
+   - TL-005: Audio/video duration mismatch (warning >2s)
+   - TL-006: Audio/video segment boundary alignment — only checks when segment durations are within 10% of each other. Different segment grids (e.g. 3s video / 2s audio in ISM/DASH) are expected and not flagged.
 
-6. **Wire up in `ShakaPlayer.tsx`**
-   - Pass raw manifest text (already fetched) to validator
-   - Gate on `moduleConfig.manifestValidator`
+6. **`src/components/ManifestValidator.tsx`** — Panel UI
+   - Portaled into `containerEl` via `createPortal` (same as StatsPanel) — prevents click-to-play interference
+   - Added `.vp-mv-panel` to the click-area exclusion list in `VideoControls.tsx`
+   - Summary bar with error/warning/info counts + Re-scan button
+   - Collapsible categories, auto-expanded based on severity (errors first, then warnings)
+   - Expandable issue rows with detail text and spec references
+   - Shows timing and manifest type in footer
 
-7. **Unit tests** for `timelineValidator.ts` with synthetic segment index data
+7. **`ManifestValidatorIcon`** added to `src/components/icons.tsx`
 
-### Phase 2 — HLS Manifest Validation
+8. **13 unit tests** in `timelineValidator.test.ts` — gaps, overlaps, duration variance, representation mismatch, audio/video mismatch, boundary alignment, edge cases
 
-**Goal**: Parse raw HLS playlist text and validate against RFC 8216 and Apple's Authoring Spec.
+### Stage 2 — Init Segment BMFF + Codec Validation (DONE)
 
-**Tasks:**
+**Goal**: Cross-reference manifest codec declarations against actual init segment content. One fetch per unique init segment (typically one per track).
 
-1. **Implement HLS text parser**
-   - Line-based parser for m3u8 format
-   - Extract tags, attributes, segment URIs, durations
-   - Shaka parses HLS internally but does not expose the raw AST — we need our own lightweight parser
-   - Not a full parser: only extract the fields needed for validation (tags, attribute-lists, EXTINF durations)
+**Implemented:**
 
-2. **Implement `hlsValidator.ts`**
-   - Playlist-level checks: HLS-001 through HLS-008
-   - Multivariant playlist checks: HLS-101 through HLS-109
-   - Segment-level checks: HLS-201 through HLS-208
-   - For bitrate accuracy checks (HLS-203, HLS-204): use measured bitrates from `useBitrateGraph.ts` if available
+1. **`src/utils/manifestValidation/bmffValidator.ts`**
+   - `extractStreamsFromShaka(player)` — extracts stream info + init segment URLs from Shaka manifest (type, codecs, encrypted flag, DRM scheme)
+   - `validateBmff(streams, fetchFn)` — fetches init segments, parses with mp4box.js
+   - Deduplicates fetches: streams sharing an init segment URL are fetched once
+   - Deduplicates BMFF-007 brand issues: tracks with the same uncommon brands produce one grouped message
+   - BMFF-001: `ftyp` present and first box
+   - BMFF-002: `moov` present
+   - BMFF-003: `mvex` present (required for fMP4/MSE)
+   - BMFF-007: Recognized brands in `ftyp` — known list includes `isom`/`iso2`–`iso9`, `avc1`/`hvc1`/`hev1`/`av01`/`vp09`, `mp41`/`mp42`/`mp71`, `dash`/`msdh`/`msix`, `cmfc`/`cmfl`/`cmff`, `piff` (Microsoft PIFF/Smooth Streaming), `M4V`/`M4A`
+   - BMFF-008: `tenc` has IV size or constant IV when `isProtected=1`
+   - BMFF-009: Encryption scheme is `cenc`/`cbcs`/`cens`/`cbc1`
+   - BMFF-011: `tenc.isProtected=1` with non-zero KID but Shaka reports stream as unencrypted (the CDP clear-endpoint pattern)
+   - Reuses `extractTenc()` and `extractScheme()` from `src/workers/cencDecrypt.ts`
 
-3. **Unit tests** with sample m3u8 playlists (valid and intentionally broken)
+2. **`src/utils/manifestValidation/codecValidator.ts`**
+   - `validateCodecs(streams, fetchFn)` — cross-references manifest codec strings with `stsd` sample entries
+   - Handles `encv`/`enca` encrypted wrappers: reads original format from `sinf.frma.data_format`
+   - Codec equivalence tables: `avc1`≈`avc3`, `hvc1`≈`hev1`, `ac-3`≈`ac_3`, `ec-3`≈`ec_3`
+   - CS-001: `hev1` in HLS (Apple requires `hvc1` — Safari rejects `hev1`)
+   - CS-003: Codec string in manifest doesn't match init segment sample entry type
+   - CS-007: Encrypted sample entry (`encv`/`enca`) missing `sinf` box
 
-### Phase 3 — DASH Manifest Validation
+3. **Progressive panel UI** — Timeline results appear immediately on panel open. "Scanning..." indicator shows while BMFF/codec checks fetch init segments. Final results replace the partial view.
 
-**Goal**: Parse MPD XML and validate against ISO 23009-1 and DASH-IF IOP.
+### Stage 3 — Media Segment Deep Scan
 
-**Tasks:**
+**Goal**: Fetch actual media segments and validate internal consistency. This is what directly catches the CDP senc/trun bug. Gated behind a "Deep Scan" button — not auto-run, since fetching is expensive.
+
+**Segment scanner:**
+
+1. **Implement `segmentScanner.ts`**
+   - Configurable: scan first N segments per track (default: 1 — seg0 is the most common failure point per the CDP bug)
+   - For each segment: fetch, parse `moof` → extract `trun` sample sizes and `senc` sub-sample entries
+   - Reuse `cencDecrypt.ts` utilities (`extractTenc`, `parseSencFromSegment`) — they already parse senc
+   - **BMFF-S01**: `senc` sub-sample byte totals ≠ `trun` sample sizes (the exact CDP bug)
+   - **BMFF-S02**: `Content-Length` header vs received bytes mismatch (truncation detection)
+   - **BMFF-S03**: `moof` sequence numbers monotonically increasing
+   - **BMFF-S04**: `tfdt` base media decode time matches expected timeline position
+
+**UX:**
+
+2. "Deep Scan" button in the panel footer (separate from Re-scan which re-runs manifest-level checks)
+3. Progress indicator: "Scanning track 5 seg 0... (3/9 tracks)"
+4. Results appear per-track as they complete
+5. "[View segment details →]" link on BMFF-S01 issues opens expandable table showing per-sample senc vs trun comparison
+
+**Worker consideration:**
+
+6. For scanning many segments, consider running in a Web Worker to avoid blocking UI. Can reuse the fetch + moof/mdat parsing pattern from `qpMapWorker`. For Stage 3 initial implementation, main-thread `async/await` is acceptable since segment count is small.
+
+7. **Unit tests** with crafted segments containing intentional senc/trun mismatches
+
+### Stage 4 — DASH/HLS Manifest Text Validation
+
+**Goal**: Parse raw manifest text for spec compliance. These are pure text/XML checks that complement the structural checks from earlier stages.
+
+**DASH validator:**
 
 1. **Implement `dashValidator.ts`**
-   - Input: raw MPD XML (already fetched as XML by `ShakaPlayer.tsx`)
+   - Input: raw MPD XML (already fetched by `ShakaPlayer.tsx`)
    - Use `DOMParser` to parse XML (already done in `ShakaPlayer.tsx` for ClearKey detection)
    - MPD-level checks: DASH-001 through DASH-005
    - Hierarchy checks: DASH-101 through DASH-110
@@ -487,32 +591,26 @@ User loads manifest
 
 2. **Unit tests** with sample MPD documents
 
-### Phase 4 — Codec & BMFF Validation
+**HLS validator:**
 
-**Goal**: Cross-reference manifest codec declarations against actual init segment content.
+3. **Implement `hlsValidator.ts`**
+   - Lightweight line-based parser for m3u8 format (Shaka doesn't expose raw AST)
+   - Extract tags, attribute-lists, segment URIs, EXTINF durations
+   - Playlist-level checks: HLS-001 through HLS-008
+   - Multivariant playlist checks: HLS-101 through HLS-109
+   - Segment-level checks: HLS-201 through HLS-208
+   - For bitrate accuracy checks (HLS-203, HLS-204): use measured bitrates from `useBitrateGraph.ts` if available
 
-**Tasks:**
+4. **Unit tests** with sample m3u8 playlists (valid and intentionally broken)
 
-1. **Implement `codecValidator.ts`**
-   - Fetch init segment (reuse `extractInitSegmentUrl()` from thumbnail generator)
-   - Parse with mp4box: extract `stsd` box → sample entry type (`avc1`/`hvc1`/`hev1`/`encv`)
-   - Compare with `stream.codecs` from Shaka manifest
-   - Checks: CS-001 through CS-009
+**Compatibility validator:**
 
-2. **Implement `bmffValidator.ts`**
-   - Parse init segment box tree via mp4box
-   - Validate required boxes: `ftyp`, `moov`, `mvex`, sample table entry counts
-   - For encrypted content: validate `sinf`/`schm`/`tenc` (reuse `extractTenc()` from `cencDecrypt.ts`)
-   - Checks: BMFF-001 through BMFF-010
-
-3. **Implement `compatValidator.ts`**
+5. **Implement `compatValidator.ts`**
    - Pure logic based on manifest type + codec strings + encryption scheme
    - No fetching required
    - Checks: COMPAT-001 through COMPAT-007
 
-4. **Unit tests** with real init segments (can reuse E2E test fixtures from `e2e/fixtures/`)
-
-### Phase 5 — Export & Polish
+### Stage 5 — Export & Polish
 
 **Goal**: Report export, persistent results, and UX refinements.
 
@@ -525,9 +623,8 @@ User loads manifest
 5. **Filter controls** — toggle visibility by severity (errors only / errors+warnings / all)
 6. **Issue count badge** — show error count on context menu item (like notification badge)
 
-### Future phases (out of scope for initial implementation)
+### Future stages (out of scope for initial implementation)
 
-- **Media segment sampling** — fetch N random media segments and validate `moof`/`mdat` structure, `trun` sample counts, `senc` presence for encrypted segments
 - **GOP structure validation** — reuse `classifyFrameTypes()` from thumbnail worker to check keyframe interval consistency across representations
 - **Smooth Streaming** — ISM/ISML manifest validation (XML-based, similar approach to DASH)
 - **SCTE-35 cue validation** — check ad insertion markers in HLS/DASH
@@ -540,40 +637,67 @@ User loads manifest
 
 ### Panel layout
 
-Modeled after the StatsPanel pattern but with an issue-list format:
+Modeled after the StatsPanel pattern but with an issue-list format. The panel has two operational modes:
+
+1. **Manifest scan** (instant) — runs on panel open, validates manifest structure and timeline from Shaka's parsed data + init segment BMFF checks
+2. **Deep scan** (on demand) — user clicks "Deep Scan" to fetch and validate media segments
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Manifest Validator                    [×] close │
-│─────────────────────────────────────────────────│
-│  ● 2 errors  ▲ 5 warnings  ○ 3 info   [Re-run] │
-│─────────────────────────────────────────────────│
-│  ▼ Manifest Structure (1 error, 2 warnings)     │
-│    ● HLS-003  Missing EXT-X-TARGETDURATION      │
-│               Media Playlist at index 2 does     │
-│               not contain the required tag.      │
-│               Spec: RFC 8216 §4.3.3.1            │
-│    ▲ HLS-102  Missing CODECS attribute           │
-│               Variant stream #4 (1080p) does     │
-│               not declare codecs. Players may    │
-│               select incompatible renditions.    │
-│    ▲ HLS-104  Missing FRAME-RATE attribute       │
-│               ...                                │
-│                                                  │
-│  ▼ Timeline (1 error, 1 warning)                 │
-│    ● TL-001   Gap at 45.032s (120ms)             │
-│               Between segments 22 and 23.        │
-│               Expected: 45.032s, got: 45.152s    │
-│    ▲ TL-003   Duration variance 28%              │
-│               Segment 15 duration is 3.2s vs     │
-│               mean of 2.0s (60% above mean).     │
-│                                                  │
-│  ▶ Codec & Tags (0 errors, 2 warnings)           │
-│  ▶ Container (0 issues)                          │
-│  ▶ Compatibility (3 info)                        │
-│─────────────────────────────────────────────────│
-│  [Export JSON]  [Copy Report]                    │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Manifest Validator                          [×] close │
+│───────────────────────────────────────────────────────│
+│  ● 2 errors  ▲ 3 warnings  ○ 1 info       [Re-scan]  │
+│───────────────────────────────────────────────────────│
+│  ▼ Timeline (1 error, 1 warning)                      │
+│    ● TL-005   Track duration mismatch                 │
+│               Video tracks 5,6,7 (720p–1080p):        │
+│               404.241s vs tracks 3,4 (486p–576p):     │
+│               406.361s — 2.12s difference.            │
+│               Audio: 406.399s                         │
+│    ▲ TL-003   Duration variance 28%                   │
+│               Segment 15 duration is 3.2s vs          │
+│               mean of 2.0s (60% above mean).          │
+│                                                       │
+│  ▼ Container (1 error, 1 warning)                     │
+│    ● BMFF-S01 senc/trun size mismatch                 │
+│               Track 5 seg0: 10/27 samples have        │
+│               senc sub-sample totals 2–5 bytes        │
+│               short of trun sample sizes.             │
+│               Track 6 seg0: 17/27 mismatches          │
+│               Track 7 seg0: 5/27 mismatches           │
+│               [View segment details →]                │
+│    ▲ BMFF-011 Encryption metadata on clear content    │
+│               tenc.isProtected=1, KID=86ac5e...       │
+│               but content is served unencrypted.      │
+│                                                       │
+│  ▼ Manifest Structure (0 errors, 1 warning)           │
+│    ▲ DASH-110 Implicit timescale=1                    │
+│               AdaptationSet[0] does not set            │
+│               @timescale explicitly.                   │
+│               Spec: DASH-IF IOP                       │
+│                                                       │
+│  ▶ Codec & Tags (✓ no issues)                         │
+│  ▶ Compatibility (1 info)                             │
+│───────────────────────────────────────────────────────│
+│  [Deep Scan]  [Export JSON]  [Copy Report]            │
+│  Scanning track 5 seg 0... (3/9 tracks)        ██░░░  │
+└───────────────────────────────────────────────────────┘
+```
+
+### Deep scan detail view
+
+When user clicks "[View segment details →]" on a BMFF-S01 issue, an expandable section shows the per-sample comparison:
+
+```
+│    ● BMFF-S01 senc/trun size mismatch — Track 5 seg0  │
+│    ┌──────┬───────────┬────────────┬──────┐           │
+│    │ Sam# │ trun size │ senc total │ diff │           │
+│    ├──────┼───────────┼────────────┼──────┤           │
+│    │   17 │    22,984 │     22,980 │   +4 │           │
+│    │   18 │     3,405 │      3,400 │   +5 │           │
+│    │   19 │     4,656 │      4,652 │   +4 │           │
+│    │  ... │       ... │        ... │  ... │           │
+│    └──────┴───────────┴────────────┴──────┘           │
 ```
 
 ### Access
@@ -581,6 +705,8 @@ Modeled after the StatsPanel pattern but with an issue-list format:
 - **Context menu** → "Validate Manifest" item (gated on `moduleConfig.manifestValidator`)
 - **Keyboard shortcut** (if keyboard shortcuts enabled) — candidate: `V`
 - Panel appears as overlay, same positioning approach as StatsPanel
+- On first open: manifest-level + init segment checks run automatically
+- Deep scan: only on explicit user action (button click)
 
 ### Styling
 
@@ -589,6 +715,8 @@ Modeled after the StatsPanel pattern but with an issue-list format:
 - Severity icons: `●` error (red), `▲` warning (yellow/amber), `○` info (blue)
 - Collapsible categories with issue count badges
 - Expandable issue rows showing detail + spec reference
+- Deep scan progress bar in panel footer
+- Categories auto-expand if they contain errors, collapsed if clean
 
 ---
 

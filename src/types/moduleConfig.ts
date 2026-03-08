@@ -13,6 +13,7 @@ export interface PlayerModuleConfig {
   qpHeatmap: boolean;
   watermark: boolean;
   drmDiagnostics: boolean;
+  manifestValidator: boolean;
 }
 
 export const MODULE_DEFAULTS: PlayerModuleConfig = {
@@ -30,4 +31,5 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   qpHeatmap: true,
   watermark: true,
   drmDiagnostics: true,
+  manifestValidator: true,
 };

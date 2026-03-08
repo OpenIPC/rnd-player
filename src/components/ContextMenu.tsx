@@ -15,6 +15,7 @@ import {
   FilmstripIcon,
   QpHeatmapIcon,
   DrmDiagnosticsIcon,
+  ManifestValidatorIcon,
 } from "./icons";
 import type { PlayerModuleConfig } from "../types/moduleConfig";
 
@@ -39,6 +40,7 @@ interface ContextMenuProps {
   onToggleFilmstrip: (() => void) | undefined;
   onToggleQpHeatmap: (() => void) | undefined;
   onToggleDrmDiagnostics: (() => void) | undefined;
+  onToggleManifestValidator: (() => void) | undefined;
 
   // State for conditional items
   hasMarkers: boolean;
@@ -53,6 +55,7 @@ interface ContextMenuProps {
   showFilmstrip: boolean;
   showQpHeatmap: boolean;
   showDrmDiagnostics: boolean;
+  showManifestValidator: boolean;
   isH264: boolean;
   isH265: boolean;
   isAv1: boolean;
@@ -77,6 +80,7 @@ export default function ContextMenu({
   onToggleFilmstrip,
   onToggleQpHeatmap,
   onToggleDrmDiagnostics,
+  onToggleManifestValidator,
   hasMarkers,
   hasInOutPoints,
   hasActiveSubtitles,
@@ -89,6 +93,7 @@ export default function ContextMenu({
   showFilmstrip,
   showQpHeatmap,
   showDrmDiagnostics,
+  showManifestValidator,
   isH264,
   isH265,
   isAv1,
@@ -183,6 +188,12 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleDrmDiagnostics}>
           <DrmDiagnosticsIcon />
           {showDrmDiagnostics ? "Hide DRM diagnostics" : "DRM diagnostics"}
+        </div>
+      )}
+      {moduleConfig.manifestValidator && onToggleManifestValidator && (
+        <div className="vp-context-menu-item" onClick={onToggleManifestValidator}>
+          <ManifestValidatorIcon />
+          {showManifestValidator ? "Hide manifest validator" : "Validate manifest"}
         </div>
       )}
     </div>,

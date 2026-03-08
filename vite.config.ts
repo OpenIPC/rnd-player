@@ -45,6 +45,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     audioCompare: false,
     segmentExport: false,
     qpHeatmap: false,
+    manifestValidator: false,
   },
   minimal: {
     filmstrip: false,
@@ -59,6 +60,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     sleepWakeRecovery: false,
     sceneMarkers: false,
     qpHeatmap: false,
+    manifestValidator: false,
   },
 }
 
