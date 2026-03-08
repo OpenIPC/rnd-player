@@ -56,6 +56,7 @@ interface ContextMenuProps {
   showQpHeatmap: boolean;
   showDrmDiagnostics: boolean;
   showManifestValidator: boolean;
+  validationErrorCount?: number;
   isH264: boolean;
   isH265: boolean;
   isAv1: boolean;
@@ -94,6 +95,7 @@ export default function ContextMenu({
   showQpHeatmap,
   showDrmDiagnostics,
   showManifestValidator,
+  validationErrorCount,
   isH264,
   isH265,
   isAv1,
@@ -194,6 +196,9 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleManifestValidator}>
           <ManifestValidatorIcon />
           {showManifestValidator ? "Hide manifest validator" : "Validate manifest"}
+          {!showManifestValidator && validationErrorCount != null && validationErrorCount > 0 && (
+            <span className="vp-mv-badge">{validationErrorCount}</span>
+          )}
         </div>
       )}
     </div>,

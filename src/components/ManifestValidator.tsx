@@ -3,10 +3,12 @@ import shaka from "shaka-player";
 import type { ValidationResult, ValidationIssue, ValidationCategory, Severity } from "../utils/manifestValidation/types";
 import { runValidation, runDeepScan } from "../utils/manifestValidation/runValidation";
 import type { ScanProgress, DeepScanResult } from "../utils/manifestValidation/segmentScanner";
+import { copyReport, openPrintReport } from "../utils/manifestValidation/reportExport";
 
 interface ManifestValidatorProps {
   player: shaka.Player;
   onClose: () => void;
+  onErrorCount?: (count: number) => void;
 }
 
 const SEVERITY_ICON: Record<Severity, string> = {
@@ -23,9 +25,13 @@ const CATEGORY_ORDER: ValidationCategory[] = [
   "Compatibility",
 ];
 
+type SeverityFilter = Set<Severity>;
+const ALL_SEVERITIES: SeverityFilter = new Set(["error", "warning", "info"]);
+
 export default function ManifestValidator({
   player,
   onClose,
+  onErrorCount,
 }: ManifestValidatorProps) {
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -34,6 +40,8 @@ export default function ManifestValidator({
   const [deepScanResult, setDeepScanResult] = useState<DeepScanResult | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>(ALL_SEVERITIES);
+  const [copied, setCopied] = useState(false);
   const runCount = useRef(0);
 
   const autoExpand = (issues: ValidationIssue[]) => {
@@ -71,7 +79,6 @@ export default function ManifestValidator({
     const id = ++runCount.current;
     setRunning(true);
     runValidation(player, (progressIssues) => {
-      // Stage 1 timeline results arrive immediately
       if (id !== runCount.current) return;
       setResult({
         manifestType: player.getManifestType() ?? "unknown",
@@ -91,8 +98,8 @@ export default function ManifestValidator({
       const merged = mergeDeepScanIssues(r);
       setResult(merged);
       setRunning(false);
-      // Only auto-expand on first run, preserve user's state on re-scan
       if (id === 1) autoExpand(merged.issues);
+      onErrorCount?.(merged.summary.errors);
     });
   };
 
@@ -110,11 +117,13 @@ export default function ManifestValidator({
         setResult((prev) => {
           if (!prev) return prev;
           const allIssues = [...prev.issues, ...scanResult.issues];
+          const errorCount = allIssues.filter((i) => i.severity === "error").length;
+          onErrorCount?.(errorCount);
           return {
             ...prev,
             issues: allIssues,
             summary: {
-              errors: allIssues.filter((i) => i.severity === "error").length,
+              errors: errorCount,
               warnings: allIssues.filter((i) => i.severity === "warning").length,
               info: allIssues.filter((i) => i.severity === "info").length,
             },
@@ -158,10 +167,45 @@ export default function ManifestValidator({
     });
   };
 
-  // Group issues by category
+  const toggleSeverityFilter = (severity: Severity) => {
+    setSeverityFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(severity)) {
+        // Don't allow removing all filters
+        if (next.size > 1) next.delete(severity);
+      } else {
+        next.add(severity);
+      }
+      return next;
+    });
+  };
+
+  const deepScanSummaryText = deepScanResult
+    ? deepScanResult.tracksScanned === 0
+      ? "Deep scan: no scannable tracks found"
+      : deepScanResult.issues.length === 0
+        ? `Deep scan: ${deepScanResult.tracksScanned} tracks, ${deepScanResult.segmentsFetched} segments — no issues`
+        : `Deep scan: ${deepScanResult.issues.length} issue${deepScanResult.issues.length !== 1 ? "s" : ""} found`
+    : undefined;
+
+  const handleCopy = () => {
+    if (!result) return;
+    copyReport(result, deepScanSummaryText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handlePrint = () => {
+    if (!result) return;
+    openPrintReport(result, deepScanSummaryText);
+  };
+
+  // Group and filter issues by category
   const grouped = new Map<ValidationCategory, ValidationIssue[]>();
   if (result) {
     for (const issue of result.issues) {
+      if (!severityFilter.has(issue.severity)) continue;
       const list = grouped.get(issue.category) ?? [];
       list.push(issue);
       grouped.set(issue.category, list);
@@ -181,17 +225,26 @@ export default function ManifestValidator({
         <div className="vp-mv-summary">
           <span className="vp-mv-summary-counts">
             {result.summary.errors > 0 && (
-              <span className="vp-mv-count-error">
+              <span
+                className={`vp-mv-count-error${!severityFilter.has("error") ? " vp-mv-count-dim" : ""}`}
+                onClick={() => toggleSeverityFilter("error")}
+              >
                 {SEVERITY_ICON.error} {result.summary.errors} error{result.summary.errors !== 1 ? "s" : ""}
               </span>
             )}
             {result.summary.warnings > 0 && (
-              <span className="vp-mv-count-warning">
+              <span
+                className={`vp-mv-count-warning${!severityFilter.has("warning") ? " vp-mv-count-dim" : ""}`}
+                onClick={() => toggleSeverityFilter("warning")}
+              >
                 {SEVERITY_ICON.warning} {result.summary.warnings} warning{result.summary.warnings !== 1 ? "s" : ""}
               </span>
             )}
             {result.summary.info > 0 && (
-              <span className="vp-mv-count-info">
+              <span
+                className={`vp-mv-count-info${!severityFilter.has("info") ? " vp-mv-count-dim" : ""}`}
+                onClick={() => toggleSeverityFilter("info")}
+              >
                 {SEVERITY_ICON.info} {result.summary.info} info
               </span>
             )}
@@ -284,11 +337,7 @@ export default function ManifestValidator({
             </span>
           ) : deepScanResult ? (
             <span className="vp-mv-deepscan-done">
-              {deepScanResult.tracksScanned === 0
-                ? "Deep scan: no scannable tracks found"
-                : deepScanResult.issues.length === 0
-                  ? `Deep scan: ${deepScanResult.tracksScanned} tracks, ${deepScanResult.segmentsFetched} segments — no issues`
-                  : `Deep scan: ${deepScanResult.issues.length} issue${deepScanResult.issues.length !== 1 ? "s" : ""} found`}
+              {deepScanSummaryText}
             </span>
           ) : (
             <button
@@ -301,11 +350,19 @@ export default function ManifestValidator({
         </div>
       )}
 
-      {/* Footer */}
+      {/* Footer with export */}
       {result && (
         <div className="vp-mv-footer">
           <span className="vp-mv-timing">
             {result.duration.toFixed(0)}ms · {result.manifestType}
+          </span>
+          <span className="vp-mv-export">
+            <button className="vp-mv-export-btn" onClick={handleCopy} title="Copy report to clipboard">
+              {copied ? "Copied!" : "Copy"}
+            </button>
+            <button className="vp-mv-export-btn" onClick={handlePrint} title="Open printable report (save as PDF)">
+              PDF
+            </button>
           </span>
         </div>
       )}
@@ -320,3 +377,4 @@ function formatCategoryCounts(errors: number, warnings: number, infos: number): 
   if (infos > 0) parts.push(`${infos} info`);
   return parts.join(", ");
 }
+

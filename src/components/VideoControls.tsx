@@ -233,6 +233,7 @@ export default function VideoControls({
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showQpHeatmap, setShowQpHeatmap] = useState(false);
+  const [validationErrorCount, setValidationErrorCount] = useState<number | undefined>(undefined);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -1605,6 +1606,7 @@ export default function VideoControls({
           showQpHeatmap={showQpHeatmap}
           showDrmDiagnostics={!!showDrmDiagnostics}
           showManifestValidator={!!showManifestValidator}
+          validationErrorCount={validationErrorCount}
           isH264={qpHeatmap.isH264}
           isH265={qpHeatmap.isH265}
           isAv1={qpHeatmap.isAv1}
@@ -1674,6 +1676,7 @@ export default function VideoControls({
             <ManifestValidator
               player={player}
               onClose={() => onToggleManifestValidator?.()}
+              onErrorCount={setValidationErrorCount}
             />
           </Suspense>,
           containerEl

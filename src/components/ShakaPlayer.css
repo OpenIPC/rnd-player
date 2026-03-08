@@ -3114,10 +3114,11 @@ video::-webkit-media-text-track-container {
   gap: 10px;
 }
 
-.vp-mv-count-error { color: #f44; }
-.vp-mv-count-warning { color: #fb3; }
-.vp-mv-count-info { color: #6af; }
+.vp-mv-count-error { color: #f44; cursor: pointer; }
+.vp-mv-count-warning { color: #fb3; cursor: pointer; }
+.vp-mv-count-info { color: #6af; cursor: pointer; }
 .vp-mv-count-ok { color: #6c6; }
+.vp-mv-count-dim { opacity: 0.3; }
 
 .vp-mv-rescan {
   background: rgba(255, 255, 255, 0.12);
@@ -3254,9 +3255,43 @@ video::-webkit-media-text-track-container {
   border-top: 1px solid rgba(255, 255, 255, 0.15);
   margin-top: 6px;
   padding-top: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .vp-mv-timing {
   color: rgba(255, 255, 255, 0.4);
   font-size: 10px;
+}
+
+.vp-mv-export {
+  display: flex;
+  gap: 4px;
+}
+
+.vp-mv-export-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  color: #aaa;
+  font: 10px monospace;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.vp-mv-export-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+.vp-mv-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: #d32f2f;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 3px;
+  margin-left: 6px;
 }
