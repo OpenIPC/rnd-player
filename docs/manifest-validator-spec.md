@@ -351,9 +351,11 @@ src/
       types.ts                         — ValidationIssue, ValidationResult, Severity enums
       runValidation.ts                 — Orchestrator: progressive (timeline → BMFF+codec)
       timelineValidator.ts             — Gap/overlap/duration checks (pure + Shaka helper)
-      timelineValidator.test.ts        — 13 unit tests
+      timelineValidator.test.ts        — 17 unit tests (incl. ISM pattern scenario)
       bmffValidator.ts                 — ISO BMFF init segment validation + Shaka helper
+      bmffValidator.test.ts            — 16 unit tests (mocked mp4box + cencDecrypt)
       codecValidator.ts                — Codec string vs init segment sample entry
+      codecValidator.test.ts           — 16 unit tests (mocked mp4box)
       segmentScanner.ts                — [Stage 3] Media segment deep scan
       dashValidator.ts                 — [Stage 4] MPD XML structure + DASH-IF IOP checks
       hlsValidator.ts                  — [Stage 4] HLS playlist text parsing + RFC 8216 checks
@@ -515,7 +517,7 @@ User loads manifest
 
 7. **`ManifestValidatorIcon`** added to `src/components/icons.tsx`
 
-8. **13 unit tests** in `timelineValidator.test.ts` — gaps, overlaps, duration variance, representation mismatch, audio/video mismatch, boundary alignment, edge cases
+8. **17 unit tests** in `timelineValidator.test.ts` — gaps, overlaps, duration variance, representation mismatch, audio/video mismatch, boundary alignment, edge cases, ISM pattern multi-track scenario (5 video reps in 2 duration groups + 2 audio tracks)
 
 ### Stage 2 — Init Segment BMFF + Codec Validation (DONE)
 
@@ -545,7 +547,13 @@ User loads manifest
    - CS-003: Codec string in manifest doesn't match init segment sample entry type
    - CS-007: Encrypted sample entry (`encv`/`enca`) missing `sinf` box
 
-3. **Progressive panel UI** — Timeline results appear immediately on panel open. "Scanning..." indicator shows while BMFF/codec checks fetch init segments. Final results replace the partial view.
+3. **16 unit tests** in `bmffValidator.test.ts` — mocked mp4box + cencDecrypt, covers BMFF-001/002/003/007/009/011/ERR, ISM CDP encryption-on-clear pattern, piff brand acceptance, fetch deduplication, brand issue deduplication
+
+4. **16 unit tests** in `codecValidator.test.ts` — mocked mp4box, covers CS-001/003/007, codec equivalence pairs (avc1/avc3, hvc1/hev1), encrypted encv/enca wrappers with sinf.frma resolution, HLS-specific checks, audio codecs, fetch deduplication
+
+5. **Test data**: All tests use synthetic data modeled on the ISM origin bug pattern (duration groups, encryption metadata on clear content, different audio/video segment grids). No production URLs or media segments.
+
+6. **Progressive panel UI** — Timeline results appear immediately on panel open. "Scanning..." indicator shows while BMFF/codec checks fetch init segments. Final results replace the partial view.
 
 ### Stage 3 — Media Segment Deep Scan
 

@@ -191,6 +191,66 @@ describe("timelineValidator", () => {
     expect(issues).toHaveLength(0);
   });
 
+  describe("ISM-like multi-track scenario (CDP pattern)", () => {
+    // Models the real CDP bug: 5 video reps in 2 duration groups + 2 audio tracks
+    // SD video (486p, 576p): 128 segments x ~3.175s = ~406.4s
+    // HD video (720p, 900p, 1080p): 127 segments x ~3.183s = ~404.2s
+    // Audio: 204 segments x ~1.992s = ~406.4s (different segment grid)
+
+    function makeIsmTimelines() {
+      return validateTimelines([
+        { label: "video 864x486", type: "video", segments: makeSegments(128, 3.175) },
+        { label: "video 1024x576", type: "video", segments: makeSegments(128, 3.175) },
+        { label: "video 1280x720", type: "video", segments: makeSegments(127, 3.183) },
+        { label: "video 1600x900", type: "video", segments: makeSegments(127, 3.183) },
+        { label: "video 1920x1080", type: "video", segments: makeSegments(127, 3.183) },
+        { label: "audio 48kHz", type: "audio", segments: makeSegments(204, 1.992) },
+        { label: "audio 48kHz", type: "audio", segments: makeSegments(204, 1.992) },
+      ]);
+    }
+
+    it("TL-005: detects video duration mismatch between SD and HD groups", () => {
+      const issues = makeIsmTimelines();
+      const videoMismatch = issues.filter(
+        (i) => i.id === "TL-005" && !i.message.includes("Audio"),
+      );
+      expect(videoMismatch).toHaveLength(1);
+      expect(videoMismatch[0].severity).toBe("error"); // >2s difference
+      // Groups should be reported with their labels
+      expect(videoMismatch[0].detail).toContain("video 864x486");
+      expect(videoMismatch[0].detail).toContain("video 1280x720");
+    });
+
+    it("TL-005: no audio/video mismatch when first video matches audio duration", () => {
+      const issues = makeIsmTimelines();
+      // First video is SD (406.4s), audio is also ~406.4s → within threshold
+      const avMismatch = issues.filter(
+        (i) => i.id === "TL-005" && i.message.includes("Audio"),
+      );
+      expect(avMismatch).toHaveLength(0);
+    });
+
+    it("TL-006: no false positive with different audio/video segment durations", () => {
+      const issues = makeIsmTimelines();
+      // Video ~3.18s segments, audio ~1.99s → ratio 1.6 > 1.1 → alignment check skipped
+      expect(issues.filter((i) => i.id === "TL-006")).toHaveLength(0);
+    });
+
+    it("TL-005: audio/video mismatch detected when HD track listed first", () => {
+      // If manifest lists HD first, the audio vs first-video comparison catches the gap
+      const issues = validateTimelines([
+        { label: "video 1280x720", type: "video", segments: makeSegments(127, 3.183) },
+        { label: "video 864x486", type: "video", segments: makeSegments(128, 3.175) },
+        { label: "audio 48kHz", type: "audio", segments: makeSegments(204, 1.992) },
+      ]);
+      const avMismatch = issues.filter(
+        (i) => i.id === "TL-005" && i.message.includes("Audio"),
+      );
+      expect(avMismatch).toHaveLength(1);
+      expect(avMismatch[0].severity).toBe("warning");
+    });
+  });
+
   it("TL-005: warning severity for small mismatch (0.5-2s)", () => {
     const issues = validateTimelines([
       {
