@@ -54,6 +54,12 @@ export interface ScanOptions {
   maxSegmentsPerTrack?: number;
 }
 
+export interface DeepScanResult {
+  issues: ValidationIssue[];
+  tracksScanned: number;
+  segmentsFetched: number;
+}
+
 // --- Internal parsers ---
 
 interface TrunSample {
@@ -166,9 +172,10 @@ export async function scanSegments(
   fetchFn: (url: string, startByte?: number, endByte?: number | null) => Promise<SegmentFetchResult>,
   options?: ScanOptions,
   onProgress?: (progress: ScanProgress) => void,
-): Promise<ValidationIssue[]> {
+): Promise<DeepScanResult> {
   const issues: ValidationIssue[] = [];
   const maxSegs = options?.maxSegmentsPerTrack ?? 1;
+  let segmentsFetched = 0;
 
   for (let ti = 0; ti < tracks.length; ti++) {
     const track = tracks[ti];
@@ -186,6 +193,7 @@ export async function scanSegments(
       let result: SegmentFetchResult;
       try {
         result = await fetchFn(seg.url, seg.startByte, seg.endByte);
+        segmentsFetched++;
       } catch {
         issues.push({
           id: "BMFF-S02",
@@ -308,7 +316,7 @@ export async function scanSegments(
     }
   }
 
-  return issues;
+  return { issues, tracksScanned: tracks.length, segmentsFetched };
 }
 
 // --- Shaka integration helper ---
@@ -384,13 +392,9 @@ export async function extractScanTracksFromShaka(
 
       if (segments.length === 0) continue;
 
-      // Get ivSize from init segment tenc
+      // Parse init segment for ivSize (tenc) and timescale (mdhd)
       let ivSize = 0;
-      const timescale = stream.segmentIndex
-        ? (manifest.variants[0]?.video?.segmentIndex || manifest.variants[0]?.audio?.segmentIndex
-          ? 10_000_000 // ISM default
-          : 90000) // DASH default
-        : 90000;
+      let timescale = 90000; // default fallback
 
       if (initSegUrl && Mp4box) {
         try {
@@ -402,12 +406,24 @@ export async function extractScanTracksFromShaka(
           mp4.appendBuffer(buf);
           mp4.flush();
 
-          const tenc = extractTenc(mp4, stream.id);
-          if (tenc) {
-            ivSize = tenc.defaultPerSampleIVSize;
+          // Try to get tenc for ivSize — use mp4box track IDs, not Shaka's
+          const traks = mp4.moov?.traks ?? [];
+          for (const trak of traks) {
+            const trackId = trak.tkhd?.track_id;
+            if (!trackId) continue;
+            const tenc = extractTenc(mp4, trackId);
+            if (tenc) {
+              ivSize = tenc.defaultPerSampleIVSize;
+            }
+            // Get timescale from mdhd
+            const mdhd = trak.mdia?.mdhd;
+            if (mdhd?.timescale) {
+              timescale = mdhd.timescale;
+            }
+            break; // Use first track in this init segment
           }
         } catch {
-          // Failed to parse init segment — scan with ivSize=0
+          // Failed to parse init segment — scan with defaults
         }
       }
 

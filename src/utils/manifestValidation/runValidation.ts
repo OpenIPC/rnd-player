@@ -4,7 +4,7 @@ import { validateTimelines, extractTimelinesFromShaka } from "./timelineValidato
 import { validateBmff, extractStreamsFromShaka } from "./bmffValidator";
 import { validateCodecs } from "./codecValidator";
 import { scanSegments, extractScanTracksFromShaka } from "./segmentScanner";
-import type { ScanProgress } from "./segmentScanner";
+import type { ScanProgress, DeepScanResult } from "./segmentScanner";
 
 /**
  * Run all available validators and collect results.
@@ -76,7 +76,7 @@ export async function runDeepScan(
   player: shaka.Player,
   onProgress?: (progress: ScanProgress) => void,
   options?: { maxSegmentsPerTrack?: number },
-): Promise<ValidationIssue[]> {
+): Promise<DeepScanResult> {
   const fetchInit = async (url: string): Promise<ArrayBuffer> => {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
@@ -89,9 +89,14 @@ export async function runDeepScan(
     options?.maxSegmentsPerTrack ?? 1,
   );
 
-  const fetchSegment = async (url: string) => {
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+  const fetchSegment = async (url: string, startByte?: number, endByte?: number | null) => {
+    const headers: Record<string, string> = {};
+    if (startByte !== undefined && startByte > 0) {
+      const rangeEnd = endByte != null ? endByte : "";
+      headers["Range"] = `bytes=${startByte}-${rangeEnd}`;
+    }
+    const resp = await fetch(url, { headers });
+    if (!resp.ok && resp.status !== 206) throw new Error(`HTTP ${resp.status} for ${url}`);
     const contentLengthHeader = resp.headers.get("content-length");
     const contentLength = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
     const data = await resp.arrayBuffer();
@@ -100,3 +105,5 @@ export async function runDeepScan(
 
   return scanSegments(tracks, fetchSegment, options, onProgress);
 }
+
+export type { DeepScanResult, ScanProgress };

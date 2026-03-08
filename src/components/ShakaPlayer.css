@@ -3230,6 +3230,11 @@ video::-webkit-media-text-track-container {
   font-size: 11px;
 }
 
+.vp-mv-deepscan-done {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+}
+
 .vp-mv-footer {
   border-top: 1px solid rgba(255, 255, 255, 0.15);
   margin-top: 6px;

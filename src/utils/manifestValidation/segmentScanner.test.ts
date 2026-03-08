@@ -254,7 +254,7 @@ describe("segmentScanner", () => {
         ivSize: 0,
       });
 
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [makeTrack()],
         okFetch(segment),
       );
@@ -282,7 +282,7 @@ describe("segmentScanner", () => {
         ivSize: 0,
       });
 
-      const issues = await scanSegments([makeTrack()], okFetch(segment));
+      const { issues } = await scanSegments([makeTrack()], okFetch(segment));
       expect(issues.filter((i) => i.id === "BMFF-S01")).toHaveLength(0);
     });
 
@@ -302,7 +302,7 @@ describe("segmentScanner", () => {
         ivSize: 8,
       });
 
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [makeTrack({ ivSize: 8 })],
         okFetch(segment),
       );
@@ -318,7 +318,7 @@ describe("segmentScanner", () => {
         // no sencSamples
       });
 
-      const issues = await scanSegments([makeTrack()], okFetch(segment));
+      const { issues } = await scanSegments([makeTrack()], okFetch(segment));
       expect(issues.filter((i) => i.id === "BMFF-S01")).toHaveLength(0);
     });
   });
@@ -332,7 +332,7 @@ describe("segmentScanner", () => {
         samples: [{ size: 5000 }],
       });
 
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [makeTrack()],
         async () => ({
           data: segment.buffer.slice(0, segment.byteLength),
@@ -354,12 +354,12 @@ describe("segmentScanner", () => {
         samples: [{ size: 5000 }],
       });
 
-      const issues = await scanSegments([makeTrack()], okFetch(segment));
+      const { issues } = await scanSegments([makeTrack()], okFetch(segment));
       expect(issues.filter((i) => i.id === "BMFF-S02")).toHaveLength(0);
     });
 
     it("reports fetch failure", async () => {
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [makeTrack()],
         async () => { throw new Error("Network error"); },
       );
@@ -387,7 +387,7 @@ describe("segmentScanner", () => {
       const segments = [seg0, seg1];
       let callIdx = 0;
 
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [makeTrack({
           segments: [
             { index: 0, startTime: 0, endTime: 3.175, url: "http://test/seg0.m4s", startByte: 0, endByte: null },
@@ -417,7 +417,7 @@ describe("segmentScanner", () => {
         samples: [{ size: 5000 }],
       });
 
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [makeTrack({
           timescale: 10_000_000,
           segments: [{
@@ -448,7 +448,7 @@ describe("segmentScanner", () => {
         samples: [{ size: 5000 }],
       });
 
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [makeTrack({
           timescale,
           segments: [{
@@ -502,7 +502,7 @@ describe("segmentScanner", () => {
         ivSize: 0,
       });
 
-      const issues = await scanSegments(
+      const { issues } = await scanSegments(
         [
           makeTrack({ label: "video 864x486", segments: [{ index: 0, startTime: 0, endTime: 3.175, url: "http://test/sd-seg0.m4s", startByte: 0, endByte: null }] }),
           makeTrack({ label: "video 1280x720", segments: [{ index: 0, startTime: 0, endTime: 3.183, url: "http://test/hd-seg0.m4s", startByte: 0, endByte: null }] }),
