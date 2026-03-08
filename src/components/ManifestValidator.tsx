@@ -52,6 +52,21 @@ export default function ManifestValidator({
     setExpandedCategories(cats);
   };
 
+  const mergeDeepScanIssues = (base: ValidationResult): ValidationResult => {
+    const deepIssues = deepScanResult?.issues;
+    if (!deepIssues || deepIssues.length === 0) return base;
+    const allIssues = [...base.issues, ...deepIssues];
+    return {
+      ...base,
+      issues: allIssues,
+      summary: {
+        errors: allIssues.filter((i) => i.severity === "error").length,
+        warnings: allIssues.filter((i) => i.severity === "warning").length,
+        info: allIssues.filter((i) => i.severity === "info").length,
+      },
+    };
+  };
+
   const scan = () => {
     const id = ++runCount.current;
     setRunning(true);
@@ -70,12 +85,14 @@ export default function ManifestValidator({
           info: progressIssues.filter((i) => i.severity === "info").length,
         },
       });
-      autoExpand(progressIssues);
+      if (id === 1) autoExpand(progressIssues);
     }).then((r) => {
       if (id !== runCount.current) return;
-      setResult(r);
+      const merged = mergeDeepScanIssues(r);
+      setResult(merged);
       setRunning(false);
-      autoExpand(r.issues);
+      // Only auto-expand on first run, preserve user's state on re-scan
+      if (id === 1) autoExpand(merged.issues);
     });
   };
 
