@@ -727,6 +727,9 @@ export default function VideoControls({
       if (track) {
         player.selectVariantTrack(track, true);
       }
+      if (quality.frameRate > 0) {
+        setSelectedFpsFilter(quality.frameRate);
+      }
       setIsAutoQuality(false);
     }
     setPopup(null);
