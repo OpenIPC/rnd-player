@@ -9,6 +9,7 @@ interface ManifestValidatorProps {
   player: shaka.Player;
   onClose: () => void;
   onErrorCount?: (count: number) => void;
+  rawManifestText?: string;
 }
 
 const SEVERITY_ICON: Record<Severity, string> = {
@@ -32,6 +33,7 @@ export default function ManifestValidator({
   player,
   onClose,
   onErrorCount,
+  rawManifestText,
 }: ManifestValidatorProps) {
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -93,7 +95,7 @@ export default function ManifestValidator({
         },
       });
       if (id === 1) autoExpand(progressIssues);
-    }).then((r) => {
+    }, rawManifestText).then((r) => {
       if (id !== runCount.current) return;
       const merged = mergeDeepScanIssues(r);
       setResult(merged);

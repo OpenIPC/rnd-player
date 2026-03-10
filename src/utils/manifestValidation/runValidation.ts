@@ -3,6 +3,7 @@ import type { ValidationIssue, ValidationResult } from "./types";
 import { validateTimelines, extractTimelinesFromShaka } from "./timelineValidator";
 import { validateBmff, extractStreamsFromShaka } from "./bmffValidator";
 import { validateCodecs } from "./codecValidator";
+import { parseMpd, validateDash } from "./dashValidator";
 import { scanSegments, extractScanTracksFromShaka } from "./segmentScanner";
 import type { ScanProgress, DeepScanResult } from "./segmentScanner";
 
@@ -15,6 +16,7 @@ import type { ScanProgress, DeepScanResult } from "./segmentScanner";
 export async function runValidation(
   player: shaka.Player,
   onProgress?: (issues: ValidationIssue[]) => void,
+  rawManifestText?: string,
 ): Promise<ValidationResult> {
   const start = performance.now();
   const manifestUrl = player.getAssetUri() ?? "";
@@ -24,8 +26,15 @@ export async function runValidation(
   const timelines = await extractTimelinesFromShaka(player);
   const timelineIssues = validateTimelines(timelines);
 
-  // Report Stage 1 results immediately
-  if (onProgress) onProgress(timelineIssues);
+  // Stage 1b: DASH MPD validation (pure XML checks, no fetching)
+  let dashIssues: ValidationIssue[] = [];
+  if (manifestType === "DASH" && rawManifestText) {
+    dashIssues = validateDash(parseMpd(rawManifestText));
+  }
+
+  // Report Stage 1 + 1b results immediately
+  const stage1Issues = [...timelineIssues, ...dashIssues];
+  if (onProgress) onProgress(stage1Issues);
 
   // Stage 2: BMFF + Codec validation (fetches init segments)
   const streams = await extractStreamsFromShaka(player);
@@ -49,7 +58,7 @@ export async function runValidation(
     }),
   ]);
 
-  const issues = [...timelineIssues, ...bmffIssues, ...codecIssues];
+  const issues = [...timelineIssues, ...dashIssues, ...bmffIssues, ...codecIssues];
   const duration = performance.now() - start;
 
   return {

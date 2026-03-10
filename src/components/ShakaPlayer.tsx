@@ -107,6 +107,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const [allAudioTracks, setAllAudioTracks] = useState<Ec3TrackInfo[]>([]);
   const [error, setError] = useState<StreamError | null>(null);
   const segmentCountRef = useRef(0);
+  const rawManifestRef = useRef<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
   const [activeKey, setActiveKey] = useState<string | undefined>(clearKey);
   const [pendingDrmKey, setPendingDrmKey] = useState<string | null>(null);
@@ -264,6 +265,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
       // Fetch manifest and extract cenc:default_KID for ClearKey DRM
       const { text: rawManifest } = await fetchWithCorsRetry(src);
+      rawManifestRef.current = rawManifest;
       if (destroyed) return;
 
       if (!rawManifest) {
@@ -932,6 +934,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               onToggleDrmDiagnostics={() => setShowDrmDiagnostics((s) => !s)}
               showManifestValidator={showManifestValidator}
               onToggleManifestValidator={() => setShowManifestValidator((s) => !s)}
+              rawManifestText={rawManifestRef.current}
             />
           )}
         {moduleConfig.qualityCompare &&

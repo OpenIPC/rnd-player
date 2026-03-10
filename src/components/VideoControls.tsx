@@ -92,6 +92,8 @@ interface VideoControlsProps {
   /** Manifest validator panel state. */
   showManifestValidator?: boolean;
   onToggleManifestValidator?: () => void;
+  /** Raw manifest text for DASH validation. */
+  rawManifestText?: string | null;
 }
 
 interface QualityOption {
@@ -190,6 +192,7 @@ export default function VideoControls({
   onToggleDrmDiagnostics,
   showManifestValidator,
   onToggleManifestValidator,
+  rawManifestText,
 }: VideoControlsProps) {
   // Video state
   const [playing, setPlaying] = useState(!videoEl.paused);
@@ -1677,6 +1680,7 @@ export default function VideoControls({
               player={player}
               onClose={() => onToggleManifestValidator?.()}
               onErrorCount={setValidationErrorCount}
+              rawManifestText={rawManifestText ?? undefined}
             />
           </Suspense>,
           containerEl
