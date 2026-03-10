@@ -192,6 +192,8 @@ Validate the internal structure and required attributes of the manifest itself.
 | DASH-108 | Multiple video AdaptationSets: at least one has `Role` value `"main"` | Warning | DASH-IF IOP |
 | DASH-109 | `@segmentAlignment="true"` for multi-Representation ABR | Warning | DASH-IF IOP |
 | DASH-110 | `@timescale` explicitly set (default of 1 is almost certainly an error) | Warning | DASH-IF IOP |
+| DASH-112 | Mixed frame rates in video AdaptationSet (causes A/V desync on ABR switch) | Error | DASH-IF IOP §3.2.4 |
+| DASH-113 | Some but not all Representations have `@frameRate` | Warning | DASH-IF IOP |
 
 **Segment addressing:**
 
@@ -405,12 +407,16 @@ User loads manifest
     │
     └─ User opens ManifestValidator panel (via context menu)
          │
-         runValidation(player, onProgress) orchestrator
+         runValidation(player, onProgress, rawManifestText) orchestrator
          │
          ├─ Stage 1 (instant, no fetching):
          │   extractTimelinesFromShaka(player)
          │   └─ validateTimelines(timelines) → TL-001..TL-006
-         │   └─ onProgress(timelineIssues) → panel shows results immediately
+         │
+         ├─ Stage 1b (instant, no fetching — DASH MPD XML checks):
+         │   parseMpd(rawManifestText)
+         │   └─ validateDash(mpd) → DASH-001..DASH-005, DASH-102..DASH-106, DASH-112, DASH-113
+         │   └─ onProgress(timelineIssues + dashIssues) → panel shows results immediately
          │
          ├─ Stage 2 (fetches init segments, parallel):
          │   extractStreamsFromShaka(player) → stream info + init URLs
@@ -420,8 +426,8 @@ User loads manifest
          │       └─ mp4box parse → stsd sample entry comparison
          │
          ├─ [Stage 3] segmentScanner — media segment deep scan (on-demand)
-         ├─ [Stage 4] dashValidator / hlsValidator — manifest text parsing
-         └─ [Stage 4] compatValidator — cross-platform warnings
+         ├─ [Stage 4] hlsValidator — HLS manifest text parsing (not yet implemented)
+         └─ [Stage 4] compatValidator — cross-platform warnings (not yet implemented)
          │
          ▼
     ValidationResult → ManifestValidator.tsx renders final issues
@@ -593,23 +599,29 @@ User loads manifest
 - "[View segment details →]" expandable table showing per-sample senc vs trun comparison
 - Web Worker for scanning many segments (current main-thread async/await is fine for small N)
 
-### Stage 4 — DASH/HLS Manifest Text Validation
+### Stage 4 — DASH/HLS Manifest Text Validation (DASH partial)
 
 **Goal**: Parse raw manifest text for spec compliance. These are pure text/XML checks that complement the structural checks from earlier stages.
 
-**DASH validator:**
+**DASH validator (implemented):**
 
-1. **Implement `dashValidator.ts`**
-   - Input: raw MPD XML (already fetched by `ShakaPlayer.tsx`)
-   - Use `DOMParser` to parse XML (already done in `ShakaPlayer.tsx` for ClearKey detection)
-   - MPD-level checks: DASH-001 through DASH-005
-   - Hierarchy checks: DASH-101 through DASH-110
-   - Segment addressing checks: DASH-201 through DASH-205
-   - ContentProtection checks: DASH-301 through DASH-305
+1. **`dashValidator.ts`** — pure validation module (no Shaka dependency)
+   - `parseMpd(xml)` — DOMParser-based extraction using `localName` matching (works with XML namespace-qualified elements)
+   - `normalizeFrameRate(fr)` — handles `"25"`, `"25/1"`, `"30000/1001"` formats
+   - `validateDash(mpd)` — 13 rules implemented:
+     - MPD-level: DASH-001 through DASH-005 (namespace, profiles, minBufferTime, type, availabilityStartTime)
+     - Hierarchy: DASH-102 through DASH-106 (mimeType, codecs, id, bandwidth, width/height)
+     - **DASH-112**: Mixed frame rates in video AdaptationSet — error severity, catches the A/V desync bug (real-world mixed-fps regression)
+     - **DASH-113**: Partial `@frameRate` coverage within AdaptationSet
+   - Runs in Stage 1b (instant, no fetching) — raw MPD text passed via `ShakaPlayer → VideoControls → ManifestValidator → runValidation()`
 
-2. **Unit tests** with sample MPD documents
+2. **34 unit tests** in `dashValidator.test.ts` — includes Mixed frame rate regression test with realistic 14-representation manifest (7x 25fps + 7x 50fps)
 
-**HLS validator:**
+**Files:** `dashValidator.ts` (parser + validator), `dashValidator.test.ts` (34 tests), `runValidation.ts` (Stage 1b orchestration), `ShakaPlayer.tsx` / `VideoControls.tsx` / `ManifestValidator.tsx` (raw manifest text plumbing)
+
+**Not yet implemented (DASH):** DASH-101, DASH-107 through DASH-110, DASH-201 through DASH-205, DASH-301 through DASH-305
+
+**HLS validator (not yet implemented):**
 
 3. **Implement `hlsValidator.ts`**
    - Lightweight line-based parser for m3u8 format (Shaka doesn't expose raw AST)

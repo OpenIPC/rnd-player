@@ -92,6 +92,75 @@ describe("parseMpd", () => {
   });
 });
 
+// Realistic CDP MPD fragment — mirrors the real-world manifest from real-world mixed-fps manifest
+// that caused A/V desync due to mixed 25fps/50fps in one AdaptationSet.
+const CDP_MPD = `<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     xmlns:cenc="urn:mpeg:cenc:2013"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011"
+     type="static"
+     minBufferTime="PT2S"
+     mediaPresentationDuration="PT1H23M45S">
+  <Period>
+    <AdaptationSet id="1" mimeType="video/mp4" segmentAlignment="true"
+                   maxWidth="1920" maxHeight="1080" maxFrameRate="50"
+                   contentType="video">
+      <Representation id="1"  width="480"  height="270"  bandwidth="497200"  frameRate="25" codecs="avc1.4D4015"/>
+      <Representation id="8"  width="480"  height="270"  bandwidth="498117"  frameRate="50" codecs="avc1.4D401E"/>
+      <Representation id="2"  width="640"  height="360"  bandwidth="695620"  frameRate="25" codecs="avc1.4D401E"/>
+      <Representation id="9"  width="640"  height="360"  bandwidth="696821"  frameRate="50" codecs="avc1.4D401F"/>
+      <Representation id="3"  width="864"  height="486"  bandwidth="993241"  frameRate="25" codecs="avc1.4D401E"/>
+      <Representation id="10" width="864"  height="486"  bandwidth="994442"  frameRate="50" codecs="avc1.4D401F"/>
+      <Representation id="4"  width="1024" height="576"  bandwidth="1492062" frameRate="25" codecs="avc1.4D401F"/>
+      <Representation id="11" width="1024" height="576"  bandwidth="1493263" frameRate="50" codecs="avc1.4D401F"/>
+      <Representation id="5"  width="1280" height="720"  bandwidth="2489803" frameRate="25" codecs="avc1.640020"/>
+      <Representation id="12" width="1280" height="720"  bandwidth="2491004" frameRate="50" codecs="avc1.640020"/>
+      <Representation id="6"  width="1600" height="900"  bandwidth="3989524" frameRate="25" codecs="avc1.640028"/>
+      <Representation id="13" width="1600" height="900"  bandwidth="3990725" frameRate="50" codecs="avc1.640028"/>
+      <Representation id="7"  width="1920" height="1080" bandwidth="4992289" frameRate="25" codecs="avc1.640028"/>
+      <Representation id="14" width="1920" height="1080" bandwidth="6487695" frameRate="50" codecs="avc1.64002A"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" mimeType="audio/mp4" contentType="audio" lang="ru">
+      <Representation id="15" bandwidth="128701" codecs="mp4a.40.2" audioSamplingRate="48000"/>
+    </AdaptationSet>
+    <AdaptationSet id="3" mimeType="audio/mp4" contentType="audio" lang="ru">
+      <Representation id="16" bandwidth="128687" codecs="mp4a.40.2" audioSamplingRate="48000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+
+describe("Mixed frame rate regression — mixed frame rate A/V desync (mixed frame rate A/V desync)", () => {
+  it("detects DASH-112 error for 25fps/50fps mix in single AdaptationSet", () => {
+    const issues = validateDash(parseMpd(CDP_MPD));
+    const dash112 = issues.filter((i) => i.id === "DASH-112");
+    expect(dash112).toHaveLength(1);
+    expect(dash112[0].severity).toBe("error");
+    expect(dash112[0].category).toBe("Manifest Structure");
+    expect(dash112[0].location).toBe("Period[0] > AdaptationSet[0]");
+    expect(dash112[0].specRef).toContain("DASH-IF IOP");
+    // Verify both frame rate groups are listed in detail
+    expect(dash112[0].detail).toContain("25");
+    expect(dash112[0].detail).toContain("50");
+    // Verify resolutions from both groups appear
+    expect(dash112[0].detail).toContain("480x270");
+    expect(dash112[0].detail).toContain("1920x1080");
+  });
+
+  it("does not flag audio AdaptationSets", () => {
+    const issues = validateDash(parseMpd(CDP_MPD));
+    // DASH-112 should only fire for the video AS, not audio
+    const dash112 = issues.filter((i) => i.id === "DASH-112");
+    expect(dash112).toHaveLength(1);
+    expect(dash112[0].location).toBe("Period[0] > AdaptationSet[0]");
+  });
+
+  it("parses all 14 video representations from mixed-fps manifest", () => {
+    const parsed = parseMpd(CDP_MPD);
+    const videoAS = parsed.periods[0].adaptationSets[0];
+    expect(videoAS.representations).toHaveLength(14);
+  });
+});
+
 describe("validateDash", () => {
   describe("MPD structure checks (DASH-001 through DASH-005)", () => {
     it("DASH-001: warns on wrong namespace", () => {
