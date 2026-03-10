@@ -100,6 +100,7 @@ interface QualityOption {
   id: number;
   height: number;
   bandwidth: number;
+  frameRate: number;
 }
 
 interface AudioOption {
@@ -207,6 +208,7 @@ export default function VideoControls({
   const [qualities, setQualities] = useState<QualityOption[]>([]);
   const [activeHeight, setActiveHeight] = useState<number | null>(null);
   const [activeQualityId, setActiveQualityId] = useState<number | null>(null);
+  const [selectedFpsFilter, setSelectedFpsFilter] = useState<number | null>(null);
   const [isAutoQuality, setIsAutoQuality] = useState(true);
   const [audioTracks, setAudioTracks] = useState<AudioOption[]>([]);
   const [activeAudioIndex, setActiveAudioIndex] = useState(-1);
@@ -484,6 +486,7 @@ export default function VideoControls({
           id: t.id,
           height: t.height,
           bandwidth: vbw,
+          frameRate: t.frameRate ?? 0,
         });
       }
     }
@@ -1056,17 +1059,26 @@ export default function VideoControls({
     setContextMenu(null);
   };
 
-  const hasMultipleBitratesPerHeight = qualities.some(
-    (q, i) => qualities.findIndex((r) => r.height === q.height) !== i
-  );
   const alwaysShowBitrate = loadSettings().alwaysShowBitrate;
-  const showBitrate = hasMultipleBitratesPerHeight || alwaysShowBitrate;
+  // Distinct FPS values across all quality tracks
+  const availableFpsValues = [...new Set(qualities.map((q) => q.frameRate).filter((f) => f > 0))].sort((a, b) => b - a);
+  const hasMultipleFps = availableFpsValues.length > 1;
+  // Auto-select the active track's FPS when the filter hasn't been set yet
+  const effectiveFpsFilter =
+    hasMultipleFps
+      ? (selectedFpsFilter ?? availableFpsValues[0])
+      : null;
+  const filteredQualities = effectiveFpsFilter
+    ? qualities.filter((q) => q.frameRate === effectiveFpsFilter)
+    : qualities;
+  const hasMultipleBitratesPerHeight = filteredQualities.some(
+    (q, i) => filteredQualities.findIndex((r) => r.height === q.height) !== i
+  );
+  const fpssuffix = hasMultipleFps && effectiveFpsFilter ? ` ${effectiveFpsFilter}fps` : "";
   const qualityLabel = isAutoQuality
-    ? `Auto${activeHeight ? ` (${activeHeight}p)` : ""}`
+    ? `Auto${activeHeight ? ` (${activeHeight}p)` : ""}${fpssuffix}`
     : activeHeight
-      ? showBitrate
-        ? `${activeHeight}p ${formatBitrate(qualities.find((q) => q.id === activeQualityId)?.bandwidth ?? 0)}`
-        : `${activeHeight}p`
+      ? `${activeHeight}p${fpssuffix}`
       : "";
   const speedLabel = playbackRate === 1 ? "1x" : `${playbackRate}x`;
   const activeAudio = audioTracks[activeAudioIndex];
@@ -1364,13 +1376,26 @@ export default function VideoControls({
                 {popup === "quality" && (
                   <div className="vp-popup">
                     <div className="vp-popup-header">Quality</div>
+                    {hasMultipleFps && (
+                      <div className="vp-fps-tabs">
+                        {availableFpsValues.map((fps) => (
+                          <button
+                            key={fps}
+                            className={`vp-fps-tab${fps === effectiveFpsFilter ? " vp-active" : ""}`}
+                            onClick={() => setSelectedFpsFilter(fps)}
+                          >
+                            {fps} fps
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div
                       className={`vp-popup-item${isAutoQuality ? " vp-active" : ""}`}
                       onClick={() => selectQuality("auto")}
                     >
                       Auto{activeHeight ? ` (${activeHeight}p)` : ""}
                     </div>
-                    {qualities.map((q) => (
+                    {filteredQualities.map((q) => (
                       <div
                         key={q.id}
                         className={`vp-popup-item${
@@ -1381,7 +1406,7 @@ export default function VideoControls({
                         {q.height}p
                         {(alwaysShowBitrate ||
                           (hasMultipleBitratesPerHeight &&
-                            qualities.filter((r) => r.height === q.height).length > 1)) &&
+                            filteredQualities.filter((r) => r.height === q.height).length > 1)) &&
                           ` ${formatBitrate(q.bandwidth)}`}
                       </div>
                     ))}

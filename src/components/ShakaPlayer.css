@@ -571,6 +571,34 @@ video::-webkit-media-text-track-container {
   color: rgba(255, 255, 255, 0.5);
 }
 
+.vp-fps-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 10px 6px;
+}
+
+.vp-fps-tab {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.vp-fps-tab:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.vp-fps-tab.vp-active {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--vp-accent);
+  border-color: var(--vp-accent);
+}
+
 .vp-popup-item {
   display: flex;
   align-items: center;
