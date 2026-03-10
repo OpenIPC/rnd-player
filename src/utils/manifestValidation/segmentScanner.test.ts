@@ -721,3 +721,146 @@ describe("segmentScanner", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 });
+
+// --- Mixed frame rate regression — mixed frame rate at container level (BMFF-S05) ---
+//
+// Models real-world mixed-fps manifest where ISM origin serves 25fps and 50fps
+// renditions in the same AdaptationSet but OMITS @frameRate from the MPD.
+// DASH-112 (manifest-level) cannot fire without @frameRate. BMFF-S05 catches
+// the same A/V desync root cause by reading actual sample_duration from
+// fetched media segments.
+//
+// Real-world values from the ISM origin:
+//   25fps tracks: timescale=10000000, default_sample_duration=400000
+//   50fps tracks: timescale=10000000, default_sample_duration=200000
+
+describe("Mixed frame rate regression — mixed frame rate detected at container level (BMFF-S05)", () => {
+  // Build segments mirroring real ISM origin container values
+  const ISM_TIMESCALE = 10_000_000;
+
+  function ismVideoTrack(
+    label: string,
+    url: string,
+    trackId: number,
+    defaultSampleDuration: number,
+    sampleCount: number,
+  ): { track: ScanTrack; segment: Uint8Array } {
+    const samples = Array.from({ length: sampleCount }, (_, i) => ({
+      size: 5000 + i * 100,
+    }));
+    const segment = makeMoof({
+      sequenceNumber: 1,
+      trackId,
+      baseDecodeTime: 0,
+      samples,
+      defaultSampleDuration,
+    });
+    const track = makeTrack({
+      label,
+      type: "video",
+      timescale: ISM_TIMESCALE,
+      segments: [{ index: 0, startTime: 0, endTime: 3.2, url, startByte: 0, endByte: null }],
+    });
+    return { track, segment };
+  }
+
+  // 7 renditions at 25fps + 7 at 50fps, matching the mixed-fps manifest structure
+  const renditions25fps = [
+    ismVideoTrack("video 480x270",   "http://ism/v1.m4s",  1, 400_000, 80),
+    ismVideoTrack("video 640x360",   "http://ism/v2.m4s",  2, 400_000, 80),
+    ismVideoTrack("video 864x486",   "http://ism/v3.m4s",  3, 400_000, 80),
+    ismVideoTrack("video 1024x576",  "http://ism/v4.m4s",  4, 400_000, 80),
+    ismVideoTrack("video 1280x720",  "http://ism/v5.m4s",  5, 400_000, 80),
+    ismVideoTrack("video 1600x900",  "http://ism/v6.m4s",  6, 400_000, 80),
+    ismVideoTrack("video 1920x1080", "http://ism/v7.m4s",  7, 400_000, 80),
+  ];
+  const renditions50fps = [
+    ismVideoTrack("video 480x270 50fps",   "http://ism/v8.m4s",   8, 200_000, 160),
+    ismVideoTrack("video 640x360 50fps",   "http://ism/v9.m4s",   9, 200_000, 160),
+    ismVideoTrack("video 864x486 50fps",   "http://ism/v10.m4s", 10, 200_000, 160),
+    ismVideoTrack("video 1024x576 50fps",  "http://ism/v11.m4s", 11, 200_000, 160),
+    ismVideoTrack("video 1280x720 50fps",  "http://ism/v12.m4s", 12, 200_000, 160),
+    ismVideoTrack("video 1600x900 50fps",  "http://ism/v13.m4s", 13, 200_000, 160),
+    ismVideoTrack("video 1920x1080 50fps", "http://ism/v14.m4s", 14, 200_000, 160),
+  ];
+
+  const allRenditions = [...renditions25fps, ...renditions50fps];
+  const allTracks = allRenditions.map((r) => r.track);
+  const segmentMap = new Map(allRenditions.map((r) => [r.track.segments[0].url, r.segment]));
+
+  const ismFetch = async (url: string) => {
+    const seg = segmentMap.get(url)!;
+    return { data: seg.buffer.slice(0), contentLength: seg.byteLength };
+  };
+
+  it("detects BMFF-S05 for 25fps/50fps mix across 14 video tracks", async () => {
+    const { issues } = await scanSegments(allTracks, ismFetch);
+
+    const s05 = issues.filter((i) => i.id === "BMFF-S05");
+    expect(s05).toHaveLength(1);
+    expect(s05[0].severity).toBe("error");
+    expect(s05[0].category).toBe("Container");
+    // Verify both frame rate groups are reported
+    expect(s05[0].message).toContain("25.00");
+    expect(s05[0].message).toContain("50.00");
+    expect(s05[0].message).toContain("Mixed frame rates");
+    // Verify detail explains the consequence
+    expect(s05[0].detail).toContain("A/V desync");
+  });
+
+  it("reports the correct fps values from ISM origin timescale/duration", async () => {
+    const { issues } = await scanSegments(allTracks, ismFetch);
+
+    const s05 = issues.find((i) => i.id === "BMFF-S05")!;
+    // 10000000 / 400000 = 25.00, 10000000 / 200000 = 50.00
+    expect(s05.message).toMatch(/25\.00\s*fps/);
+    expect(s05.message).toMatch(/50\.00\s*fps/);
+  });
+
+  it("includes track labels from both fps groups in the error", async () => {
+    const { issues } = await scanSegments(allTracks, ismFetch);
+
+    const s05 = issues.find((i) => i.id === "BMFF-S05")!;
+    // At least one track label from each group should appear
+    expect(s05.message).toContain("video 480x270");
+    expect(s05.message).toContain("video 480x270 50fps");
+  });
+
+  it("does not fire BMFF-S05 when only 25fps tracks are present (no frameRate in MPD)", async () => {
+    const tracks25 = renditions25fps.map((r) => r.track);
+    const { issues } = await scanSegments(tracks25, ismFetch);
+
+    expect(issues.filter((i) => i.id === "BMFF-S05")).toHaveLength(0);
+  });
+
+  it("audio tracks do not interfere with CDP video fps detection", async () => {
+    const audioSeg = makeMoof({
+      sequenceNumber: 1,
+      trackId: 15,
+      baseDecodeTime: 0,
+      samples: [{ size: 1000 }],
+      defaultSampleDuration: 1024, // AAC frame duration at 48kHz — very different from video
+    });
+    const audioTrack = makeTrack({
+      label: "audio 2ch",
+      type: "audio",
+      timescale: 48_000,
+      segments: [{ index: 0, startTime: 0, endTime: 3.2, url: "http://ism/a1.m4s", startByte: 0, endByte: null }],
+    });
+
+    const tracksWithAudio = [...allTracks, audioTrack];
+    const fetchWithAudio = async (url: string) => {
+      if (url.includes("a1")) {
+        return { data: audioSeg.buffer.slice(0), contentLength: audioSeg.byteLength };
+      }
+      return ismFetch(url);
+    };
+
+    const { issues } = await scanSegments(tracksWithAudio, fetchWithAudio);
+
+    // BMFF-S05 should still fire for the video tracks only
+    const s05 = issues.filter((i) => i.id === "BMFF-S05");
+    expect(s05).toHaveLength(1);
+    expect(s05[0].message).not.toContain("audio");
+  });
+});

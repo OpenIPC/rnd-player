@@ -586,7 +586,7 @@ User loads manifest
 
 3. **`src/components/ManifestValidator.tsx`** — "Deep Scan Segments" button in panel (blue accent, below issues). Progress indicator: "Scanning video 1280x720 seg 0... (3/9 tracks)". Results merge into existing issue list with auto-expand on Container category.
 
-4. **27 unit tests** in `segmentScanner.test.ts` — synthetic BMFF segments built from binary helpers (`makeMoof`, `makeTrun`, `makeSenc`, etc.). Tests include:
+4. **32 unit tests** in `segmentScanner.test.ts` — synthetic BMFF segments built from binary helpers (`makeMoof`, `makeTrun`, `makeSenc`, etc.). Tests include:
    - Individual parser tests (trun, mfhd, tfdt v0/v1, tfhd default size, tfhd default duration)
    - BMFF-S01: pattern 10/27 mismatch, matching samples, 8-byte IV CENC, no-senc skip
    - BMFF-S02: truncation detection, Content-Length match, fetch failure
@@ -594,6 +594,7 @@ User loads manifest
    - BMFF-S04: tfdt mismatch, tfdt within tolerance
    - BMFF-S05: mixed fps across video tracks, same fps no error, audio excluded, trun fallback
    - Full ISM origin scenario: SD track clean + HD track with senc/trun mismatch
+   - Mixed frame rate regression for BMFF-S05: 14-track (7×25fps + 7×50fps) scenario mirroring mixed frame rate A/V desync with ISM timescale/duration values, verifying fps group detection, track labels, audio exclusion, and no false positive when only one fps group is present
    - Progress callback, maxSegmentsPerTrack option
 
 5. **No production URLs or media segments** — all test data is synthetic, modeled on the ISM origin bug pattern.
