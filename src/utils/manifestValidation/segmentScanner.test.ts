@@ -5,6 +5,7 @@ import {
   parseMfhd,
   parseTfdt,
   parseTfhdDefaultSize,
+  parseTfhdDefaultDuration,
 } from "./segmentScanner";
 import type { ScanTrack, SegmentFetchResult } from "./segmentScanner";
 
@@ -66,10 +67,14 @@ function makeMfhd(sequenceNumber: number): number[] {
   return fullBox("mfhd", 0, 0, u32(sequenceNumber));
 }
 
-/** Build a tfhd box with optional default_sample_size */
-function makeTfhd(trackId: number, defaultSize?: number): number[] {
+/** Build a tfhd box with optional default_sample_duration and default_sample_size */
+function makeTfhd(trackId: number, defaultSize?: number, defaultDuration?: number): number[] {
   let flags = 0;
   const payload = [...u32(trackId)];
+  if (defaultDuration !== undefined) {
+    flags |= 0x08;
+    payload.push(...u32(defaultDuration));
+  }
   if (defaultSize !== undefined) {
     flags |= 0x10;
     payload.push(...u32(defaultSize));
@@ -118,13 +123,14 @@ function makeMoof(opts: {
   sequenceNumber: number;
   trackId: number;
   baseDecodeTime: number;
-  samples: Array<{ size: number }>;
+  samples: Array<{ size: number; duration?: number }>;
   sencSamples?: Array<{ subsamples: Array<{ clear: number; encrypted: number }> }>;
   ivSize?: number;
   defaultSampleSize?: number;
+  defaultSampleDuration?: number;
 }): Uint8Array {
   const trafChildren: number[] = [
-    ...makeTfhd(opts.trackId, opts.defaultSampleSize),
+    ...makeTfhd(opts.trackId, opts.defaultSampleSize, opts.defaultSampleDuration),
     ...makeTfdt(opts.baseDecodeTime),
     ...makeTrun(opts.samples),
   ];
@@ -546,6 +552,152 @@ describe("segmentScanner", () => {
     expect(progress).toHaveBeenCalledWith(
       expect.objectContaining({ trackLabel: "video 1080p", trackNumber: 2, totalTracks: 2 }),
     );
+  });
+
+  describe("parseTfhdDefaultDuration", () => {
+    it("extracts default_sample_duration when flag 0x08 set", () => {
+      const segment = new Uint8Array(
+        box("moof", [...box("traf", makeTfhd(1, undefined, 1001))]),
+      );
+      expect(parseTfhdDefaultDuration(segment)).toBe(1001);
+    });
+
+    it("returns null when no default duration flag", () => {
+      const segment = new Uint8Array(
+        box("moof", [...box("traf", makeTfhd(1))]),
+      );
+      expect(parseTfhdDefaultDuration(segment)).toBeNull();
+    });
+
+    it("extracts duration correctly when both duration and size flags are set", () => {
+      const segment = new Uint8Array(
+        box("moof", [...box("traf", makeTfhd(1, 4096, 1001))]),
+      );
+      expect(parseTfhdDefaultDuration(segment)).toBe(1001);
+      // Also verify size still works
+      expect(parseTfhdDefaultSize(segment)).toBe(4096);
+    });
+  });
+
+  describe("BMFF-S05: cross-track video frame rate mismatch", () => {
+    it("detects mixed frame rates across video tracks", async () => {
+      // Track A: 30fps (timescale=30000, duration=1001 → 29.97fps)
+      const seg30 = makeMoof({
+        sequenceNumber: 1,
+        trackId: 1,
+        baseDecodeTime: 0,
+        samples: [{ size: 5000 }],
+        defaultSampleDuration: 1001,
+      });
+      // Track B: 25fps (timescale=25000, duration=1000 → 25fps)
+      const seg25 = makeMoof({
+        sequenceNumber: 1,
+        trackId: 2,
+        baseDecodeTime: 0,
+        samples: [{ size: 3000 }],
+        defaultSampleDuration: 1000,
+      });
+
+      const { issues } = await scanSegments(
+        [
+          makeTrack({ label: "video 1920x1080", timescale: 30000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/hd.m4s", startByte: 0, endByte: null }] }),
+          makeTrack({ label: "video 1280x720", timescale: 25000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/sd.m4s", startByte: 0, endByte: null }] }),
+        ],
+        async (url) => {
+          const seg = url.includes("hd") ? seg30 : seg25;
+          return { data: seg.buffer.slice(0), contentLength: seg.byteLength };
+        },
+      );
+
+      const s05 = issues.filter((i) => i.id === "BMFF-S05");
+      expect(s05).toHaveLength(1);
+      expect(s05[0].severity).toBe("error");
+      expect(s05[0].message).toContain("Mixed frame rates");
+      expect(s05[0].message).toContain("29.97");
+      expect(s05[0].message).toContain("25.00");
+    });
+
+    it("no error when all video tracks have the same frame rate", async () => {
+      const seg = makeMoof({
+        sequenceNumber: 1,
+        trackId: 1,
+        baseDecodeTime: 0,
+        samples: [{ size: 5000 }],
+        defaultSampleDuration: 1001,
+      });
+
+      const { issues } = await scanSegments(
+        [
+          makeTrack({ label: "video 1920x1080", timescale: 30000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/hd.m4s", startByte: 0, endByte: null }] }),
+          makeTrack({ label: "video 1280x720", timescale: 30000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/sd.m4s", startByte: 0, endByte: null }] }),
+        ],
+        okFetch(seg),
+      );
+
+      expect(issues.filter((i) => i.id === "BMFF-S05")).toHaveLength(0);
+    });
+
+    it("excludes audio tracks from fps comparison", async () => {
+      // Video: 30fps, Audio: different "duration" — should not trigger S05
+      const videoSeg = makeMoof({
+        sequenceNumber: 1,
+        trackId: 1,
+        baseDecodeTime: 0,
+        samples: [{ size: 5000 }],
+        defaultSampleDuration: 1001,
+      });
+      const audioSeg = makeMoof({
+        sequenceNumber: 1,
+        trackId: 2,
+        baseDecodeTime: 0,
+        samples: [{ size: 1000 }],
+        defaultSampleDuration: 1024,
+      });
+
+      const { issues } = await scanSegments(
+        [
+          makeTrack({ label: "video 1920x1080", type: "video", timescale: 30000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/vid.m4s", startByte: 0, endByte: null }] }),
+          makeTrack({ label: "audio 2ch", type: "audio", timescale: 48000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/aud.m4s", startByte: 0, endByte: null }] }),
+        ],
+        async (url) => {
+          const seg = url.includes("vid") ? videoSeg : audioSeg;
+          return { data: seg.buffer.slice(0), contentLength: seg.byteLength };
+        },
+      );
+
+      expect(issues.filter((i) => i.id === "BMFF-S05")).toHaveLength(0);
+    });
+
+    it("falls back to trun per-sample duration when tfhd has no default", async () => {
+      // No defaultSampleDuration in tfhd, but trun has per-sample durations
+      const seg30 = makeMoof({
+        sequenceNumber: 1,
+        trackId: 1,
+        baseDecodeTime: 0,
+        samples: [{ size: 5000, duration: 1001 }, { size: 5000, duration: 1001 }],
+      });
+      const seg25 = makeMoof({
+        sequenceNumber: 1,
+        trackId: 2,
+        baseDecodeTime: 0,
+        samples: [{ size: 3000, duration: 1000 }, { size: 3000, duration: 1000 }],
+      });
+
+      const { issues } = await scanSegments(
+        [
+          makeTrack({ label: "video 1920x1080", timescale: 30000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/hd.m4s", startByte: 0, endByte: null }] }),
+          makeTrack({ label: "video 1280x720", timescale: 25000, segments: [{ index: 0, startTime: 0, endTime: 3, url: "http://test/sd.m4s", startByte: 0, endByte: null }] }),
+        ],
+        async (url) => {
+          const seg = url.includes("hd") ? seg30 : seg25;
+          return { data: seg.buffer.slice(0), contentLength: seg.byteLength };
+        },
+      );
+
+      const s05 = issues.filter((i) => i.id === "BMFF-S05");
+      expect(s05).toHaveLength(1);
+      expect(s05[0].message).toContain("Mixed frame rates");
+    });
   });
 
   it("respects maxSegmentsPerTrack option", async () => {

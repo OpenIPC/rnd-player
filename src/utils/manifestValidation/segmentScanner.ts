@@ -110,6 +110,26 @@ function parseTrun(segmentData: Uint8Array): TrunSample[] | null {
   return samples;
 }
 
+/** Parse tfhd to get default_sample_duration (flag 0x08) */
+function parseTfhdDefaultDuration(segmentData: Uint8Array): number | null {
+  const content = findBoxData(segmentData, "tfhd");
+  if (!content || content.length < 8) return null;
+
+  const view = new DataView(content.buffer, content.byteOffset, content.byteLength);
+  const flags = ((content[1] << 16) | (content[2] << 8) | content[3]) >>> 0;
+  let pos = 4 + 4; // skip version+flags + track_ID
+
+  if (flags & 0x1) pos += 8; // base_data_offset
+  if (flags & 0x2) pos += 4; // sample_description_index
+
+  if (flags & 0x8) {
+    if (pos + 4 > content.length) return null;
+    return view.getUint32(pos);
+  }
+
+  return null;
+}
+
 /** Parse tfhd to get default_sample_size if per-sample sizes aren't in trun */
 function parseTfhdDefaultSize(segmentData: Uint8Array): number | null {
   const content = findBoxData(segmentData, "tfhd");
@@ -176,6 +196,9 @@ export async function scanSegments(
   const issues: ValidationIssue[] = [];
   const maxSegs = options?.maxSegmentsPerTrack ?? 1;
   let segmentsFetched = 0;
+
+  // Collect per-video-track sample duration for BMFF-S05 cross-track fps comparison
+  const videoDurations: Array<{ label: string; fps: number }> = [];
 
   for (let ti = 0; ti < tracks.length; ti++) {
     const track = tracks[ti];
@@ -254,6 +277,24 @@ export async function scanSegments(
         }
       }
 
+      // BMFF-S05: collect sample duration for video tracks (first segment only)
+      if (track.type === "video" && seg.index === 0 && track.timescale > 0) {
+        let sampleDuration = parseTfhdDefaultDuration(bytes);
+        if (sampleDuration === null) {
+          // Fallback: use first trun sample's duration
+          const trunForDuration = parseTrun(bytes);
+          if (trunForDuration && trunForDuration.length > 0 && trunForDuration[0].duration !== undefined) {
+            sampleDuration = trunForDuration[0].duration;
+          }
+        }
+        if (sampleDuration !== null && sampleDuration > 0) {
+          videoDurations.push({
+            label: track.label,
+            fps: track.timescale / sampleDuration,
+          });
+        }
+      }
+
       // BMFF-S01: senc sub-sample totals vs trun sample sizes
       const trunSamples = parseTrun(bytes);
       if (!trunSamples || trunSamples.length === 0) continue;
@@ -313,6 +354,33 @@ export async function scanSegments(
           specRef: "CENC spec / ISO 23001-7",
         });
       }
+    }
+  }
+
+  // BMFF-S05: cross-track video frame rate mismatch (container-level complement to DASH-112)
+  if (videoDurations.length >= 2) {
+    // Group by fps with 0.5 fps tolerance
+    const groups: Array<{ fps: number; labels: string[] }> = [];
+    for (const vd of videoDurations) {
+      const existing = groups.find((g) => Math.abs(g.fps - vd.fps) < 0.5);
+      if (existing) {
+        existing.labels.push(vd.label);
+      } else {
+        groups.push({ fps: vd.fps, labels: [vd.label] });
+      }
+    }
+
+    if (groups.length > 1) {
+      const groupDescs = groups
+        .map((g) => `${g.fps.toFixed(2)} fps (${g.labels.join(", ")})`)
+        .join(" vs ");
+      issues.push({
+        id: "BMFF-S05",
+        severity: "error",
+        category: "Container",
+        message: `Mixed frame rates across video tracks: ${groupDescs}`,
+        detail: "Different sample_duration values in tfhd/trun across video tracks. May cause A/V desync during ABR switches.",
+      });
     }
   }
 
@@ -435,4 +503,4 @@ export async function extractScanTracksFromShaka(
 }
 
 // Export internal parsers for testing
-export { parseTrun, parseMfhd, parseTfdt, parseTfhdDefaultSize };
+export { parseTrun, parseMfhd, parseTfdt, parseTfhdDefaultSize, parseTfhdDefaultDuration };

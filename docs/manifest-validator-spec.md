@@ -274,6 +274,7 @@ These checks require fetching actual media segments and are gated behind a "Deep
 | BMFF-S02 | `Content-Length` matches received bytes | Error | Truncated response detection — headers sent before body error |
 | BMFF-S03 | `moof` sequence numbers are monotonically increasing | Warning | Gaps indicate missing or misordered fragments |
 | BMFF-S04 | `tfdt` base media decode time matches expected timeline position | Warning | Cross-reference with manifest segment timeline |
+| BMFF-S05 | Video tracks have consistent frame rates (`sample_duration` in `tfhd`/`trun`) | Error | Compares `timescale / sample_duration` across all video tracks (0.5 fps tolerance). Container-level complement to DASH-112 — catches mixed frame rates even when `@frameRate` is missing from the MPD. |
 
 ### Category 5 — Cross-Platform Compatibility
 
@@ -579,17 +580,19 @@ User loads manifest
    - **BMFF-S02**: `Content-Length` header vs received bytes mismatch (truncation detection). Also reports fetch failures.
    - **BMFF-S03**: `moof` sequence numbers monotonically increasing within a track
    - **BMFF-S04**: `tfdt` base media decode time matches expected timeline position (0.1s tolerance)
+   - **BMFF-S05**: Cross-track video frame rate mismatch. Reads `default_sample_duration` from `tfhd` (flag 0x08) or falls back to first trun sample duration, converts to fps via `timescale / sample_duration`, and compares across all video tracks (0.5 fps tolerance). Container-level complement to DASH-112 — catches mixed frame rates even when `@frameRate` is absent from the MPD.
 
 2. **`src/utils/manifestValidation/runValidation.ts`** — Added `runDeepScan(player, onProgress, options)` export. Uses browser `fetch()` to get both `ArrayBuffer` and `Content-Length` header.
 
 3. **`src/components/ManifestValidator.tsx`** — "Deep Scan Segments" button in panel (blue accent, below issues). Progress indicator: "Scanning video 1280x720 seg 0... (3/9 tracks)". Results merge into existing issue list with auto-expand on Container category.
 
-4. **20 unit tests** in `segmentScanner.test.ts` — synthetic BMFF segments built from binary helpers (`makeMoof`, `makeTrun`, `makeSenc`, etc.). Tests include:
-   - Individual parser tests (trun, mfhd, tfdt v0/v1, tfhd default size)
+4. **27 unit tests** in `segmentScanner.test.ts` — synthetic BMFF segments built from binary helpers (`makeMoof`, `makeTrun`, `makeSenc`, etc.). Tests include:
+   - Individual parser tests (trun, mfhd, tfdt v0/v1, tfhd default size, tfhd default duration)
    - BMFF-S01: pattern 10/27 mismatch, matching samples, 8-byte IV CENC, no-senc skip
    - BMFF-S02: truncation detection, Content-Length match, fetch failure
    - BMFF-S03: non-monotonic sequence numbers
    - BMFF-S04: tfdt mismatch, tfdt within tolerance
+   - BMFF-S05: mixed fps across video tracks, same fps no error, audio excluded, trun fallback
    - Full ISM origin scenario: SD track clean + HD track with senc/trun mismatch
    - Progress callback, maxSegmentsPerTrack option
 
