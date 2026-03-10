@@ -624,6 +624,9 @@ export default function VideoControls({
       // Panels portaled into containerEl (stats, manifest validator, etc.)
       // are siblings of vp-video-area, not children, so they're excluded.
       if (!target.closest("[data-vp-click-toggle]")) return;
+      // Bottom bar (progress + controls row) is inside the video area but
+      // should not trigger play/pause — controls have their own handlers.
+      if (target.closest(".vp-bottom-bar")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
