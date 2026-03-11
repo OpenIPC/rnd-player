@@ -351,12 +351,13 @@ export function diagnoseDrmPlaybackError(
 ): StreamError | null {
   // Serialize error data to search for OPM-related strings
   const errStr = JSON.stringify(error.data ?? []);
-  const isOpmPattern =
-    error.code === 6008 ||
-    (error.code === 3014 && error.category === 3) ||
+  const hasOpmString =
     /output.?protect/i.test(errStr) ||
     /\bOPM\b/.test(errStr) ||
     /0xC0262500/i.test(errStr);
+  const isOpmPattern =
+    error.code === 6008 ||
+    hasOpmString;
 
   if (!isOpmPattern) return null;
 

@@ -202,11 +202,16 @@ describe("streamDiagnostics", () => {
   });
 
   describe("diagnoseDrmPlaybackError", () => {
-    it("detects OPM error from Shaka code 3014 category 3", () => {
-      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: [] });
+    it("detects OPM error from Shaka code 3014 with OPM string in data", () => {
+      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: ["The driver does not support OPM. (0xC0262500)"] });
       expect(err).not.toBeNull();
       expect(err!.summary).toContain("Output Protection");
       expect(err!.details.some(d => /Remote Desktop/i.test(d))).toBe(true);
+    });
+
+    it("returns null for code 3014 without OPM string (generic media error)", () => {
+      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: [] });
+      expect(err).toBeNull();
     });
 
     it("detects OPM error from Shaka code 6008", () => {
@@ -234,10 +239,9 @@ describe("streamDiagnostics", () => {
       expect(err).not.toBeNull();
     });
 
-    it("returns null for unrelated media errors", () => {
+    it("returns null for code 3014 with unrelated error data", () => {
       const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: ["some other error"] });
-      // code 3014 + category 3 still matches the pattern
-      expect(err).not.toBeNull();
+      expect(err).toBeNull();
     });
 
     it("returns null for non-OPM DRM errors", () => {
@@ -251,7 +255,7 @@ describe("streamDiagnostics", () => {
     });
 
     it("includes ClearKey suggestion in details", () => {
-      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: [] });
+      const err = diagnoseDrmPlaybackError({ code: 3014, category: 3, data: ["OPM failure"] });
       expect(err!.details.some(d => /ClearKey/i.test(d))).toBe(true);
     });
   });
