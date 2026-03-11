@@ -20,6 +20,8 @@ import { createSessionManager, type SessionManager } from "../drm/sessionManager
 import { hasWidevinePssh, configureWidevineProxy } from "../drm/widevineProxy";
 import { hasFairPlayKey, setupFairPlay } from "../drm/fairplayProxy";
 import { computeDeviceFingerprint } from "../drm/deviceFingerprint";
+import { EmeCapture } from "../drm/diagnostics/emeCapture";
+import type { EmeEventCallback } from "../drm/diagnostics/emeCapture";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const WatermarkOverlay = lazy(() => import("./WatermarkOverlay"));
@@ -121,6 +123,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
     manifest: null,
     initSegment: null,
   });
+  const emeCaptureRef = useRef(new EmeCapture());
+  const recordEmeEvent: EmeEventCallback = useCallback((type, detail, opts) => emeCaptureRef.current.record(type, detail, opts), []);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
@@ -170,6 +174,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
     const video = videoRef.current!;
     setSafariMSE(isSafariMSE(video));
+    emeCaptureRef.current.clear();
     const player = new shaka.Player();
     playerRef.current = player;
     let destroyed = false;
@@ -225,6 +230,25 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
             setError(diagnoseFallbackError(detail, video.error, src));
           }
         }
+      });
+
+      // Capture Shaka's native DRM lifecycle events (covers PlayReady and
+      // any key system handled by Shaka's built-in EME, not just our proxies).
+      player.addEventListener("drmsessionupdate", () => {
+        const drmInfo = player.drmInfo();
+        recordEmeEvent("update", "DRM session updated", {
+          success: true,
+          data: drmInfo ? { keySystem: drmInfo.keySystem } : undefined,
+        });
+      });
+      player.addEventListener("keystatuschanged", () => {
+        const drmInfo = player.drmInfo();
+        recordEmeEvent("key-status-change", "Key status changed", {
+          data: drmInfo ? { keySystem: drmInfo.keySystem } : undefined,
+        });
+      });
+      player.addEventListener("expirationupdated", () => {
+        recordEmeEvent("expiration-change", "License expiration updated");
       });
 
       // Read persisted state before loading so we can pass startTime to Shaka
@@ -580,16 +604,22 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
     const kid = kidRef.current;
     if (!player || !kid) return;
 
+    recordEmeEvent("access-request", "ClearKey EME probe");
     const emeSupported = await hasClearKeySupport();
     if (emeSupported) {
+      recordEmeEvent("access-granted", "ClearKey EME supported", { success: true });
       player.configure({ drm: { clearKeys: { [kid]: key } } });
+      recordEmeEvent("keys-set", "ClearKey configured");
     } else {
+      recordEmeEvent("access-denied", "ClearKey EME not supported", { success: false });
       configureSoftwareDecryption(player, key);
+      recordEmeEvent("keys-set", "Software decryption configured");
     }
 
     try {
       await player.load(src);
       setPlayerReady(true);
+      recordEmeEvent("update", "Content loaded", { success: true });
       if (shouldPlay) videoRef.current?.play().catch(() => {});
 
       // Start session heartbeat for license-server DRM
@@ -626,9 +656,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         const v = videoRef.current;
         waitForDecryption(v).then(async (emeWorks) => {
           if (emeWorks || !playerRef.current) return;
+          recordEmeEvent("error", "EME silent failure detected", { success: false });
           await player.unload();
           player.configure({ drm: { clearKeys: {} } });
           configureSoftwareDecryption(player, key);
+          recordEmeEvent("update", "Software decryption fallback activated");
           await player.load(src);
           v.play().catch(() => {});
         });
@@ -669,6 +701,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
     let wvSessionId: string | undefined;
     let wvRenewalS = 30;
 
+    recordEmeEvent("access-request", "Widevine EME");
     configureWidevineProxy({
       player,
       licenseUrl: drmConfig.licenseUrl,
@@ -680,6 +713,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         wvRenewalS = renewal;
       },
       onWatermark: (wm) => setWatermark(wm),
+      onEmeEvent: recordEmeEvent,
     });
 
     (async () => {
@@ -713,11 +747,13 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         }
 
         setPlayerReady(true);
+        recordEmeEvent("update", "Content loaded", { success: true });
         if (autoPlay) videoRef.current?.play().catch(() => {});
       } catch (e) {
         if (!playerRef.current) return; // destroyed
         const reason = e instanceof Error ? e.message : String(e);
         console.warn("[DRM] Widevine EME failed, falling back to key prompt:", e);
+        recordEmeEvent("error", `Widevine DRM failed: ${reason}`, { success: false });
         setError(simpleError(`Widevine DRM failed: ${reason}`));
         setNeedsKey(true);
       }
@@ -764,6 +800,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
             fpRenewalS = renewal;
           },
           onWatermark: (wm) => setWatermark(wm),
+          onEmeEvent: recordEmeEvent,
         });
 
         // Set video source directly — Safari's native HLS parser will
@@ -803,16 +840,33 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         }
 
         setPlayerReady(true);
+        recordEmeEvent("update", "Content loaded", { success: true });
         if (autoPlay) videoRef.current?.play().catch(() => {});
       } catch (e) {
         if (!playerRef.current) return; // destroyed
         const reason = e instanceof Error ? e.message : String(e);
         console.warn("[DRM] FairPlay EME failed, falling back to key prompt:", e);
+        recordEmeEvent("error", `FairPlay DRM failed: ${reason}`, { success: false });
         setError(simpleError(`FairPlay DRM failed: ${reason}`));
         setNeedsKey(true);
       }
     })();
   }, [pendingFairPlay, playerReady, needsKey]);
+
+  // Sync EME events to diagnostics state when panel is open
+  useEffect(() => {
+    if (!showDrmDiagnostics) return;
+    const sync = () => {
+      const events = emeCaptureRef.current.getEvents();
+      setDrmDiagnosticsState(prev => {
+        if (prev.emeEvents === events) return prev;
+        return { ...prev, emeEvents: events };
+      });
+    };
+    sync();
+    const id = setInterval(sync, 500);
+    return () => clearInterval(id);
+  }, [showDrmDiagnostics]);
 
   // Auto-enter compare mode when compareSrc is provided via URL param
   const compareSrcTriggered = useRef(false);
@@ -1024,6 +1078,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           <DrmDiagnosticsPanel
             state={drmDiagnosticsState}
             onClose={() => setShowDrmDiagnostics(false)}
+            onClearEmeEvents={() => {
+              emeCaptureRef.current.clear();
+              setDrmDiagnosticsState(prev => ({ ...prev, emeEvents: [] }));
+            }}
           />
         </Suspense>
       )}

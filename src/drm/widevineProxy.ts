@@ -1,6 +1,7 @@
 import shaka from "shaka-player";
 import type { ManifestDrmInfo } from "./diagnostics/types";
 import type { LicensePolicy, WatermarkToken } from "./types";
+import type { EmeEventCallback } from "./diagnostics/emeCapture";
 
 /** Widevine system ID as it appears in ContentProtection schemeIdUri. */
 const WIDEVINE_UUID = "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed";
@@ -59,6 +60,7 @@ export interface ConfigureWidevineProxyOpts {
   deviceFingerprint: string;
   onSessionInfo?: (sessionId: string, renewalS: number) => void;
   onWatermark?: (watermark: WatermarkToken) => void;
+  onEmeEvent?: EmeEventCallback;
 }
 
 /**
@@ -70,7 +72,7 @@ export interface ConfigureWidevineProxyOpts {
  *    and replaces response.data with raw license bytes for the CDM
  */
 export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
-  const { player, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark } = opts;
+  const { player, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark, onEmeEvent } = opts;
 
   const widevineUrl = deriveWidevineUrl(licenseUrl);
 
@@ -81,6 +83,8 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
       },
     },
   });
+
+  onEmeEvent?.("keys-set", "Widevine DRM configured", { data: { keySystem: "com.widevine.alpha" } });
 
   const net = player.getNetworkingEngine();
   if (!net) return;
@@ -103,6 +107,8 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
     request.body = new TextEncoder().encode(JSON.stringify(envelope)).buffer as ArrayBuffer;
     request.headers["Content-Type"] = "application/json";
     request.headers["Authorization"] = `Bearer ${sessionToken}`;
+
+    onEmeEvent?.("message", "License challenge", { data: { bytes: challenge.byteLength } });
   });
 
   // Response filter: parse JSON, extract session/watermark, pass raw license bytes to CDM
@@ -118,6 +124,7 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
       parsed = JSON.parse(text);
     } catch {
       // Not JSON — assume raw license bytes (passthrough)
+      onEmeEvent?.("error", "Failed to parse license response", { success: false });
       return;
     }
 
@@ -128,6 +135,8 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
     if (parsed.watermark) {
       onWatermark?.(parsed.watermark);
     }
+
+    onEmeEvent?.("update", "License response received", { success: true, data: { sessionId: parsed.session_id } });
 
     // Replace response data with raw license bytes for the CDM
     const licenseBytes = base64ToUint8Array(parsed.license);

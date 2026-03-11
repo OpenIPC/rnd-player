@@ -3085,6 +3085,59 @@ video::-webkit-media-text-track-container {
   padding: 4px 0;
 }
 
+.vp-drm-timeline {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.vp-drm-timeline-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.vp-drm-event {
+  display: flex;
+  align-items: baseline;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.vp-drm-event-time {
+  min-width: 70px;
+  color: #999;
+  font-size: 10px;
+  font-family: monospace;
+}
+
+.vp-drm-event-type {
+  min-width: 55px;
+  font-size: 10px;
+  font-weight: bold;
+  font-family: monospace;
+}
+
+.vp-drm-event-detail {
+  flex: 1;
+  font-size: 10px;
+}
+
+.vp-drm-event-latency {
+  color: #666;
+  font-size: 9px;
+  margin-left: 4px;
+}
+
+.vp-drm-event-data {
+  padding: 0 0 4px 70px;
+}
+
+.vp-drm-event-data pre {
+  margin: 0;
+}
+
 /* ── Manifest Validator panel ── */
 
 .vp-mv-panel {

@@ -1,6 +1,7 @@
 import type { ManifestDrmInfo } from "./diagnostics/types";
 import type { LicensePolicy, WatermarkToken } from "./types";
 import { uint8ToBase64, base64ToUint8Array } from "./widevineProxy";
+import type { EmeEventCallback } from "./diagnostics/emeCapture";
 
 /** FairPlay key format as it appears in HLS EXT-X-KEY tags. */
 const FAIRPLAY_KEYFORMAT = "com.apple.streamingkeydelivery";
@@ -57,6 +58,7 @@ export interface SetupFairPlayOpts {
   deviceFingerprint: string;
   onSessionInfo?: (sessionId: string, renewalS: number) => void;
   onWatermark?: (watermark: WatermarkToken) => void;
+  onEmeEvent?: EmeEventCallback;
 }
 
 /** Extract content-id from initData (UTF-16LE encoded skd:// URI). */
@@ -111,16 +113,19 @@ function buildSessionInitData(initData: Uint8Array, contentId: string, cert: Uin
  * Call BEFORE setting video.src. Returns a cleanup function.
  */
 export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void> {
-  const { video, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark } = opts;
+  const { video, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark, onEmeEvent } = opts;
   const fairplayUrl = deriveFairPlayUrl(licenseUrl);
   const certUrl = deriveFairPlayCertUrl(licenseUrl);
 
   console.log("[FP] setupFairPlay: fairplayUrl=%s certUrl=%s", fairplayUrl, certUrl);
 
   // Check legacy API availability
+  onEmeEvent?.("access-request", "FairPlay EME probe");
   if (!window.WebKitMediaKeys?.isTypeSupported?.("com.apple.fps.1_0", "video/mp4")) {
+    onEmeEvent?.("access-denied", "FairPlay not supported", { success: false });
     throw new Error("FairPlay not supported (need Safari with WebKitMediaKeys)");
   }
+  onEmeEvent?.("access-granted", "FairPlay EME supported", { success: true });
 
   // 1. Fetch server certificate
   console.log("[FP] Fetching certificate...");
@@ -133,6 +138,7 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
   const keys = new window.WebKitMediaKeys("com.apple.fps.1_0");
   video.webkitSetMediaKeys!(keys);
   console.log("[FP] WebKitMediaKeys configured");
+  onEmeEvent?.("keys-set", "FairPlay WebKitMediaKeys configured");
 
   let destroyed = false;
 
@@ -142,6 +148,7 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const initData = new Uint8Array((event as any).initData);
     console.log("[FP] webkitneedkey: %d bytes", initData.byteLength);
+    onEmeEvent?.("generate-request", "webkitneedkey", { data: { initDataBytes: initData.byteLength } });
 
     const contentId = extractContentId(initData.buffer as ArrayBuffer);
     console.log("[FP] contentId: %s", contentId);
@@ -167,6 +174,7 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const spc = new Uint8Array((msgEvent as any).message);
       console.log("[FP] SPC generated: %d bytes", spc.byteLength);
+      onEmeEvent?.("message", "SPC generated", { data: { spcBytes: spc.byteLength } });
 
       // Send SPC to our license server (JSON envelope)
       const envelope = {
@@ -189,6 +197,7 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
         if (!resp.ok) {
           const text = await resp.text();
           console.error("[FP] License request failed: %d %s", resp.status, text);
+          onEmeEvent?.("error", "License exchange failed", { success: false, data: { status: resp.status } });
           return;
         }
 
@@ -207,19 +216,23 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
         console.log("[FP] Updating session with CKC: %d bytes", ckc.byteLength);
         session.update(ckc);
         console.log("[FP] CKC applied");
+        onEmeEvent?.("update", "CKC applied", { success: true, data: { ckcBytes: ckc.byteLength } });
       } catch (err) {
         console.error("[FP] License exchange failed:", err);
+        onEmeEvent?.("error", "License exchange failed", { success: false });
       }
     });
 
     session.addEventListener("webkitkeyadded", () => {
       console.log("[FP] Key added — decryption active");
+      onEmeEvent?.("key-status-change", "Key added — decryption active", { success: true });
     });
 
     session.addEventListener("webkitkeyerror", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const err = (session as any).error || {};
       console.error("[FP] Key error: code=%s systemCode=%s", err.code, err.systemCode);
+      onEmeEvent?.("error", "Key error", { success: false, data: { code: err.code, systemCode: err.systemCode } });
     });
   };
 

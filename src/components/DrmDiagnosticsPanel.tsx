@@ -9,10 +9,12 @@ import type {
   PlayReadyPssh,
 } from "../drm/diagnostics/types";
 import { toHex } from "../drm/diagnostics/types";
+import type { EmeEvent, EmeEventType } from "../drm/diagnostics/emeCapture";
 
 interface DrmDiagnosticsPanelProps {
   state: DrmDiagnosticsState;
   onClose: () => void;
+  onClearEmeEvents?: () => void;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -283,6 +285,93 @@ function PlayReadyPsshView({ pr }: { pr: PlayReadyPssh }) {
   );
 }
 
+// --- EME Timeline ---
+
+const EME_TYPE_LABELS: Record<EmeEventType, string> = {
+  "access-request": "ACCESS?",
+  "access-granted": "ACCESS \u2713",
+  "access-denied": "ACCESS \u2717",
+  "keys-created": "KEYS",
+  "keys-set": "SET",
+  "generate-request": "INIT",
+  "message": "MSG",
+  "update": "UPDATE",
+  "key-status-change": "STATUS",
+  "close": "CLOSE",
+  "expiration-change": "EXPIRY",
+  "error": "ERROR",
+};
+
+function emeEventColor(event: EmeEvent): string {
+  if (event.success === false || event.type === "error") return "#ff4444";
+  if (event.type === "access-denied") return "#ffaa00";
+  if (event.success === true) return "#4caf50";
+  return "#e0e0e0";
+}
+
+function formatRelativeTime(ts: number, baseTs: number): string {
+  const delta = ts - baseTs;
+  const mins = Math.floor(delta / 60000);
+  const secs = Math.floor((delta % 60000) / 1000);
+  const ms = Math.floor(delta % 1000);
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
+}
+
+function EmeEventRow({ event, baseTs }: { event: EmeEvent; baseTs: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const color = emeEventColor(event);
+
+  return (
+    <>
+      <div className="vp-drm-event" onClick={() => event.data !== undefined && setExpanded((s) => !s)}>
+        <span className="vp-drm-event-time">{formatRelativeTime(event.timestamp, baseTs)}</span>
+        <span className="vp-drm-event-type" style={{ color }}>{EME_TYPE_LABELS[event.type]}</span>
+        <span className="vp-drm-event-detail">{event.detail}</span>
+        {event.duration !== undefined && (
+          <span className="vp-drm-event-latency">(+{Math.round(event.duration)}ms)</span>
+        )}
+      </div>
+      {expanded && event.data !== undefined && (
+        <div className="vp-drm-event-data">
+          <pre className="vp-drm-hex">{JSON.stringify(event.data, null, 2)}</pre>
+        </div>
+      )}
+    </>
+  );
+}
+
+function EmeTimelineSection({ events, onClear }: { events: readonly EmeEvent[]; onClear?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const baseTs = events.length > 0 ? events[0].timestamp : 0;
+
+  return (
+    <CollapsibleSection title={`EME Events (${events.length})`} defaultOpen={true}>
+      <div className="vp-drm-timeline-actions">
+        {onClear && (
+          <button className="vp-drm-copy" onClick={onClear}>Clear</button>
+        )}
+        <button
+          className="vp-drm-copy"
+          onClick={() => {
+            const json = JSON.stringify(events, null, 2);
+            navigator.clipboard.writeText(json).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }).catch(() => {});
+          }}
+        >
+          {copied ? "Copied" : "Copy JSON"}
+        </button>
+      </div>
+      <div className="vp-drm-timeline">
+        {events.map((event) => (
+          <EmeEventRow key={event.id} event={event} baseTs={baseTs} />
+        ))}
+      </div>
+    </CollapsibleSection>
+  );
+}
+
 /** Group all DRM data by system name for unified display. */
 interface SystemGroup {
   systemName: string;
@@ -326,7 +415,7 @@ function buildSystemGroups(state: DrmDiagnosticsState): SystemGroup[] {
   return Array.from(map.values());
 }
 
-export default function DrmDiagnosticsPanel({ state, onClose }: DrmDiagnosticsPanelProps) {
+export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents }: DrmDiagnosticsPanelProps) {
   const systemGroups = buildSystemGroups(state);
   const hlsKeys = state.manifest?.hlsKeys ?? [];
   const tracks = state.initSegment?.tracks ?? [];
@@ -371,6 +460,11 @@ export default function DrmDiagnosticsPanel({ state, onClose }: DrmDiagnosticsPa
             <TrackEncryptionRow key={track.trackId} track={track} />
           ))}
         </CollapsibleSection>
+      )}
+
+      {/* EME Event Timeline */}
+      {(state.emeEvents?.length ?? 0) > 0 && (
+        <EmeTimelineSection events={state.emeEvents!} onClear={onClearEmeEvents} />
       )}
     </div>
   );

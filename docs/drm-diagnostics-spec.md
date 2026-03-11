@@ -105,66 +105,69 @@ Reuse utilities from `cencDecrypt.ts` to parse ISOBMFF boxes from init segments:
 - Scheme in manifest (`cenc:`) vs scheme in sinf/schm → show mismatch warning
 - Multiple PSSH boxes → list all with system ID labels
 
-### 2. EME Event Timeline
+### 2. EME Event Timeline — IMPLEMENTED
 
-Hook the Encrypted Media Extensions API to record a structured timeline of DRM session events.
+Structured timeline of EME lifecycle events with timing annotations, displayed as a collapsible section within `DrmDiagnosticsPanel`.
 
 #### Event Capture Strategy
 
-Monkey-patch `HTMLMediaElement.prototype.setMediaKeys` and `MediaKeySession.prototype.*` methods at the Shaka Player level to intercept:
+**Callback injection, not monkey-patching.** We control all DRM paths (ClearKey, Widevine, FairPlay) and inject `onEmeEvent` callbacks at existing call sites. For key systems handled by Shaka's built-in EME (e.g. PlayReady), we subscribe to Shaka's native player events.
 
-| Event | Source | Captured Data |
-|-------|--------|---------------|
-| `requestMediaKeySystemAccess` | Navigator | systemId, supported configs, robustness, result (success/failure) |
-| `createMediaKeys` | MediaKeySystemAccess | systemId, CDM info |
-| `setMediaKeys` | HTMLMediaElement | association timing |
-| `generateRequest` | MediaKeySession | initDataType, initData (PSSH bytes), sessionId |
-| `message` (license-request) | MediaKeySession | messageType, message bytes (license challenge), timing |
-| `update` | MediaKeySession | response bytes (license response), timing, success/failure |
-| `keystatuseschange` | MediaKeySession | per-key status map: `{ kid → status }` |
-| `close` | MediaKeySession | sessionId, reason |
-| `expiration` change | MediaKeySession | new expiration timestamp |
+Two capture layers:
 
-Alternative: use Shaka's built-in DRM event surface rather than monkey-patching:
-- `player.addEventListener('drmsessionupdate', ...)` — session update events
-- `player.getActiveSessionsMetadata()` — current session IDs and init data
-- `player.getKeyStatuses()` — key status map
-- `player.getExpiration()` — license expiration
-- `player.getStats()` → `drmTimeSeconds`, `licenseTime` — aggregate timing
+1. **Proxy-level callbacks** — `onEmeEvent?: EmeEventCallback` added to `ConfigureWidevineProxyOpts` and `SetupFairPlayOpts`. ClearKey events recorded directly in `ShakaPlayer.tsx`'s `handleKeySubmit`. These capture DRM-path-specific detail (challenge bytes, license response, SPC/CKC, key errors).
 
-The recommended approach is Shaka APIs first (cleaner, survives API changes), supplemented by `navigator.requestMediaKeySystemAccess` interception for the initial capability probe that happens before Shaka's DRM engine activates.
+2. **Shaka native events** — `player.addEventListener()` for `drmsessionupdate`, `keystatuschanged`, `expirationupdated`. These fire for any key system Shaka handles (including PlayReady) and supplement the proxy-level events.
+
+**Ref-based accumulation, state sync on demand.** EME events fire rapidly during init. Using `useState` per event would thrash renders. Events accumulate in a `useRef<EmeCapture>`, synced to `drmDiagnosticsState.emeEvents` via a 500ms interval only when the panel is open.
+
+#### Event Types
+
+| Type | Label | Color | Sources |
+|------|-------|-------|---------|
+| `access-request` | ACCESS? | neutral | ClearKey probe, FairPlay probe, Widevine pre-load |
+| `access-granted` | ACCESS ✓ | green | ClearKey EME supported, FairPlay supported |
+| `access-denied` | ACCESS ✗ | yellow | ClearKey EME absent, FairPlay not supported |
+| `keys-created` | KEYS | neutral | (reserved) |
+| `keys-set` | SET | neutral | ClearKey/SW configured, Widevine configured, FairPlay WebKitMediaKeys |
+| `generate-request` | INIT | neutral | FairPlay webkitneedkey |
+| `message` | MSG | neutral | Widevine challenge, FairPlay SPC |
+| `update` | UPDATE | green/neutral | License response, content loaded, SW fallback, Shaka drmsessionupdate |
+| `key-status-change` | STATUS | neutral | FairPlay key added, Shaka keystatuschanged |
+| `close` | CLOSE | neutral | (reserved) |
+| `expiration-change` | EXPIRY | neutral | Shaka expirationupdated |
+| `error` | ERROR | red | Parse failure, EME silent failure, key error, DRM load failure |
+
+#### Event Coverage by DRM Path
+
+| Path | Events recorded |
+|------|----------------|
+| **ClearKey (EME)** | access-request, access-granted, keys-set, update (load) + Shaka drmsessionupdate, keystatuschanged |
+| **ClearKey (SW fallback)** | access-request, access-granted, keys-set, update (load), error (silent failure), update (SW fallback) |
+| **ClearKey (no EME)** | access-request, access-denied, keys-set (SW decrypt), update (load) |
+| **Widevine** | access-request, keys-set, message (challenge), update (license response), update (load) + Shaka drmsessionupdate, keystatuschanged |
+| **FairPlay** | access-request, access-granted/denied, keys-set, generate-request, message (SPC), update (CKC), key-status-change, update (load), or error |
+| **PlayReady** | Shaka drmsessionupdate, keystatuschanged, expirationupdated (generic Shaka events — no custom proxy) |
+| **Unencrypted** | (no events — section hidden) |
 
 #### Timeline Display
 
 ```
-┌─ EME Event Timeline ──────────────────────────────────────────┐
+┌─ EME Events (7) ─────────────────────────────────────────────┐
+│                                          [ Clear ] [Copy JSON]│
 │                                                                │
-│  00:00.000  ▶ requestMediaKeySystemAccess("org.w3.clearkey")  │
-│             │  configs: [{ videoCapabilities: [...] }]         │
-│  00:00.023  │  ✓ Access granted                    (+23ms)    │
-│             │                                                  │
-│  00:00.024  ▶ createMediaKeys                                 │
-│  00:00.025  │  ✓ MediaKeys created                  (+1ms)    │
-│             │                                                  │
-│  00:00.026  ▶ setMediaKeys                                    │
-│  00:00.027  │  ✓ Keys associated with <video>       (+1ms)    │
-│             │                                                  │
-│  00:00.150  ▶ generateRequest("cenc", pssh[32 bytes])         │
-│  00:00.155  │  ✓ Session abc123 created              (+5ms)   │
-│             │                                                  │
-│  00:00.156  ▶ message (license-request)                       │
-│             │  → Challenge: 84 bytes                           │
-│  00:00.320  │  ← Response: 156 bytes               (+164ms)   │
-│  00:00.322  │  ✓ update() succeeded                  (+2ms)   │
-│             │                                                  │
-│  00:00.325  ▶ keystatuseschange                               │
-│             │  a1b2c3d4...: usable ●                           │
-│             │                                                  │
-│  [ Clear ]                                    [ Copy JSON ]   │
+│  00:00.000  ACCESS?  ClearKey EME probe                       │
+│  00:00.012  ACCESS ✓ ClearKey EME supported        (+12ms)    │
+│  00:00.013  SET      ClearKey configured             (+1ms)    │
+│  00:00.156  UPDATE   Content loaded               (+143ms)    │
+│  00:00.180  UPDATE   DRM session updated           (+24ms)    │
+│  00:00.181  STATUS   Key status changed              (+1ms)    │
+│                                                                │
+│  (click row to expand data as JSON)                           │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-Each event row is expandable to show raw data (hex dump of initData, license challenge/response bytes). Inter-event latency shown as `(+Nms)` annotations. Color coding: green for success, red for errors, yellow for warnings (e.g., `output-restricted` key status).
+Each event row shows: relative timestamp (MM:SS.mmm from first event), colored type badge, detail text, and inter-event latency `(+Nms)`. Rows with `data` are clickable — expands to show `JSON.stringify(event.data, null, 2)` in a `<pre>` block. Color coding: green for `success: true`, red for `success: false` or `type === "error"`, yellow for `access-denied`, neutral otherwise.
 
 ### 3. License Exchange Inspector
 
@@ -439,11 +442,14 @@ Display hex dump with ASCII sidebar (16 bytes per row), similar to a hex editor 
 | `softwareDecrypt.waitForDecryption()` | Silent failure detection (SF-003) | 4 |
 | `drmClient.fetchLicense()` | Wrap for license exchange capture (rnd-player's own server) | 3 |
 | `sessionManager` | Session lifecycle events for EME timeline | 2 |
-| `player.drmInfo()` | Active DRM system info | 2 |
+| `player.drmInfo()` | Active DRM system info (keySystem in Shaka event data) | 2 ✓ |
 | `player.getKeyStatuses()` | Per-key status for failure detection | 4 |
 | `player.getExpiration()` | License expiration for timeline + metadata | 2 |
 | `player.getStats().drmTimeSeconds` | DRM initialization timing | 2 |
 | `player.getStats().licenseTime` | License exchange timing | 3 |
+| `player.addEventListener("drmsessionupdate")` | Shaka DRM session update (covers PlayReady) | 2 ✓ |
+| `player.addEventListener("keystatuschanged")` | Shaka key status change (covers PlayReady) | 2 ✓ |
+| `player.addEventListener("expirationupdated")` | Shaka license expiration update | 2 ✓ |
 
 ### Module Config Integration
 
@@ -478,7 +484,8 @@ ShakaPlayer
 │   │   └── HlsKeyRow (per EXT-X-KEY tag)
 │   ├── CollapsibleSection("Track Encryption")
 │   │   └── TrackEncryptionRow (per encrypted track)
-│   ├── EmeTimeline                                ← Phase 2
+│   ├── EmeTimelineSection                          ← Phase 2 ✓
+│   │   └── EmeEventRow (per event, expandable)
 │   ├── LicenseInspector                           ← Phase 3
 │   ├── SilentFailureDetector                      ← Phase 4
 │   └── CompatibilityChecker                       ← Phase 4
@@ -509,7 +516,8 @@ src/
       psshDecode.test.ts         — 12 tests  ✓
       psshWidevinePb.test.ts     — 11 tests  ✓
       parseManifestDrm.test.ts   — 13 tests  ✓
-      emeCapture.ts              — EME event interception and timeline recording  (Phase 2)
+      emeCapture.ts              — EmeCapture class + EmeEvent/EmeEventCallback types  ✓
+      emeCapture.test.ts         — 8 tests  ✓
       licenseCapture.ts          — License request/response capture via Shaka filters  (Phase 3)
       silentFailures.ts          — Silent failure pattern detection  (Phase 4)
       compatChecker.ts           — Cross-DRM requestMediaKeySystemAccess probing  (Phase 4)
@@ -598,31 +606,53 @@ interface InitSegmentDrmInfo {
   psshBoxes: PsshBox[];      // found via findAllPsshBoxes() scan
 }
 
-/** Combined diagnostics state for Phase 1. */
+/** Combined diagnostics state. */
 interface DrmDiagnosticsState {
   manifest: ManifestDrmInfo | null;
   manifestPsshBoxes?: PsshBox[];  // decoded from <cenc:pssh> elements
   initSegment: InitSegmentDrmInfo | null;
+  emeEvents?: readonly EmeEvent[];  // Phase 2
 }
 ```
+
+### Data Types (Phase 2 — Implemented)
+
+```typescript
+/** EME event type union. */
+type EmeEventType =
+  | "access-request" | "access-granted" | "access-denied"
+  | "keys-created" | "keys-set" | "generate-request"
+  | "message" | "update" | "key-status-change"
+  | "close" | "expiration-change" | "error";
+
+/** Single captured EME event for the timeline. */
+interface EmeEvent {
+  id: number;
+  timestamp: number;        // performance.now()
+  type: EmeEventType;
+  detail: string;
+  data?: unknown;           // expandable raw data (click row)
+  duration?: number;        // ms since previous event
+  success?: boolean;        // drives color coding
+}
+
+/** Callback type used by proxy modules. */
+type EmeEventCallback = (
+  type: EmeEventType,
+  detail: string,
+  opts?: { data?: unknown; success?: boolean },
+) => void;
+```
+
+`EmeCapture` class (`src/drm/diagnostics/emeCapture.ts`):
+- `record(type, detail, opts?)` — push event with auto-incrementing id, `performance.now()` timestamp, duration from previous event
+- `getEvents(): readonly EmeEvent[]` — returns accumulated events (same array reference until next `record()`)
+- `clear()` — reset for new stream (IDs restart, no duration carry-over)
+- `toJSON(): string` — serializes events array for Copy JSON button
 
 ### Data Types (Future Phases)
 
 ```typescript
-/** Single captured EME event for the timeline. (Phase 2) */
-interface EmeEvent {
-  id: number;
-  timestamp: number;        // performance.now()
-  type: "access-request" | "access-granted" | "access-denied"
-    | "keys-created" | "keys-set" | "generate-request"
-    | "message" | "update" | "key-status-change"
-    | "close" | "expiration-change" | "error";
-  detail: string;
-  data?: unknown;
-  duration?: number;
-  success?: boolean;
-}
-
 /** Cross-DRM compatibility probe result. (Phase 4) */
 interface CompatResult {
   keySystem: string;
@@ -650,46 +680,50 @@ interface LicenseExchange {
 }
 ```
 
-### Data Flow (Phase 1)
+### Data Flow (Phase 1 + 2)
 
 ```
                  ┌──────────────────┐
                  │   ShakaPlayer    │
                  └────────┬─────────┘
                           │
-              ┌───────────┴───────────┐
-              │                       │
-        manifestText             init segment
-        (from fetchWithCorsRetry) (via Shaka response filter)
-              │                       │
-              ▼                       ▼
-      ┌───────────────┐     ┌─────────────────┐
-      │ parseManifest │     │ parseInitSegment │
-      │ Drm()         │     │ Drm()            │
-      │ (DOMParser +  │     │ (mp4box +        │
-      │  regex)       │     │  cencDecrypt)     │
-      └───────┬───────┘     └────────┬──────────┘
-              │                      │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────────┐
-              │   DrmDiagnosticsState    │
-              │ { manifest,              │
-              │   manifestPsshBoxes,     │
-              │   initSegment }          │
-              │   (React state in        │
-              │    ShakaPlayer)          │
-              └────────────┬─────────────┘
-                           │ props
-                           ▼
-              ┌──────────────────────────┐
-              │  DrmDiagnosticsPanel     │
-              │  (lazy-loaded)           │
-              │  buildSystemGroups() →   │
-              │  per-system sections     │
-              └──────────────────────────┘
+        ┌─────────────────┼─────────────────┐
+        │                 │                  │
+  manifestText       init segment      EME lifecycle
+  (fetchWithCorsRetry) (Shaka filter)   (callbacks + Shaka events)
+        │                 │                  │
+        ▼                 ▼                  ▼
+  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+  │parseManifest │  │parseInitSeg  │  │  EmeCapture  │
+  │Drm()         │  │Drm()         │  │  (useRef)    │
+  │(DOMParser)   │  │(mp4box)      │  │  record()    │
+  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+         │                 │                  │
+         └────────┬────────┘        500ms sync interval
+                  │                 (when panel open)
+                  ▼                          │
+       ┌──────────────────────────┐          │
+       │   DrmDiagnosticsState    │◀─────────┘
+       │ { manifest,              │
+       │   manifestPsshBoxes,     │
+       │   initSegment,           │
+       │   emeEvents }            │
+       └────────────┬─────────────┘
+                    │ props
+                    ▼
+       ┌──────────────────────────┐
+       │  DrmDiagnosticsPanel     │
+       │  (lazy-loaded)           │
+       │  buildSystemGroups() +   │
+       │  EmeTimelineSection      │
+       └──────────────────────────┘
 ```
+
+**EME event sources:**
+- ClearKey: `recordEmeEvent()` calls in `handleKeySubmit` (access probe, keys-set, load, SW fallback)
+- Widevine: `onEmeEvent` callback passed to `configureWidevineProxy()` (keys-set, challenge, license response, parse error) + bookend events in ShakaPlayer
+- FairPlay: `onEmeEvent` callback passed to `setupFairPlay()` (access probe, keys-set, needkey, SPC, CKC, key added/error) + bookend events in ShakaPlayer
+- PlayReady / generic: Shaka `drmsessionupdate`, `keystatuschanged`, `expirationupdated` listeners on `player`
 
 **Manifest parsing** runs synchronously in the `useEffect` after `fetchWithCorsRetry` returns, using the same `manifestText` already fetched for KID extraction.
 
@@ -726,13 +760,14 @@ interface LicenseExchange {
 | `src/components/ShakaPlayer.css` | Styles | `vp-drm-panel` (absolute, top-right, z-index 3, `rgba(0,0,0,0.85)`, 11px monospace, width 480px, min-width 280px, max-width 90%, max-height 80%, `resize: both`). `vp-drm-close`, `vp-drm-section-header` (clickable collapse), `vp-drm-card` (left border), `vp-drm-row` (flex label+value), `vp-drm-copy` (inline copy button), `vp-drm-decoded` (system-specific view), `vp-drm-hex-toggle` / `vp-drm-hex` (hex dump), `vp-drm-empty` (italic placeholder) |
 | `src/components/ShakaPlayer.test.tsx` | Test fix | Added `getNetworkingEngine` mock returning `{ registerRequestFilter, registerResponseFilter }` |
 
-**Tests (36 total):**
+**Tests (44 total across Phase 1 + 2):**
 
 | Test file | Tests | Coverage |
 |-----------|-------|----------|
 | `psshDecode.test.ts` | 12 | Widevine/PlayReady/ClearKey/unknown systemId parsing, version 0 vs 1, KID extraction, moov container scan, multi-box, base64 decode, invalid input |
 | `psshWidevinePb.test.ts` | 11 | Each protobuf field type individually, hex-ASCII KID string decoding, combined fields, empty data, unknown field skipping |
 | `parseManifestDrm.test.ts` | 13 | DASH with namespace declarations, multiple CPs, deduplication across AdaptationSets, different-KID preservation, HLS keys + session keys, robustness attr, empty/unknown manifests |
+| `emeCapture.test.ts` | 8 | Incrementing IDs, inter-event duration, first event no duration, clear() reset, toJSON() validity, getEvents() accumulation, data/success fields, omission |
 
 **Build output:** `DrmDiagnosticsPanel` code-split into `DrmDiagnosticsPanel-Bkvx0rcl.js` (9.01 kB / 1.66 kB gzipped).
 
@@ -747,17 +782,36 @@ interface LicenseExchange {
 - Init segment response filter only captures the first init segment per session (`prev.initSegment ? prev : ...`) to avoid redundant parsing
 - The `moduleConfig.drmDiagnostics` check in the `useEffect` is not added to the dependency array to avoid re-initializing the entire player on config change
 
-### Phase 2: EME Event Timeline
+### Phase 2: EME Event Timeline — IMPLEMENTED
 
 **Goal:** Structured timeline of all EME lifecycle events with timing.
 
-**Changes:**
+**Files created:**
 
-1. `src/drm/diagnostics/types.ts` — add `EmeEvent` interface
-2. `src/drm/diagnostics/emeCapture.ts` — EME event capture: subscribe to Shaka DRM events, intercept `navigator.requestMediaKeySystemAccess`, record structured events with `performance.now()` timestamps and inter-event durations
-3. `src/components/DrmDiagnosticsPanel.tsx` — add EmeTimeline section: scrollable event list, expandable rows, color-coded status, copy-to-JSON
-4. `src/components/ShakaPlayer.tsx` — wire `emeCapture` into player lifecycle (start capture before `player.load()`, pass events to panel)
-5. Unit tests for event capture and timeline formatting
+| File | Purpose | Details |
+|------|---------|---------|
+| `src/drm/diagnostics/emeCapture.ts` | Event collector | `EmeCapture` class: `record()` with auto-id, `performance.now()` timestamp, inter-event duration. `getEvents()`, `clear()`, `toJSON()`. Exports `EmeEvent`, `EmeEventType`, `EmeEventCallback` types |
+| `src/drm/diagnostics/emeCapture.test.ts` | Unit tests | 8 tests: incrementing IDs, inter-event duration, first event no duration, clear() reset, toJSON() validity, getEvents() accumulation, data/success fields, omission when not provided |
+
+**Files modified:**
+
+| File | Changes |
+|------|---------|
+| `src/drm/diagnostics/types.ts` | Added `emeEvents?: readonly EmeEvent[]` to `DrmDiagnosticsState` |
+| `src/drm/widevineProxy.ts` | Added `onEmeEvent?: EmeEventCallback` to `ConfigureWidevineProxyOpts`. Records: `keys-set` (DRM configured), `message` (license challenge with byte count), `update` (license response with sessionId), `error` (JSON parse failure) |
+| `src/drm/fairplayProxy.ts` | Added `onEmeEvent?: EmeEventCallback` to `SetupFairPlayOpts`. Records: `access-request`/`access-granted`/`access-denied` (EME probe), `keys-set` (WebKitMediaKeys), `generate-request` (webkitneedkey), `message` (SPC), `update` (CKC applied), `key-status-change` (key added), `error` (key error, license failure) |
+| `src/components/ShakaPlayer.tsx` | `emeCaptureRef = useRef(new EmeCapture())` + stable `recordEmeEvent` callback. Clears on new `src`. ClearKey path: probe, granted/denied, keys-set, load, SW fallback. Passes `onEmeEvent` to Widevine/FairPlay proxies. Shaka native events: `drmsessionupdate`, `keystatuschanged`, `expirationupdated` (covers PlayReady). 500ms sync interval when panel open. `onClearEmeEvents` prop to panel |
+| `src/components/DrmDiagnosticsPanel.tsx` | Added `onClearEmeEvents` prop. `EmeTimelineSection`: collapsible section with event count, Clear + Copy JSON buttons. `EmeEventRow`: timestamp, colored type badge, detail, `(+Nms)` latency, expandable JSON data on click. `formatRelativeTime()` helper. Color: green (success), red (error/failure), yellow (access-denied), neutral (default). Type labels: ACCESS?/ACCESS ✓/ACCESS ✗/KEYS/SET/INIT/MSG/UPDATE/STATUS/CLOSE/EXPIRY/ERROR |
+| `src/components/ShakaPlayer.css` | 7 new rules: `.vp-drm-timeline` (max-height 300px, scrollable), `.vp-drm-timeline-actions` (flex row, right-aligned), `.vp-drm-event` (flex row, clickable), `.vp-drm-event-time` (monospace, 10px), `.vp-drm-event-type` (bold, color inline), `.vp-drm-event-detail` (flex 1), `.vp-drm-event-latency` (9px, gray), `.vp-drm-event-data` (indented pre block) |
+
+**Design decisions:**
+- **Callback injection, not monkey-patching.** No `navigator.requestMediaKeySystemAccess` interception — we control all DRM paths and inject `onEmeEvent` callbacks at existing call sites. For PlayReady and other Shaka-native key systems, Shaka's own `drmsessionupdate`/`keystatuschanged`/`expirationupdated` events provide coverage without any patching.
+- **Ref-based accumulation.** Events fire rapidly during init. `useRef<EmeCapture>` avoids per-event re-renders. State sync to `drmDiagnosticsState.emeEvents` happens via 500ms `setInterval` only when the panel is open.
+- **Timeline inside existing panel.** `EmeTimelineSection` is a `CollapsibleSection` at the bottom of `DrmDiagnosticsPanel`, not a separate component/panel. Only renders when `emeEvents.length > 0`.
+
+**Tests:** 8 new tests in `emeCapture.test.ts`. Total: 1019 tests across 37 files.
+
+**Build output:** `DrmDiagnosticsPanel` chunk grew from 9.01 kB to 10.54 kB (2.33 kB gzipped) — includes timeline sub-components.
 
 **Independently shippable:** Yes. EME timeline is valuable on its own for debugging DRM initialization issues.
 
@@ -792,16 +846,59 @@ interface LicenseExchange {
 
 ### Phase 5: Polish & Export
 
-**Goal:** Refinements and data export.
+**Goal:** Refinements and data export, consistent with Manifest Validator's export UX.
 
 **Changes:**
 
-1. **JSON export** — "Copy diagnostic report" button that serializes `DrmDiagnosticsState` to JSON (with ArrayBuffers hex-encoded)
+1. **Report export (Copy + PDF)** — same pattern as Manifest Validator (`reportExport.ts`):
+   - **Copy** button — `formatTextReport(state): string` produces a plain-text report (metadata, PSSH decoded fields, EME timeline, license exchanges, diagnostics). `copyReport()` writes to `navigator.clipboard.writeText()`. Button shows "Copied!" for 2s feedback.
+   - **PDF** button — `openPrintReport(state): void` builds a styled HTML document via `buildHtmlReport()`, opens in a new window (`window.open`), triggers `window.print()` on load. Uses `@media print` to hide the "Use Ctrl+P / Cmd+P" footer hint. Color coding preserved (green/red/yellow for EME events, severity icons for diagnostics).
+   - File: `src/drm/diagnostics/reportExport.ts` (~150 lines, mirrors `src/utils/manifestValidation/reportExport.ts` structure)
+   - Both buttons in a `vp-drm-footer` bar at the bottom of the panel (matching `vp-mv-footer` layout)
+   - The EME timeline's existing "Copy JSON" button remains for quick JSON-only export; the footer Copy produces the full combined report
 2. **Tab navigation** — tabs for each section (Metadata | Timeline | License | Diagnostics | Compatibility) to avoid vertical scrolling in the panel
 3. **Keyboard shortcut** — `D` key to toggle the panel (gated on `moduleConfig.keyboardShortcuts`)
 4. **Auto-open on failure** — when a silent failure is detected, show a subtle badge on the context menu item (orange dot) to draw attention
 5. **Live updates** — key status changes and session heartbeats update the panel in real-time (1s polling interval, same as StatsPanel)
 6. **Init segment caching** — avoid re-fetching init segments that are already cached by Shaka's network engine
+
+#### Report Format (Plain Text — clipboard)
+
+```
+DRM Diagnostics Report
+========================================
+URL: https://example.com/stream.mpd
+Type: DASH
+Date: 2026-03-11T12:34:56.789Z
+
+── Encryption Metadata ──
+  DRM Systems: Widevine, ClearKey
+  Default KID: a1b2c3d4e5f60718...
+  Scheme: cenc (AES-CTR)
+
+  Track 1: cenc, KID a1b2c3d4e5f60718..., IV 8 bytes
+  Track 2: cenc, KID a1b2c3d4e5f60718..., IV 8 bytes
+
+  PSSH: Widevine v0 — 1 key, provider "example"
+  PSSH: ClearKey v1 — 1 KID
+
+── EME Events (7) ──
+  00:00.000  ACCESS?  ClearKey EME probe
+  00:00.012  ACCESS+  ClearKey EME supported           (+12ms)
+  00:00.013  SET      ClearKey configured                (+1ms)
+  00:00.156  UPDATE   Content loaded                   (+143ms)
+  00:00.180  UPDATE   DRM session updated               (+24ms)
+  00:00.181  STATUS   Key status changed                  (+1ms)
+```
+
+#### Report Format (HTML — print-to-PDF)
+
+Same data as plain text but with:
+- Styled header with URL, type, date
+- Color-coded EME events (green/red/yellow badges)
+- Per-system PSSH sections with decoded fields
+- `@media print` rules for clean PDF output
+- Footer: "Use Ctrl+P / Cmd+P to save as PDF" (hidden on print)
 
 **Future phases:**
 - CBCS scheme support in software decryption + diagnostics
@@ -851,7 +948,7 @@ interface LicenseExchange {
 │  │           Detected via waitForDecryption() timeout.   │  │
 │  └──────────────────────────────────────────────────────┘  │
 │                                                            │
-│                                     [ Copy report (JSON) ] │
+│                                         [ Copy ]  [ PDF ] │
 └────────────────────────────────────────────────────────────┘
 ```
 

@@ -99,9 +99,10 @@ export interface InitSegmentDrmInfo {
   psshBoxes: PsshBox[];
 }
 
-/** Combined diagnostics state for Phase 1. */
+/** Combined diagnostics state. */
 export interface DrmDiagnosticsState {
   manifest: ManifestDrmInfo | null;
   manifestPsshBoxes?: PsshBox[];
   initSegment: InitSegmentDrmInfo | null;
+  emeEvents?: readonly import("./emeCapture").EmeEvent[];
 }
