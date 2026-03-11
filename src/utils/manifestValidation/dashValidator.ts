@@ -17,6 +17,7 @@ interface MpdAdaptationSet {
   mimeType?: string;
   codecs?: string;
   frameRate?: string;
+  segmentTimelineCount?: number;
   representations: MpdRepresentation[];
 }
 
@@ -92,6 +93,31 @@ export function parseMpd(xml: string): ParsedMpd {
         };
         as.representations.push(rep);
       }
+
+      // Extract SegmentTimeline <S> count (AS-level or Representation-level)
+      const asSegTpl = childrenByLocalName(asEl, "SegmentTemplate");
+      let timelineCount: number | undefined;
+      for (const tpl of asSegTpl) {
+        const timelines = childrenByLocalName(tpl, "SegmentTimeline");
+        for (const tl of timelines) {
+          const sCount = childrenByLocalName(tl, "S").length;
+          timelineCount = (timelineCount ?? 0) + sCount;
+        }
+      }
+      // Fallback: check SegmentTemplate inside each Representation
+      if (timelineCount === undefined) {
+        for (const repEl of repEls) {
+          const repTpls = childrenByLocalName(repEl, "SegmentTemplate");
+          for (const tpl of repTpls) {
+            const timelines = childrenByLocalName(tpl, "SegmentTimeline");
+            for (const tl of timelines) {
+              const sCount = childrenByLocalName(tl, "S").length;
+              timelineCount = (timelineCount ?? 0) + sCount;
+            }
+          }
+        }
+      }
+      as.segmentTimelineCount = timelineCount;
 
       period.adaptationSets.push(as);
     }
@@ -218,6 +244,21 @@ export function validateDash(mpd: ParsedMpd): ValidationIssue[] {
       const as = period.adaptationSets[ai];
       const location = `Period[${pi}] > AdaptationSet[${ai}]`;
       const contentType = inferContentType(as);
+
+      // DASH-007: Empty SegmentTimeline
+      if (as.segmentTimelineCount === 0 && as.representations.length > 0) {
+        issues.push({
+          id: "DASH-007",
+          severity: "error",
+          category: "Manifest Structure",
+          message: `${contentType === "video" ? "Video" : contentType === "audio" ? "Audio" : "Media"} AdaptationSet has empty SegmentTimeline (0 segments) but ${as.representations.length} Representation(s)`,
+          detail:
+            "The SegmentTimeline element exists but contains no <S> entries. " +
+            "Players will load the manifest successfully but hang waiting for segments that never arrive. " +
+            "This typically indicates content that was not fully transcoded.",
+          location,
+        });
+      }
 
       // DASH-102: AdaptationSet or Representation has @mimeType
       const hasMime = !!as.mimeType || as.representations.some((r) => !!r.mimeType);

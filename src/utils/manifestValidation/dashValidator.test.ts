@@ -161,6 +161,60 @@ describe("Mixed frame rate regression — mixed frame rate A/V desync (mixed fra
   });
 });
 
+describe("parseMpd — SegmentTimeline parsing", () => {
+  it("extracts segmentTimelineCount from AS-level SegmentTemplate", () => {
+    const xml = mpd(
+      `<AdaptationSet contentType="video" mimeType="video/mp4">
+        <SegmentTemplate timescale="12800" media="seg-$Number$.m4s" initialization="init.m4s">
+          <SegmentTimeline>
+            <S t="0" d="25600" r="99"/>
+            <S d="12800"/>
+          </SegmentTimeline>
+        </SegmentTemplate>
+        <Representation id="1" bandwidth="1000000" width="1280" height="720" codecs="avc1"/>
+      </AdaptationSet>`,
+    );
+    const parsed = parseMpd(xml);
+    expect(parsed.periods[0].adaptationSets[0].segmentTimelineCount).toBe(2);
+  });
+
+  it("detects empty SegmentTimeline (count = 0)", () => {
+    const xml = mpd(
+      `<AdaptationSet contentType="video" mimeType="video/mp4">
+        <SegmentTemplate timescale="12800" media="seg-$Number$.m4s" initialization="init.m4s">
+          <SegmentTimeline></SegmentTimeline>
+        </SegmentTemplate>
+        <Representation id="1" bandwidth="1000000" width="1280" height="720" codecs="avc1"/>
+      </AdaptationSet>`,
+    );
+    const parsed = parseMpd(xml);
+    expect(parsed.periods[0].adaptationSets[0].segmentTimelineCount).toBe(0);
+  });
+
+  it("returns undefined when no SegmentTemplate", () => {
+    const xml = mpd(
+      videoAS(rep('id="1" bandwidth="1000000" width="1280" height="720" codecs="avc1"')),
+    );
+    const parsed = parseMpd(xml);
+    expect(parsed.periods[0].adaptationSets[0].segmentTimelineCount).toBeUndefined();
+  });
+
+  it("counts multiple <S> entries", () => {
+    const xml = mpd(
+      `<AdaptationSet contentType="audio" mimeType="audio/mp4">
+        <SegmentTemplate timescale="48000" media="seg-$Number$.m4s" initialization="init.m4s">
+          <SegmentTimeline>
+            <S t="0" d="96000" r="2863"/>
+          </SegmentTimeline>
+        </SegmentTemplate>
+        <Representation id="1" bandwidth="128000" codecs="mp4a.40.2"/>
+      </AdaptationSet>`,
+    );
+    const parsed = parseMpd(xml);
+    expect(parsed.periods[0].adaptationSets[0].segmentTimelineCount).toBe(1);
+  });
+});
+
 describe("validateDash", () => {
   describe("MPD structure checks (DASH-001 through DASH-005)", () => {
     it("DASH-001: warns on wrong namespace", () => {
@@ -326,6 +380,87 @@ describe("validateDash", () => {
       const issues = validateDash(parseMpd(xml));
       expect(issues.find((i) => i.id === "DASH-112")).toBeUndefined();
       expect(issues.find((i) => i.id === "DASH-113")).toBeUndefined();
+    });
+  });
+
+  describe("DASH-007: Empty SegmentTimeline", () => {
+    it("flags empty SegmentTimeline with Representations → error", () => {
+      const xml = mpd(
+        `<AdaptationSet contentType="video" mimeType="video/mp4">
+          <SegmentTemplate timescale="12800" media="seg-$Number$.m4s" initialization="init.m4s">
+            <SegmentTimeline></SegmentTimeline>
+          </SegmentTemplate>
+          <Representation id="1" bandwidth="1000000" width="1280" height="720" codecs="avc1.4D401F"/>
+          <Representation id="2" bandwidth="2000000" width="1920" height="1080" codecs="avc1.640028"/>
+        </AdaptationSet>`,
+      );
+      const issues = validateDash(parseMpd(xml));
+      const dash007 = issues.find((i) => i.id === "DASH-007");
+      expect(dash007).toBeDefined();
+      expect(dash007!.severity).toBe("error");
+      expect(dash007!.message).toContain("empty SegmentTimeline");
+      expect(dash007!.message).toContain("2 Representation(s)");
+      expect(dash007!.detail).toContain("hang");
+    });
+
+    it("no flag when SegmentTimeline has entries", () => {
+      const xml = mpd(
+        `<AdaptationSet contentType="video" mimeType="video/mp4">
+          <SegmentTemplate timescale="12800" media="seg-$Number$.m4s" initialization="init.m4s">
+            <SegmentTimeline>
+              <S t="0" d="25600" r="99"/>
+            </SegmentTimeline>
+          </SegmentTemplate>
+          <Representation id="1" bandwidth="1000000" width="1280" height="720" codecs="avc1"/>
+        </AdaptationSet>`,
+      );
+      const issues = validateDash(parseMpd(xml));
+      expect(issues.find((i) => i.id === "DASH-007")).toBeUndefined();
+    });
+
+    it("no flag when no SegmentTemplate at all (SegmentBase addressing)", () => {
+      const xml = mpd(
+        videoAS(rep('id="1" bandwidth="1000000" width="1280" height="720" codecs="avc1"')),
+      );
+      const issues = validateDash(parseMpd(xml));
+      expect(issues.find((i) => i.id === "DASH-007")).toBeUndefined();
+    });
+
+    it("no flag when AdaptationSet has 0 Representations", () => {
+      const xml = mpd(
+        `<AdaptationSet contentType="video" mimeType="video/mp4">
+          <SegmentTemplate timescale="12800" media="seg-$Number$.m4s" initialization="init.m4s">
+            <SegmentTimeline></SegmentTimeline>
+          </SegmentTemplate>
+        </AdaptationSet>`,
+      );
+      const issues = validateDash(parseMpd(xml));
+      expect(issues.find((i) => i.id === "DASH-007")).toBeUndefined();
+    });
+
+    it("Mixed frame rate regression: video empty timeline + audio populated → flags only video AS", () => {
+      const xml = mpd(
+        `<AdaptationSet contentType="video" mimeType="video/mp4">
+          <SegmentTemplate timescale="12800" media="v-seg-$Number$.m4s" initialization="v-init.m4s">
+            <SegmentTimeline></SegmentTimeline>
+          </SegmentTemplate>
+          <Representation id="1" bandwidth="1000000" width="1280" height="720" codecs="avc1.4D401F"/>
+          <Representation id="2" bandwidth="2000000" width="1920" height="1080" codecs="avc1.640028"/>
+        </AdaptationSet>
+        <AdaptationSet contentType="audio" mimeType="audio/mp4">
+          <SegmentTemplate timescale="48000" media="a-seg-$Number$.m4s" initialization="a-init.m4s">
+            <SegmentTimeline>
+              <S t="0" d="96000" r="2863"/>
+            </SegmentTimeline>
+          </SegmentTemplate>
+          <Representation id="3" bandwidth="128000" codecs="mp4a.40.2"/>
+        </AdaptationSet>`,
+      );
+      const issues = validateDash(parseMpd(xml));
+      const dash007 = issues.filter((i) => i.id === "DASH-007");
+      expect(dash007).toHaveLength(1);
+      expect(dash007[0].message).toContain("Video");
+      expect(dash007[0].location).toBe("Period[0] > AdaptationSet[0]");
     });
   });
 

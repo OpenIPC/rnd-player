@@ -418,6 +418,34 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         await player.load(src, loadStartTime);
         if (destroyed) return;
 
+        // Guard: detect tracks with empty segment indexes (e.g. empty SegmentTimeline).
+        // Shaka loads the manifest without error but hangs waiting for data that never arrives.
+        {
+          const manifest = player.getManifest();
+          if (manifest) {
+            const activeVariant = manifest.variants.find((v) => {
+              const active = player.getVariantTracks().find((t) => t.active);
+              return active && v.id === active.id;
+            });
+            const videoStream = activeVariant?.video;
+            if (videoStream) {
+              try {
+                await videoStream.createSegmentIndex();
+                if (destroyed) return;
+                if (videoStream.segmentIndex && !videoStream.segmentIndex.get(0)) {
+                  setError(simpleError(
+                    "Video track has no segments — the manifest declares video representations " +
+                    "but the SegmentTimeline is empty. This content may not have been fully transcoded.",
+                  ));
+                  return;
+                }
+              } catch {
+                // Segment index creation failed — Shaka will handle this error separately
+              }
+            }
+          }
+        }
+
         // Detect B-frame composition time offset (CTO).
         // Compare Shaka's per-track buffer ranges: the video
         // SourceBuffer starts later than audio when HEVC B-frame
