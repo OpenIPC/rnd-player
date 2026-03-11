@@ -105,4 +105,5 @@ export interface DrmDiagnosticsState {
   manifestPsshBoxes?: PsshBox[];
   initSegment: InitSegmentDrmInfo | null;
   emeEvents?: readonly import("./emeCapture").EmeEvent[];
+  licenseExchanges?: readonly import("./licenseCapture").LicenseExchange[];
 }

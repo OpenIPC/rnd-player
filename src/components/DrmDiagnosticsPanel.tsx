@@ -10,11 +10,13 @@ import type {
 } from "../drm/diagnostics/types";
 import { toHex } from "../drm/diagnostics/types";
 import type { EmeEvent, EmeEventType } from "../drm/diagnostics/emeCapture";
+import type { LicenseExchange, DecodedLicense } from "../drm/diagnostics/licenseCapture";
 
 interface DrmDiagnosticsPanelProps {
   state: DrmDiagnosticsState;
   onClose: () => void;
   onClearEmeEvents?: () => void;
+  onClearLicenseExchanges?: () => void;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -372,6 +374,171 @@ function EmeTimelineSection({ events, onClear }: { events: readonly EmeEvent[]; 
   );
 }
 
+// --- License Exchange Inspector ---
+
+const DRM_SYSTEM_COLORS: Record<string, string> = {
+  clearkey: "#4caf50",
+  widevine: "#2196f3",
+  fairplay: "#9c27b0",
+};
+
+function statusColor(status?: number, error?: string): string {
+  if (error || !status) return "#ff4444";
+  if (status >= 200 && status < 300) return "#4caf50";
+  return "#ff4444";
+}
+
+function LicenseExchangeRow({ exchange }: { exchange: LicenseExchange }) {
+  const [expanded, setExpanded] = useState(false);
+  const systemColor = DRM_SYSTEM_COLORS[exchange.drmSystem] ?? "#e0e0e0";
+
+  return (
+    <div className="vp-drm-license" style={{ borderLeftColor: systemColor }}>
+      <div className="vp-drm-license-header" onClick={() => setExpanded((s) => !s)}>
+        <span className="vp-drm-license-system" style={{ color: systemColor }}>
+          {exchange.drmSystem.toUpperCase()}
+        </span>
+        <span className="vp-drm-license-url" title={exchange.url}>{exchange.url}</span>
+        {exchange.responseStatus != null ? (
+          <span className="vp-drm-license-status" style={{ color: statusColor(exchange.responseStatus, exchange.error) }}>
+            {exchange.responseStatus}
+          </span>
+        ) : exchange.error ? (
+          <span className="vp-drm-license-status" style={{ color: "#ff4444" }}>ERR</span>
+        ) : null}
+        {exchange.durationMs != null && (
+          <span className="vp-drm-license-duration">{Math.round(exchange.durationMs)}ms</span>
+        )}
+      </div>
+      {expanded && (
+        <div className="vp-drm-license-details">
+          {Object.keys(exchange.requestHeaders).length > 0 && (
+            <div className="vp-drm-license-subsection">
+              <div className="vp-drm-decoded-title">Request Headers</div>
+              {Object.entries(exchange.requestHeaders).map(([k, v]) => (
+                <div key={k} className="vp-drm-row">
+                  <span className="vp-drm-label">{k}</span>
+                  <span className="vp-drm-value vp-drm-mono">{v}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {exchange.requestBody && (
+            <div className="vp-drm-license-subsection">
+              <div className="vp-drm-decoded-title">Request Body</div>
+              <pre className="vp-drm-license-body">{exchange.requestBody}</pre>
+            </div>
+          )}
+          {exchange.responseBody && (
+            <div className="vp-drm-license-subsection">
+              <div className="vp-drm-decoded-title">Response Body</div>
+              <pre className="vp-drm-license-body">{exchange.responseBody}</pre>
+            </div>
+          )}
+          {exchange.error && (
+            <div className="vp-drm-license-subsection">
+              <div className="vp-drm-decoded-title" style={{ color: "#ff4444" }}>Error</div>
+              <span className="vp-drm-value">{exchange.error}</span>
+            </div>
+          )}
+          {exchange.decoded && <DecodedLicenseView decoded={exchange.decoded} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DecodedLicenseView({ decoded }: { decoded: DecodedLicense }) {
+  return (
+    <div className="vp-drm-license-decoded">
+      <div className="vp-drm-decoded-title">Decoded License</div>
+      <div className="vp-drm-row">
+        <span className="vp-drm-label">Session</span>
+        <span className="vp-drm-value vp-drm-mono">{decoded.sessionId}</span>
+      </div>
+      {decoded.type === "clearkey" && (
+        <>
+          <div className="vp-drm-row">
+            <span className="vp-drm-label">Keys</span>
+            <span className="vp-drm-value">{decoded.keyCount}</span>
+          </div>
+          <div className="vp-drm-row">
+            <span className="vp-drm-label">Transport</span>
+            <span className="vp-drm-value">{decoded.hasTransportKey ? "ECDH-ES+A256KW" : "plaintext"}</span>
+          </div>
+        </>
+      )}
+      {decoded.type === "widevine" && (
+        <div className="vp-drm-row">
+          <span className="vp-drm-label">License</span>
+          <span className="vp-drm-value">{decoded.licenseSizeBytes} bytes</span>
+        </div>
+      )}
+      {decoded.type === "fairplay" && (
+        <div className="vp-drm-row">
+          <span className="vp-drm-label">CKC</span>
+          <span className="vp-drm-value">{decoded.ckcSizeBytes} bytes</span>
+        </div>
+      )}
+      <div className="vp-drm-row">
+        <span className="vp-drm-label">Expiry</span>
+        <span className="vp-drm-value">{decoded.policy.expiry}</span>
+      </div>
+      <div className="vp-drm-row">
+        <span className="vp-drm-label">Renewal</span>
+        <span className="vp-drm-value">{decoded.policy.renewal_interval_s}s</span>
+      </div>
+      <div className="vp-drm-row">
+        <span className="vp-drm-label">Max res</span>
+        <span className="vp-drm-value">{decoded.policy.max_resolution}p</span>
+      </div>
+      {decoded.type !== "clearkey" && (
+        <div className="vp-drm-row">
+          <span className="vp-drm-label">Watermark</span>
+          <span className="vp-drm-value">{decoded.hasWatermark ? "yes" : "no"}</span>
+        </div>
+      )}
+      {decoded.type === "clearkey" && decoded.hasWatermark && (
+        <div className="vp-drm-row">
+          <span className="vp-drm-label">Watermark</span>
+          <span className="vp-drm-value">yes</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LicenseExchangeSection({ exchanges, onClear }: { exchanges: readonly LicenseExchange[]; onClear?: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <CollapsibleSection title={`License Exchanges (${exchanges.length})`} defaultOpen={true}>
+      <div className="vp-drm-timeline-actions">
+        {onClear && (
+          <button className="vp-drm-copy" onClick={onClear}>Clear</button>
+        )}
+        <button
+          className="vp-drm-copy"
+          onClick={() => {
+            const json = JSON.stringify(exchanges, null, 2);
+            navigator.clipboard.writeText(json).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }).catch(() => {});
+          }}
+        >
+          {copied ? "Copied" : "Copy JSON"}
+        </button>
+      </div>
+      <div className="vp-drm-timeline">
+        {exchanges.map((ex) => (
+          <LicenseExchangeRow key={ex.id} exchange={ex} />
+        ))}
+      </div>
+    </CollapsibleSection>
+  );
+}
+
 /** Group all DRM data by system name for unified display. */
 interface SystemGroup {
   systemName: string;
@@ -415,7 +582,7 @@ function buildSystemGroups(state: DrmDiagnosticsState): SystemGroup[] {
   return Array.from(map.values());
 }
 
-export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents }: DrmDiagnosticsPanelProps) {
+export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents, onClearLicenseExchanges }: DrmDiagnosticsPanelProps) {
   const systemGroups = buildSystemGroups(state);
   const hlsKeys = state.manifest?.hlsKeys ?? [];
   const tracks = state.initSegment?.tracks ?? [];
@@ -465,6 +632,11 @@ export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents }
       {/* EME Event Timeline */}
       {(state.emeEvents?.length ?? 0) > 0 && (
         <EmeTimelineSection events={state.emeEvents!} onClear={onClearEmeEvents} />
+      )}
+
+      {/* License Exchange Inspector */}
+      {(state.licenseExchanges?.length ?? 0) > 0 && (
+        <LicenseExchangeSection exchanges={state.licenseExchanges!} onClear={onClearLicenseExchanges} />
       )}
     </div>
   );

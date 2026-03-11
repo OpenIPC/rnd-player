@@ -22,6 +22,8 @@ import { hasFairPlayKey, setupFairPlay } from "../drm/fairplayProxy";
 import { computeDeviceFingerprint } from "../drm/deviceFingerprint";
 import { EmeCapture } from "../drm/diagnostics/emeCapture";
 import type { EmeEventCallback } from "../drm/diagnostics/emeCapture";
+import { LicenseCapture } from "../drm/diagnostics/licenseCapture";
+import type { LicenseExchangeCallback } from "../drm/diagnostics/licenseCapture";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const WatermarkOverlay = lazy(() => import("./WatermarkOverlay"));
@@ -125,6 +127,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   });
   const emeCaptureRef = useRef(new EmeCapture());
   const recordEmeEvent: EmeEventCallback = useCallback((type, detail, opts) => emeCaptureRef.current.record(type, detail, opts), []);
+  const licenseCaptureRef = useRef(new LicenseCapture());
+  const recordLicenseExchange: LicenseExchangeCallback = useCallback((ex) => licenseCaptureRef.current.record(ex), []);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
@@ -175,6 +179,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
     const video = videoRef.current!;
     setSafariMSE(isSafariMSE(video));
     emeCaptureRef.current.clear();
+    licenseCaptureRef.current.clear();
     const player = new shaka.Player();
     playerRef.current = player;
     let destroyed = false;
@@ -388,7 +393,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
         // ClearKey license server fetch (existing path)
         try {
-          const result = await fetchLicense(drmConfig);
+          const result = await fetchLicense(drmConfig, recordLicenseExchange);
           if (destroyed) return;
           pendingSessionRef.current = {
             sessionId: result.license.session_id,
@@ -714,6 +719,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       },
       onWatermark: (wm) => setWatermark(wm),
       onEmeEvent: recordEmeEvent,
+      onLicenseExchange: recordLicenseExchange,
     });
 
     (async () => {
@@ -801,6 +807,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           },
           onWatermark: (wm) => setWatermark(wm),
           onEmeEvent: recordEmeEvent,
+          onLicenseExchange: recordLicenseExchange,
         });
 
         // Set video source directly — Safari's native HLS parser will
@@ -858,9 +865,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
     if (!showDrmDiagnostics) return;
     const sync = () => {
       const events = emeCaptureRef.current.getEvents();
+      const exchanges = licenseCaptureRef.current.getExchanges();
       setDrmDiagnosticsState(prev => {
-        if (prev.emeEvents === events) return prev;
-        return { ...prev, emeEvents: events };
+        if (prev.emeEvents === events && prev.licenseExchanges === exchanges) return prev;
+        return { ...prev, emeEvents: events, licenseExchanges: exchanges };
       });
     };
     sync();
@@ -1081,6 +1089,10 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
             onClearEmeEvents={() => {
               emeCaptureRef.current.clear();
               setDrmDiagnosticsState(prev => ({ ...prev, emeEvents: [] }));
+            }}
+            onClearLicenseExchanges={() => {
+              licenseCaptureRef.current.clear();
+              setDrmDiagnosticsState(prev => ({ ...prev, licenseExchanges: [] }));
             }}
           />
         </Suspense>

@@ -169,9 +169,9 @@ Two capture layers:
 
 Each event row shows: relative timestamp (MM:SS.mmm from first event), colored type badge, detail text, and inter-event latency `(+Nms)`. Rows with `data` are clickable — expands to show `JSON.stringify(event.data, null, 2)` in a `<pre>` block. Color coding: green for `success: true`, red for `success: false` or `type === "error"`, yellow for `access-denied`, neutral otherwise.
 
-### 3. License Exchange Inspector
+### 3. License Exchange Inspector — IMPLEMENTED
 
-Intercept license server communication via Shaka's request/response filter API.
+Capture license server communication via closure-based timing in existing request/response filters and fetch wrappers.
 
 #### Capture Points
 
@@ -486,7 +486,9 @@ ShakaPlayer
 │   │   └── TrackEncryptionRow (per encrypted track)
 │   ├── EmeTimelineSection                          ← Phase 2 ✓
 │   │   └── EmeEventRow (per event, expandable)
-│   ├── LicenseInspector                           ← Phase 3
+│   ├── LicenseExchangeSection                     ← Phase 3 ✓
+│   │   └── LicenseExchangeRow (per exchange, expandable)
+│   │       └── DecodedLicenseView
 │   ├── SilentFailureDetector                      ← Phase 4
 │   └── CompatibilityChecker                       ← Phase 4
 ├── VideoControls
@@ -518,7 +520,8 @@ src/
       parseManifestDrm.test.ts   — 13 tests  ✓
       emeCapture.ts              — EmeCapture class + EmeEvent/EmeEventCallback types  ✓
       emeCapture.test.ts         — 8 tests  ✓
-      licenseCapture.ts          — License request/response capture via Shaka filters  (Phase 3)
+      licenseCapture.ts          — LicenseCapture class + LicenseExchange types + masking/decode helpers  ✓
+      licenseCapture.test.ts     — 14 tests  ✓
       silentFailures.ts          — Silent failure pattern detection  (Phase 4)
       compatChecker.ts           — Cross-DRM requestMediaKeySystemAccess probing  (Phase 4)
 ```
@@ -612,6 +615,7 @@ interface DrmDiagnosticsState {
   manifestPsshBoxes?: PsshBox[];  // decoded from <cenc:pssh> elements
   initSegment: InitSegmentDrmInfo | null;
   emeEvents?: readonly EmeEvent[];  // Phase 2
+  licenseExchanges?: readonly LicenseExchange[];  // Phase 3
 }
 ```
 
@@ -650,6 +654,48 @@ type EmeEventCallback = (
 - `clear()` — reset for new stream (IDs restart, no duration carry-over)
 - `toJSON(): string` — serializes events array for Copy JSON button
 
+### Data Types (Phase 3 — Implemented)
+
+```typescript
+/** Captured license exchange. */
+interface LicenseExchange {
+  id: number;
+  timestamp: number;        // performance.now() of request start
+  drmSystem: "clearkey" | "widevine" | "fairplay";
+  url: string;
+  method: string;
+  requestHeaders: Record<string, string>;  // masked at capture time
+  requestBody: string;      // masked JSON string
+  responseStatus?: number;
+  responseBody?: string;    // masked JSON string
+  durationMs?: number;
+  error?: string;
+  decoded?: DecodedLicense;
+}
+
+type DecodedLicense =
+  | { type: "clearkey"; sessionId: string; keyCount: number; policy: LicensePolicy; hasTransportKey: boolean; hasWatermark: boolean }
+  | { type: "widevine"; sessionId: string; licenseSizeBytes: number; policy: LicensePolicy; hasWatermark: boolean }
+  | { type: "fairplay"; sessionId: string; ckcSizeBytes: number; policy: LicensePolicy; hasWatermark: boolean };
+
+type LicenseExchangeCallback = (exchange: Omit<LicenseExchange, "id">) => void;
+```
+
+`LicenseCapture` class (`src/drm/diagnostics/licenseCapture.ts`):
+- `record(exchange)` — push with auto-incrementing id
+- `getExchanges(): readonly LicenseExchange[]` — returns accumulated exchanges
+- `clear()` — reset for new stream
+- `toJSON(): string` — serializes exchanges array for Copy JSON button
+
+Masking helpers (pure functions, mask at capture time — panel never sees raw secrets):
+- `maskHeaders()` — `Authorization: Bearer ****...{last4}`, pass through others
+- `maskClearKeyRequest/Response()`, `maskWidevineRequest/Response()`, `maskFairPlayRequest/Response()` — mask session_token, device_fingerprint, client_public_key, challenge/spc, key values, license/ckc base64, transport_key_params.epk
+
+Decode helpers (extract structured views from our server's response formats):
+- `decodeClearKeyResponse()` — session, key count, policy, transport key presence, watermark presence
+- `decodeWidevineResponse()` — session, license size bytes, policy, watermark presence
+- `decodeFairPlayResponse()` — session, CKC size bytes, policy, watermark presence
+
 ### Data Types (Future Phases)
 
 ```typescript
@@ -662,44 +708,28 @@ interface CompatResult {
   config?: MediaKeySystemConfiguration;
   error?: string;
 }
-
-/** Captured license exchange. (Phase 3) */
-interface LicenseExchange {
-  timestamp: number;
-  url: string;
-  method: string;
-  requestHeaders: Record<string, string>;
-  requestBody: ArrayBuffer;
-  responseStatus?: number;
-  responseHeaders?: Record<string, string>;
-  responseBody?: ArrayBuffer;
-  durationMs: number;
-  retryCount: number;
-  decoded?: unknown;
-  error?: string;
-}
 ```
 
-### Data Flow (Phase 1 + 2)
+### Data Flow (Phase 1 + 2 + 3)
 
 ```
                  ┌──────────────────┐
                  │   ShakaPlayer    │
                  └────────┬─────────┘
                           │
-        ┌─────────────────┼─────────────────┐
-        │                 │                  │
-  manifestText       init segment      EME lifecycle
-  (fetchWithCorsRetry) (Shaka filter)   (callbacks + Shaka events)
-        │                 │                  │
-        ▼                 ▼                  ▼
-  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-  │parseManifest │  │parseInitSeg  │  │  EmeCapture  │
-  │Drm()         │  │Drm()         │  │  (useRef)    │
-  │(DOMParser)   │  │(mp4box)      │  │  record()    │
-  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-         │                 │                  │
-         └────────┬────────┘        500ms sync interval
+        ┌─────────────────┼──────────────────┬─────────────────┐
+        │                 │                  │                  │
+  manifestText       init segment      EME lifecycle    license exchanges
+  (fetchWithCorsRetry) (Shaka filter)  (callbacks +     (closure capture in
+        │                 │             Shaka events)    proxy filters/fetch)
+        ▼                 ▼                  │                  │
+  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+  │parseManifest │  │parseInitSeg  │  │  EmeCapture  │  │LicenseCapture│
+  │Drm()         │  │Drm()         │  │  (useRef)    │  │  (useRef)    │
+  │(DOMParser)   │  │(mp4box)      │  │  record()    │  │  record()    │
+  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+         │                 │                  │                  │
+         └────────┬────────┘        500ms sync interval ────────┘
                   │                 (when panel open)
                   ▼                          │
        ┌──────────────────────────┐          │
@@ -707,7 +737,8 @@ interface LicenseExchange {
        │ { manifest,              │
        │   manifestPsshBoxes,     │
        │   initSegment,           │
-       │   emeEvents }            │
+       │   emeEvents,             │
+       │   licenseExchanges }     │
        └────────────┬─────────────┘
                     │ props
                     ▼
@@ -715,7 +746,8 @@ interface LicenseExchange {
        │  DrmDiagnosticsPanel     │
        │  (lazy-loaded)           │
        │  buildSystemGroups() +   │
-       │  EmeTimelineSection      │
+       │  EmeTimelineSection +    │
+       │  LicenseExchangeSection  │
        └──────────────────────────┘
 ```
 
@@ -724,6 +756,11 @@ interface LicenseExchange {
 - Widevine: `onEmeEvent` callback passed to `configureWidevineProxy()` (keys-set, challenge, license response, parse error) + bookend events in ShakaPlayer
 - FairPlay: `onEmeEvent` callback passed to `setupFairPlay()` (access probe, keys-set, needkey, SPC, CKC, key added/error) + bookend events in ShakaPlayer
 - PlayReady / generic: Shaka `drmsessionupdate`, `keystatuschanged`, `expirationupdated` listeners on `player`
+
+**License exchange capture sources:**
+- ClearKey: `onLicenseExchange` callback passed to `fetchLicense()` — captures around existing `fetch()` call with timing, masks request/response bodies
+- Widevine: `onLicenseExchange` callback in `configureWidevineProxy()` opts — closure variables (`licenseRequestStart`, `licenseRequestBody`) track timing across request/response filter pair
+- FairPlay: `onLicenseExchange` callback in `setupFairPlay()` opts — captures around existing `fetch()` in `webkitkeymessage` handler
 
 **Manifest parsing** runs synchronously in the `useEffect` after `fetchWithCorsRetry` returns, using the same `manifestText` already fetched for KID extraction.
 
@@ -815,17 +852,32 @@ interface LicenseExchange {
 
 **Independently shippable:** Yes. EME timeline is valuable on its own for debugging DRM initialization issues.
 
-### Phase 3: License Exchange Inspector
+### Phase 3: License Exchange Inspector — IMPLEMENTED
 
 **Goal:** Capture and display license server request/response details.
 
-**Changes:**
+**Design decisions:**
+- **Simple `LicenseCapture` class, same pattern as `EmeCapture`.** `record()`, `getExchanges()`, `clear()`, `toJSON()`. No two-phase begin/complete — Widevine's request/response filter correlation handled via closure variables inside `configureWidevineProxy`.
+- **Capture inside existing code, not separate filters.** Widevine captures in existing request/response filters (closure tracks timing). FairPlay/ClearKey capture around their existing `fetch()` calls. No new Shaka filter registrations.
+- **Mask at capture time.** Sensitive values (tokens, keys, fingerprints) masked before entering React state. Panel never sees raw secrets.
+- **Store bodies as masked strings, not ArrayBuffer.** All license exchanges use JSON envelopes through the proxy server. Storing masked JSON string avoids conversion overhead and simplifies display.
+- **Decoded views for our server's response formats only.** ClearKey (session, key count, policy, transport key). Widevine (session, license size, policy). FairPlay (session, CKC size, policy). Raw Widevine protobuf decoding deferred.
 
-1. `src/drm/diagnostics/types.ts` — add `LicenseExchange` interface
-2. `src/drm/diagnostics/licenseCapture.ts` — Shaka request/response filter pair for `RequestType.LICENSE`; wrapper for `fetchLicense()` to capture rnd-player license server exchanges
-3. `src/components/DrmDiagnosticsPanel.tsx` — add LicenseInspector section: request/response display, decoded views for ClearKey JSON / rnd-player license / Widevine / PlayReady, timing, headers (with sensitive value masking)
-4. `src/components/ShakaPlayer.tsx` — register license capture filter, wrap `fetchLicense` call
-5. Unit tests for license capture and decoded views
+**Files changed:**
+
+1. `src/drm/diagnostics/licenseCapture.ts` — NEW: `LicenseCapture` class + `LicenseExchange`/`DecodedLicense` types + masking helpers (`maskHeaders`, `maskClearKeyRequest/Response`, `maskWidevineRequest/Response`, `maskFairPlayRequest/Response`) + decode helpers (`decodeClearKeyResponse`, `decodeWidevineResponse`, `decodeFairPlayResponse`)
+2. `src/drm/diagnostics/licenseCapture.test.ts` — NEW: 14 tests (masking, capture class, decode helpers)
+3. `src/drm/diagnostics/types.ts` — added `licenseExchanges` to `DrmDiagnosticsState`
+4. `src/drm/widevineProxy.ts` — added `onLicenseExchange` to opts, closure variables for timing, capture in request/response filters
+5. `src/drm/fairplayProxy.ts` — added `onLicenseExchange` to opts, capture around fetch in `webkitkeymessage` handler
+6. `src/drm/drmClient.ts` — added optional `onLicenseExchange` param to `fetchLicense()`, capture around fetch
+7. `src/components/ShakaPlayer.tsx` — wired `LicenseCapture` ref, passes callback to all three DRM paths, syncs to state on 500ms interval, passes clear handler
+8. `src/components/DrmDiagnosticsPanel.tsx` — added `LicenseExchangeSection`, `LicenseExchangeRow` (expandable: headers, masked bodies, decoded view), `DecodedLicenseView` sub-components; DRM system color coding (clearkey=green, widevine=blue, fairplay=purple); status badges
+9. `src/components/ShakaPlayer.css` — `.vp-drm-license*` styles
+
+**Tests:** 14 new tests in `licenseCapture.test.ts`. Total: 1033 tests across 38 files.
+
+**Build output:** `DrmDiagnosticsPanel` chunk grew from 10.54 kB to 15.49 kB (3.05 kB gzipped) — includes license exchange sub-components + masking/decode imports.
 
 **Independently shippable:** Yes. License exchange visibility is one of the most requested DRM debugging features.
 

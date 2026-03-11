@@ -1,6 +1,8 @@
 import type { DrmConfig, LicenseKey, LicenseResponse, WatermarkToken } from "./types";
 import { computeDeviceFingerprint } from "./deviceFingerprint";
 import { generateEphemeralKeyPair, unwrapCEKs } from "./keyUnwrap";
+import type { LicenseExchangeCallback } from "./diagnostics/licenseCapture";
+import { maskHeaders, maskClearKeyRequest, maskClearKeyResponse, decodeClearKeyResponse } from "./diagnostics/licenseCapture";
 
 /** Convert a UUID-formatted KID to lowercase hex (strip dashes). */
 function normalizeKid(kid: string): string {
@@ -35,32 +37,79 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 /** Fetch a license from the DRM server. Returns ClearKey config for Shaka and the first key hex for software decrypt. */
-export async function fetchLicense(config: DrmConfig): Promise<FetchLicenseResult> {
+export async function fetchLicense(
+  config: DrmConfig,
+  onLicenseExchange?: LicenseExchangeCallback,
+): Promise<FetchLicenseResult> {
   const fingerprint = await computeDeviceFingerprint();
 
   // Phase 3: generate ephemeral ECDH key pair for key transport protection
   const keyPair = await generateEphemeralKeyPair();
   const clientPublicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
 
-  const res = await fetch(config.licenseUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${config.sessionToken}`,
-    },
-    body: JSON.stringify({
-      session_token: config.sessionToken,
-      asset_id: config.assetId,
-      device_fingerprint: fingerprint,
-      client_public_key: clientPublicJwk,
-    }),
-  });
+  const requestBody = {
+    session_token: config.sessionToken,
+    asset_id: config.assetId,
+    device_fingerprint: fingerprint,
+    client_public_key: clientPublicJwk,
+  };
+  const requestBodyJson = JSON.stringify(requestBody);
+  const licenseStart = performance.now();
+
+  let res: Response;
+  try {
+    res = await fetch(config.licenseUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${config.sessionToken}`,
+      },
+      body: requestBodyJson,
+    });
+  } catch (err) {
+    onLicenseExchange?.({
+      timestamp: licenseStart,
+      drmSystem: "clearkey",
+      url: config.licenseUrl,
+      method: "POST",
+      requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${config.sessionToken}` }),
+      requestBody: maskClearKeyRequest(requestBodyJson),
+      durationMs: performance.now() - licenseStart,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 
   if (!res.ok) {
+    onLicenseExchange?.({
+      timestamp: licenseStart,
+      drmSystem: "clearkey",
+      url: config.licenseUrl,
+      method: "POST",
+      requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${config.sessionToken}` }),
+      requestBody: maskClearKeyRequest(requestBodyJson),
+      responseStatus: res.status,
+      durationMs: performance.now() - licenseStart,
+      error: `HTTP ${res.status}`,
+    });
     throw new Error(`License server returned HTTP ${res.status}`);
   }
 
   const license: LicenseResponse = await res.json();
+  const durationMs = performance.now() - licenseStart;
+
+  onLicenseExchange?.({
+    timestamp: licenseStart,
+    drmSystem: "clearkey",
+    url: config.licenseUrl,
+    method: "POST",
+    requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${config.sessionToken}` }),
+    requestBody: maskClearKeyRequest(requestBodyJson),
+    responseStatus: res.status,
+    responseBody: maskClearKeyResponse(JSON.stringify(license)),
+    durationMs,
+    decoded: decodeClearKeyResponse(license),
+  });
 
   if (!license.keys || license.keys.length === 0) {
     throw new Error("License server returned no keys");

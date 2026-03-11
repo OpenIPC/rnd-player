@@ -2,6 +2,8 @@ import shaka from "shaka-player";
 import type { ManifestDrmInfo } from "./diagnostics/types";
 import type { LicensePolicy, WatermarkToken } from "./types";
 import type { EmeEventCallback } from "./diagnostics/emeCapture";
+import type { LicenseExchangeCallback } from "./diagnostics/licenseCapture";
+import { maskHeaders, maskWidevineRequest, maskWidevineResponse, decodeWidevineResponse } from "./diagnostics/licenseCapture";
 
 /** Widevine system ID as it appears in ContentProtection schemeIdUri. */
 const WIDEVINE_UUID = "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed";
@@ -61,6 +63,7 @@ export interface ConfigureWidevineProxyOpts {
   onSessionInfo?: (sessionId: string, renewalS: number) => void;
   onWatermark?: (watermark: WatermarkToken) => void;
   onEmeEvent?: EmeEventCallback;
+  onLicenseExchange?: LicenseExchangeCallback;
 }
 
 /**
@@ -72,7 +75,7 @@ export interface ConfigureWidevineProxyOpts {
  *    and replaces response.data with raw license bytes for the CDM
  */
 export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
-  const { player, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark, onEmeEvent } = opts;
+  const { player, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark, onEmeEvent, onLicenseExchange } = opts;
 
   const widevineUrl = deriveWidevineUrl(licenseUrl);
 
@@ -89,6 +92,9 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
   const net = player.getNetworkingEngine();
   if (!net) return;
 
+  let licenseRequestStart = 0;
+  let licenseRequestBody = "";
+
   // Request filter: wrap binary CDM challenge in JSON envelope
   net.registerRequestFilter((
     type: shaka.net.NetworkingEngine.RequestType,
@@ -104,7 +110,11 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
       device_fingerprint: deviceFingerprint,
     };
 
-    request.body = new TextEncoder().encode(JSON.stringify(envelope)).buffer as ArrayBuffer;
+    const envelopeJson = JSON.stringify(envelope);
+    licenseRequestStart = performance.now();
+    licenseRequestBody = envelopeJson;
+
+    request.body = new TextEncoder().encode(envelopeJson).buffer as ArrayBuffer;
     request.headers["Content-Type"] = "application/json";
     request.headers["Authorization"] = `Bearer ${sessionToken}`;
 
@@ -119,12 +129,23 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
     if (type !== REQUEST_TYPE_LICENSE) return;
 
     const text = new TextDecoder().decode(response.data as ArrayBuffer);
+    const durationMs = performance.now() - licenseRequestStart;
     let parsed: WidevineLicenseResponse;
     try {
       parsed = JSON.parse(text);
     } catch {
       // Not JSON — assume raw license bytes (passthrough)
       onEmeEvent?.("error", "Failed to parse license response", { success: false });
+      onLicenseExchange?.({
+        timestamp: licenseRequestStart,
+        drmSystem: "widevine",
+        url: widevineUrl,
+        method: "POST",
+        requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${sessionToken}` }),
+        requestBody: maskWidevineRequest(licenseRequestBody),
+        durationMs,
+        error: "Failed to parse license response as JSON",
+      });
       return;
     }
 
@@ -137,6 +158,19 @@ export function configureWidevineProxy(opts: ConfigureWidevineProxyOpts): void {
     }
 
     onEmeEvent?.("update", "License response received", { success: true, data: { sessionId: parsed.session_id } });
+
+    onLicenseExchange?.({
+      timestamp: licenseRequestStart,
+      drmSystem: "widevine",
+      url: widevineUrl,
+      method: "POST",
+      requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${sessionToken}` }),
+      requestBody: maskWidevineRequest(licenseRequestBody),
+      responseStatus: 200,
+      responseBody: maskWidevineResponse(text),
+      durationMs,
+      decoded: decodeWidevineResponse(parsed),
+    });
 
     // Replace response data with raw license bytes for the CDM
     const licenseBytes = base64ToUint8Array(parsed.license);

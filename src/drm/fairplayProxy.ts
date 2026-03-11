@@ -2,6 +2,8 @@ import type { ManifestDrmInfo } from "./diagnostics/types";
 import type { LicensePolicy, WatermarkToken } from "./types";
 import { uint8ToBase64, base64ToUint8Array } from "./widevineProxy";
 import type { EmeEventCallback } from "./diagnostics/emeCapture";
+import type { LicenseExchangeCallback } from "./diagnostics/licenseCapture";
+import { maskHeaders, maskFairPlayRequest, maskFairPlayResponse, decodeFairPlayResponse } from "./diagnostics/licenseCapture";
 
 /** FairPlay key format as it appears in HLS EXT-X-KEY tags. */
 const FAIRPLAY_KEYFORMAT = "com.apple.streamingkeydelivery";
@@ -59,6 +61,7 @@ export interface SetupFairPlayOpts {
   onSessionInfo?: (sessionId: string, renewalS: number) => void;
   onWatermark?: (watermark: WatermarkToken) => void;
   onEmeEvent?: EmeEventCallback;
+  onLicenseExchange?: LicenseExchangeCallback;
 }
 
 /** Extract content-id from initData (UTF-16LE encoded skd:// URI). */
@@ -113,7 +116,7 @@ function buildSessionInitData(initData: Uint8Array, contentId: string, cert: Uin
  * Call BEFORE setting video.src. Returns a cleanup function.
  */
 export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void> {
-  const { video, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark, onEmeEvent } = opts;
+  const { video, licenseUrl, sessionToken, assetId, deviceFingerprint, onSessionInfo, onWatermark, onEmeEvent, onLicenseExchange } = opts;
   const fairplayUrl = deriveFairPlayUrl(licenseUrl);
   const certUrl = deriveFairPlayCertUrl(licenseUrl);
 
@@ -184,6 +187,8 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
         device_fingerprint: deviceFingerprint,
       };
 
+      const licenseStart = performance.now();
+      const envelopeJson = JSON.stringify(envelope);
       try {
         const resp = await fetch(fairplayUrl, {
           method: "POST",
@@ -191,17 +196,29 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
             "Content-Type": "application/json",
             Authorization: `Bearer ${sessionToken}`,
           },
-          body: JSON.stringify(envelope),
+          body: envelopeJson,
         });
 
         if (!resp.ok) {
           const text = await resp.text();
           console.error("[FP] License request failed: %d %s", resp.status, text);
           onEmeEvent?.("error", "License exchange failed", { success: false, data: { status: resp.status } });
+          onLicenseExchange?.({
+            timestamp: licenseStart,
+            drmSystem: "fairplay",
+            url: fairplayUrl,
+            method: "POST",
+            requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${sessionToken}` }),
+            requestBody: maskFairPlayRequest(envelopeJson),
+            responseStatus: resp.status,
+            durationMs: performance.now() - licenseStart,
+            error: `HTTP ${resp.status}`,
+          });
           return;
         }
 
         const data: FairPlayLicenseResponse = await resp.json();
+        const durationMs = performance.now() - licenseStart;
         console.log("[FP] License response: session_id=%s", data.session_id);
 
         if (data.session_id && data.policy) {
@@ -210,6 +227,19 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
         if (data.watermark) {
           onWatermark?.(data.watermark);
         }
+
+        onLicenseExchange?.({
+          timestamp: licenseStart,
+          drmSystem: "fairplay",
+          url: fairplayUrl,
+          method: "POST",
+          requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${sessionToken}` }),
+          requestBody: maskFairPlayRequest(envelopeJson),
+          responseStatus: resp.status,
+          responseBody: maskFairPlayResponse(JSON.stringify(data)),
+          durationMs,
+          decoded: decodeFairPlayResponse(data),
+        });
 
         // Pass CKC to CDM
         const ckc = base64ToUint8Array(data.ckc);
@@ -220,6 +250,16 @@ export async function setupFairPlay(opts: SetupFairPlayOpts): Promise<() => void
       } catch (err) {
         console.error("[FP] License exchange failed:", err);
         onEmeEvent?.("error", "License exchange failed", { success: false });
+        onLicenseExchange?.({
+          timestamp: licenseStart,
+          drmSystem: "fairplay",
+          url: fairplayUrl,
+          method: "POST",
+          requestHeaders: maskHeaders({ "Content-Type": "application/json", "Authorization": `Bearer ${sessionToken}` }),
+          requestBody: maskFairPlayRequest(envelopeJson),
+          durationMs: performance.now() - licenseStart,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     });
 
