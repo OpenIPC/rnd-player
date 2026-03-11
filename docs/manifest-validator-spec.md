@@ -177,6 +177,7 @@ Validate the internal structure and required attributes of the manifest itself.
 | DASH-003 | `@minBufferTime` attribute present | Error | ISO 23009-1 |
 | DASH-004 | `@type` is "static" or "dynamic" | Error | ISO 23009-1 |
 | DASH-005 | For dynamic MPD: `@availabilityStartTime` present | Error | DASH-IF IOP |
+| DASH-007 | Empty `<SegmentTimeline>` (0 `<S>` entries) with Representations present — player hangs | Error | — |
 
 **Period/AdaptationSet/Representation hierarchy:**
 
@@ -416,7 +417,7 @@ User loads manifest
          │
          ├─ Stage 1b (instant, no fetching — DASH MPD XML checks):
          │   parseMpd(rawManifestText)
-         │   └─ validateDash(mpd) → DASH-001..DASH-005, DASH-102..DASH-106, DASH-112, DASH-113
+         │   └─ validateDash(mpd) → DASH-001..DASH-007, DASH-102..DASH-106, DASH-112, DASH-113
          │   └─ onProgress(timelineIssues + dashIssues) → panel shows results immediately
          │
          ├─ Stage 2 (fetches init segments, parallel):
@@ -614,14 +615,18 @@ User loads manifest
    - `normalizeFrameRate(fr)` — handles `"25"`, `"25/1"`, `"30000/1001"` formats
    - `validateDash(mpd)` — 13 rules implemented:
      - MPD-level: DASH-001 through DASH-005 (namespace, profiles, minBufferTime, type, availabilityStartTime)
+     - **DASH-007**: Empty SegmentTimeline detection — catches manifests where `<SegmentTimeline>` exists but has zero `<S>` entries, causing infinite player hang (real-world empty-timeline regression)
      - Hierarchy: DASH-102 through DASH-106 (mimeType, codecs, id, bandwidth, width/height)
      - **DASH-112**: Mixed frame rates in video AdaptationSet — error severity, catches the A/V desync bug (real-world mixed-fps regression)
      - **DASH-113**: Partial `@frameRate` coverage within AdaptationSet
    - Runs in Stage 1b (instant, no fetching) — raw MPD text passed via `ShakaPlayer → VideoControls → ManifestValidator → runValidation()`
+   - **Player guard**: `ShakaPlayer.tsx` also checks the active variant's video segment index post-load — if empty, shows error immediately instead of hanging
 
-2. **34 unit tests** in `dashValidator.test.ts` — includes Mixed frame rate regression test with realistic 14-representation manifest (7x 25fps + 7x 50fps)
+2. **52 unit tests** in `dashValidator.test.ts` — includes Mixed frame rate regression tests:
+   - Mixed frame rate manifest (14 representations, 7x 25fps + 7x 50fps) — real-world mixed-fps regression
+   - Empty video SegmentTimeline (9 representations, 0 segments) with populated audio — real-world empty-timeline regression
 
-**Files:** `dashValidator.ts` (parser + validator), `dashValidator.test.ts` (34 tests), `runValidation.ts` (Stage 1b orchestration), `ShakaPlayer.tsx` / `VideoControls.tsx` / `ManifestValidator.tsx` (raw manifest text plumbing)
+**Files:** `dashValidator.ts` (parser + validator), `dashValidator.test.ts` (52 tests), `runValidation.ts` (Stage 1b orchestration), `ShakaPlayer.tsx` / `VideoControls.tsx` / `ManifestValidator.tsx` (raw manifest text plumbing)
 
 **Not yet implemented (DASH):** DASH-101, DASH-107 through DASH-110, DASH-201 through DASH-205, DASH-301 through DASH-305
 

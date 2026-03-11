@@ -161,6 +161,86 @@ describe("Mixed frame rate regression — mixed frame rate A/V desync (mixed fra
   });
 });
 
+// Realistic CDP MPD fragment — mirrors the real-world manifest from real-world empty-timeline manifest
+// that caused the player to hang forever. Video AdaptationSet has 9 Representations with valid
+// codecs/resolution but an empty <SegmentTimeline> (zero <S> entries). Audio has 2864 segment
+// entries. mediaPresentationDuration is non-zero (PT1H35M21.417S).
+const CDP_EMPTY_TIMELINE_MPD = `<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011"
+     type="static"
+     minBufferTime="PT2S"
+     mediaPresentationDuration="PT1H35M21.417S">
+  <Period>
+    <AdaptationSet id="11" contentType="audio" mimeType="audio/mp4" lang="aar"
+                   segmentAlignment="true" startWithSAP="1">
+      <SegmentTemplate timescale="10000000" media="audio_$Number$.m4s" initialization="audio_init.m4s" startNumber="1">
+        <SegmentTimeline>
+          <S d="9920000" r="2"/>
+          <S d="10240000"/>
+          <S d="9920000" r="5"/>
+          <S d="10240000"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="11" codecs="mp4a.40.2" audioSamplingRate="44100" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet id="1" contentType="video" mimeType="video/mp4"
+                   maxWidth="1920" maxHeight="864" maxFrameRate="24"
+                   segmentAlignment="true" startWithSAP="1">
+      <SegmentTemplate timescale="10000000" media="video_$Number$.m4s" initialization="video_init.m4s" startNumber="1">
+        <SegmentTimeline>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="1"  bandwidth="699466"  codecs="avc1.4D401F" width="720"  height="320"  frameRate="24"/>
+      <Representation id="2"  bandwidth="999320"  codecs="avc1.4D401F" width="720"  height="320"  frameRate="24"/>
+      <Representation id="3"  bandwidth="1199183" codecs="avc1.4D401F" width="720"  height="320"  frameRate="24"/>
+      <Representation id="5"  bandwidth="1199786" codecs="avc1.640028" width="1280" height="576"  frameRate="24"/>
+      <Representation id="6"  bandwidth="1999757" codecs="avc1.640028" width="1280" height="576"  frameRate="24"/>
+      <Representation id="7"  bandwidth="2499642" codecs="avc1.640028" width="1280" height="576"  frameRate="24"/>
+      <Representation id="8"  bandwidth="3193370" codecs="avc1.640028" width="1280" height="576"  frameRate="24"/>
+      <Representation id="9"  bandwidth="4197014" codecs="avc1.640028" width="1920" height="864"  frameRate="24"/>
+      <Representation id="10" bandwidth="4984989" codecs="avc1.640028" width="1920" height="864"  frameRate="24"/>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+
+describe("Mixed frame rate regression — empty video SegmentTimeline player hang (empty video SegmentTimeline player hang)", () => {
+  it("detects DASH-007 error for empty video SegmentTimeline", () => {
+    const issues = validateDash(parseMpd(CDP_EMPTY_TIMELINE_MPD));
+    const dash007 = issues.filter((i) => i.id === "DASH-007");
+    expect(dash007).toHaveLength(1);
+    expect(dash007[0].severity).toBe("error");
+    expect(dash007[0].message).toContain("Video");
+    expect(dash007[0].message).toContain("empty SegmentTimeline");
+    expect(dash007[0].message).toContain("9 Representation(s)");
+    expect(dash007[0].location).toBe("Period[0] > AdaptationSet[1]");
+  });
+
+  it("does not flag the populated audio AdaptationSet", () => {
+    const issues = validateDash(parseMpd(CDP_EMPTY_TIMELINE_MPD));
+    const dash007 = issues.filter((i) => i.id === "DASH-007");
+    expect(dash007).toHaveLength(1);
+    // Only video AS flagged, not audio
+    expect(dash007[0].location).toBe("Period[0] > AdaptationSet[1]");
+  });
+
+  it("parses all 9 video representations and 1 audio representation", () => {
+    const parsed = parseMpd(CDP_EMPTY_TIMELINE_MPD);
+    expect(parsed.periods[0].adaptationSets[0].representations).toHaveLength(1); // audio
+    expect(parsed.periods[0].adaptationSets[1].representations).toHaveLength(9); // video
+  });
+
+  it("parses audio SegmentTimeline as populated (count > 0)", () => {
+    const parsed = parseMpd(CDP_EMPTY_TIMELINE_MPD);
+    expect(parsed.periods[0].adaptationSets[0].segmentTimelineCount).toBe(4); // 4 <S> entries in trimmed fixture
+  });
+
+  it("parses video SegmentTimeline as empty (count = 0)", () => {
+    const parsed = parseMpd(CDP_EMPTY_TIMELINE_MPD);
+    expect(parsed.periods[0].adaptationSets[1].segmentTimelineCount).toBe(0);
+  });
+});
+
 describe("parseMpd — SegmentTimeline parsing", () => {
   it("extracts segmentTimelineCount from AS-level SegmentTemplate", () => {
     const xml = mpd(
