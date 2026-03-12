@@ -106,4 +106,6 @@ export interface DrmDiagnosticsState {
   initSegment: InitSegmentDrmInfo | null;
   emeEvents?: readonly import("./emeCapture").EmeEvent[];
   licenseExchanges?: readonly import("./licenseCapture").LicenseExchange[];
+  diagnostics?: readonly import("./silentFailures").DiagnosticResult[];
+  compatibility?: import("./compatChecker").CompatReport;
 }

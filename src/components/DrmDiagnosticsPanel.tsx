@@ -11,12 +11,15 @@ import type {
 import { toHex } from "../drm/diagnostics/types";
 import type { EmeEvent, EmeEventType } from "../drm/diagnostics/emeCapture";
 import type { LicenseExchange, DecodedLicense } from "../drm/diagnostics/licenseCapture";
+import type { DiagnosticResult, DiagnosticSeverity } from "../drm/diagnostics/silentFailures";
+import type { CompatReport, CompatResult } from "../drm/diagnostics/compatChecker";
 
 interface DrmDiagnosticsPanelProps {
   state: DrmDiagnosticsState;
   onClose: () => void;
   onClearEmeEvents?: () => void;
   onClearLicenseExchanges?: () => void;
+  onProbeCompatibility?: () => void;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -539,6 +542,120 @@ function LicenseExchangeSection({ exchanges, onClear }: { exchanges: readonly Li
   );
 }
 
+// --- Silent Failure Diagnostics ---
+
+const SEVERITY_ICONS: Record<DiagnosticSeverity, string> = {
+  error: "\u25cf",   // ●
+  warning: "\u25b2", // ▲
+  info: "\u25cb",    // ○
+};
+
+const SEVERITY_COLORS: Record<DiagnosticSeverity, string> = {
+  error: "#ff4444",
+  warning: "#ffbb33",
+  info: "#66aaff",
+};
+
+function DiagnosticItem({ item }: { item: DiagnosticResult }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="vp-drm-diag-item" onClick={() => setExpanded((s) => !s)}>
+      <div className="vp-drm-diag-header">
+        <span className="vp-drm-diag-severity" style={{ color: SEVERITY_COLORS[item.severity] }}>
+          {SEVERITY_ICONS[item.severity]}
+        </span>
+        <span className="vp-drm-diag-id">{item.id}</span>
+        <span className="vp-drm-diag-title">{item.title}</span>
+      </div>
+      {expanded && <div className="vp-drm-diag-detail">{item.detail}</div>}
+    </div>
+  );
+}
+
+function DiagnosticsSection({ diagnostics }: { diagnostics: readonly DiagnosticResult[] }) {
+  if (diagnostics.length === 0) {
+    return (
+      <CollapsibleSection title="Diagnostics" defaultOpen={true}>
+        <div className="vp-drm-diag-pass">{"\u2713"} No issues detected</div>
+      </CollapsibleSection>
+    );
+  }
+
+  // Sort: errors first, then warnings, then info
+  const ORDER: Record<DiagnosticSeverity, number> = { error: 0, warning: 1, info: 2 };
+  const sorted = [...diagnostics].sort((a, b) => ORDER[a.severity] - ORDER[b.severity]);
+
+  return (
+    <CollapsibleSection title={`Diagnostics (${diagnostics.length})`} defaultOpen={true}>
+      {sorted.map((item) => (
+        <DiagnosticItem key={item.id} item={item} />
+      ))}
+    </CollapsibleSection>
+  );
+}
+
+// --- Compatibility Checker ---
+
+function CompatRow({ result }: { result: CompatResult }) {
+  return (
+    <tr>
+      <td>{result.label}</td>
+      <td>
+        {result.supported ? (
+          <span className="vp-drm-compat-supported">{"\u25cf"} Supported</span>
+        ) : (
+          <span className="vp-drm-compat-unsupported">{"\u25cb"} Not found</span>
+        )}
+      </td>
+      <td className="vp-drm-mono">{result.robustness ?? "\u2014"}</td>
+      <td className="vp-drm-mono">{result.keySystem}</td>
+    </tr>
+  );
+}
+
+function CompatibilitySection({ report, onProbe }: { report?: CompatReport; onProbe?: () => void }) {
+  if (!report) {
+    return (
+      <CollapsibleSection title="Compatibility" defaultOpen={true}>
+        <div className="vp-drm-compat-footer">
+          {onProbe ? (
+            <button className="vp-drm-compat-probe" onClick={onProbe}>
+              Probe DRM support
+            </button>
+          ) : (
+            <span className="vp-drm-empty">Probe not available</span>
+          )}
+        </div>
+      </CollapsibleSection>
+    );
+  }
+
+  return (
+    <CollapsibleSection title="Compatibility" defaultOpen={true}>
+      <table className="vp-drm-compat-table">
+        <thead>
+          <tr>
+            <th>DRM System</th>
+            <th>Status</th>
+            <th>Robustness</th>
+            <th>Key System</th>
+          </tr>
+        </thead>
+        <tbody>
+          {report.results.map((r) => (
+            <CompatRow key={r.id} result={r} />
+          ))}
+        </tbody>
+      </table>
+      <div className="vp-drm-compat-footer">
+        <span>EME API: {report.emeAvailable ? <span className="vp-drm-compat-supported">available</span> : <span className="vp-drm-compat-unsupported">absent</span>}</span>
+        <span>Secure context: {report.secureContext ? <span className="vp-drm-compat-supported">yes</span> : <span className="vp-drm-compat-unsupported">no</span>}</span>
+        <span>SW decrypt: {report.softwareDecryptAvailable ? <span className="vp-drm-compat-supported">available</span> : <span className="vp-drm-compat-unsupported">absent</span>}</span>
+      </div>
+    </CollapsibleSection>
+  );
+}
+
 /** Group all DRM data by system name for unified display. */
 interface SystemGroup {
   systemName: string;
@@ -582,7 +699,7 @@ function buildSystemGroups(state: DrmDiagnosticsState): SystemGroup[] {
   return Array.from(map.values());
 }
 
-export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents, onClearLicenseExchanges }: DrmDiagnosticsPanelProps) {
+export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents, onClearLicenseExchanges, onProbeCompatibility }: DrmDiagnosticsPanelProps) {
   const systemGroups = buildSystemGroups(state);
   const hlsKeys = state.manifest?.hlsKeys ?? [];
   const tracks = state.initSegment?.tracks ?? [];
@@ -638,6 +755,12 @@ export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents, 
       {(state.licenseExchanges?.length ?? 0) > 0 && (
         <LicenseExchangeSection exchanges={state.licenseExchanges!} onClear={onClearLicenseExchanges} />
       )}
+
+      {/* Silent Failure Diagnostics */}
+      <DiagnosticsSection diagnostics={state.diagnostics ?? []} />
+
+      {/* Cross-DRM Compatibility Checker */}
+      <CompatibilitySection report={state.compatibility} onProbe={onProbeCompatibility} />
     </div>
   );
 }

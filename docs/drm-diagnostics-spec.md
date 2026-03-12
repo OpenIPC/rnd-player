@@ -489,8 +489,8 @@ ShakaPlayer
 │   ├── LicenseExchangeSection                     ← Phase 3 ✓
 │   │   └── LicenseExchangeRow (per exchange, expandable)
 │   │       └── DecodedLicenseView
-│   ├── SilentFailureDetector                      ← Phase 4
-│   └── CompatibilityChecker                       ← Phase 4
+│   ├── DiagnosticsSection                          ← Phase 4 ✓
+│   └── CompatibilitySection                        ← Phase 4 ✓
 ├── VideoControls
 │   └── ContextMenu  ("DRM diagnostics" item)     ← Phase 1 ✓
 └── ...
@@ -522,8 +522,10 @@ src/
       emeCapture.test.ts         — 8 tests  ✓
       licenseCapture.ts          — LicenseCapture class + LicenseExchange types + masking/decode helpers  ✓
       licenseCapture.test.ts     — 14 tests  ✓
-      silentFailures.ts          — Silent failure pattern detection  (Phase 4)
-      compatChecker.ts           — Cross-DRM requestMediaKeySystemAccess probing  (Phase 4)
+      silentFailures.ts          — Silent failure pattern detection  (Phase 4) ✓
+      silentFailures.test.ts     — 18 tests  ✓
+      compatChecker.ts           — Cross-DRM requestMediaKeySystemAccess probing  (Phase 4) ✓
+      compatChecker.test.ts      — 6 tests  ✓
 ```
 
 ### Data Types (Phase 1 — Implemented)
@@ -881,18 +883,20 @@ interface CompatResult {
 
 **Independently shippable:** Yes. License exchange visibility is one of the most requested DRM debugging features.
 
-### Phase 4: Silent Failure Detector + Compatibility Checker
+### Phase 4: Silent Failure Detector + Compatibility Checker (IMPLEMENTED)
 
 **Goal:** Proactive failure diagnosis and cross-DRM support matrix.
 
-**Changes:**
+**Files:**
 
-1. `src/drm/diagnostics/types.ts` — add `DiagnosticResult`, `DiagnosticSeverity`, `CompatResult` interfaces
-2. `src/drm/diagnostics/silentFailures.ts` — implement SF-001 through SF-012 checks at three execution points (pre-load, post-load, on-error); reuse `hasClearKeySupport()` and `waitForDecryption()` results rather than re-running
-3. `src/drm/diagnostics/compatChecker.ts` — probe all four key systems with robustness level iteration; cache results at module level
-4. `src/components/DrmDiagnosticsPanel.tsx` — add SilentFailureDetector section (severity-ranked issue list, same styling as manifest validator) and CompatibilityChecker section (table with status badges)
-5. `src/components/ShakaPlayer.tsx` — run pre-load checks during initialization, post-load checks after `player.load()`, on-error checks in error handler
-6. Unit tests for each failure pattern and compatibility probing
+- `src/drm/diagnostics/silentFailures.ts` — 12 checks (SF-001 through SF-012) as pure functions, three runners (pre-load, post-load, on-error)
+- `src/drm/diagnostics/silentFailures.test.ts` — 18 tests
+- `src/drm/diagnostics/compatChecker.ts` — probes Widevine, PlayReady, FairPlay, ClearKey with robustness iteration, module-level cache
+- `src/drm/diagnostics/compatChecker.test.ts` — 6 tests
+- `src/drm/diagnostics/types.ts` — added `diagnostics` and `compatibility` fields to `DrmDiagnosticsState`
+- `src/components/DrmDiagnosticsPanel.tsx` — DiagnosticsSection (severity-ranked issue list) and CompatibilitySection (DRM system table with probe button)
+- `src/components/ShakaPlayer.tsx` — runs pre-load checks after manifest parse, post-load checks after `player.load()`, on-error checks in error handler; compatibility probe triggered from panel
+- `src/components/ShakaPlayer.css` — `.vp-drm-diag-*` and `.vp-drm-compat-*` styles
 
 **Independently shippable:** Yes. Failure detection can run independently and display results even without the other sections.
 

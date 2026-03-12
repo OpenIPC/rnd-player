@@ -24,6 +24,8 @@ import { EmeCapture } from "../drm/diagnostics/emeCapture";
 import type { EmeEventCallback } from "../drm/diagnostics/emeCapture";
 import { LicenseCapture } from "../drm/diagnostics/licenseCapture";
 import type { LicenseExchangeCallback } from "../drm/diagnostics/licenseCapture";
+import { runPreLoadChecks, runPostLoadChecks, runOnErrorChecks, type DiagnosticContext } from "../drm/diagnostics/silentFailures";
+import { probeCompatibility } from "../drm/diagnostics/compatChecker";
 const FilmstripTimeline = lazy(() => import("./FilmstripTimeline"));
 const QualityCompare = lazy(() => import("./QualityCompare"));
 const WatermarkOverlay = lazy(() => import("./WatermarkOverlay"));
@@ -129,6 +131,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const recordEmeEvent: EmeEventCallback = useCallback((type, detail, opts) => emeCaptureRef.current.record(type, detail, opts), []);
   const licenseCaptureRef = useRef(new LicenseCapture());
   const recordLicenseExchange: LicenseExchangeCallback = useCallback((ex) => licenseCaptureRef.current.record(ex), []);
+  const keyStatusesRef = useRef<string[]>([]);
   const [showFilmstrip, setShowFilmstrip] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [slaveSrc, setSlaveSrc] = useState<string | undefined>(compareSrc);
@@ -180,6 +183,8 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
     setSafariMSE(isSafariMSE(video));
     emeCaptureRef.current.clear();
     licenseCaptureRef.current.clear();
+    keyStatusesRef.current = [];
+    setDrmDiagnosticsState({ manifest: null, initSegment: null });
     const player = new shaka.Player();
     playerRef.current = player;
     let destroyed = false;
@@ -235,6 +240,23 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
             setError(diagnoseFallbackError(detail, video.error, src));
           }
         }
+
+        // Run on-error silent failure checks
+        if (moduleConfig.drmDiagnostics) {
+          const errorCtx: DiagnosticContext = {
+            state: drmDiagnosticsState,
+            lastError: { category: detail.category, code: detail.code, data: detail.data },
+            emeAvailable: !!navigator.requestMediaKeySystemAccess,
+            secureContext: window.isSecureContext,
+          };
+          const errorResults = runOnErrorChecks(errorCtx);
+          if (errorResults.length > 0) {
+            setDrmDiagnosticsState((prev) => ({
+              ...prev,
+              diagnostics: [...(prev.diagnostics ?? []), ...errorResults],
+            }));
+          }
+        }
       });
 
       // Capture Shaka's native DRM lifecycle events (covers PlayReady and
@@ -248,6 +270,21 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       });
       player.addEventListener("keystatuschanged", () => {
         const drmInfo = player.drmInfo();
+        // Track key statuses for silent failure diagnostics
+        try {
+          const statuses: string[] = [];
+          const keyIds = player.getKeyStatuses?.() as
+            | Record<string, string>
+            | undefined;
+          if (keyIds) {
+            for (const status of Object.values(keyIds)) {
+              statuses.push(status);
+            }
+          }
+          if (statuses.length > 0) keyStatusesRef.current = statuses;
+        } catch {
+          // getKeyStatuses not available
+        }
         recordEmeEvent("key-status-change", "Key status changed", {
           data: drmInfo ? { keySystem: drmInfo.keySystem } : undefined,
         });
@@ -364,6 +401,20 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               setDrmDiagnosticsState((prev) => prev.initSegment ? prev : { ...prev, initSegment: initInfo });
             }
           });
+        }
+
+        // Run pre-load silent failure checks
+        const preLoadCtx: DiagnosticContext = {
+          state: { manifest: manifestDrmInfo, manifestPsshBoxes, initSegment: null },
+          emeAvailable: !!navigator.requestMediaKeySystemAccess,
+          secureContext: window.isSecureContext,
+        };
+        const preLoadResults = runPreLoadChecks(preLoadCtx);
+        if (preLoadResults.length > 0) {
+          setDrmDiagnosticsState((prev) => ({
+            ...prev,
+            diagnostics: [...(prev.diagnostics ?? []), ...preLoadResults],
+          }));
         }
       }
 
@@ -567,6 +618,31 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         }
 
         setPlayerReady(true);
+
+        // Run post-load silent failure checks (unencrypted path)
+        if (moduleConfig.drmDiagnostics) {
+          try {
+            const drmInfo = player.drmInfo?.();
+            const postLoadCtx: DiagnosticContext = {
+              state: drmDiagnosticsState,
+              playerInfo: {
+                keySystem: drmInfo?.keySystem,
+                keyStatuses: keyStatusesRef.current,
+              },
+              emeAvailable: !!navigator.requestMediaKeySystemAccess,
+              secureContext: window.isSecureContext,
+            };
+            const postLoadResults = runPostLoadChecks(postLoadCtx);
+            if (postLoadResults.length > 0) {
+              setDrmDiagnosticsState((prev) => ({
+                ...prev,
+                diagnostics: [...(prev.diagnostics ?? []), ...postLoadResults],
+              }));
+            }
+          } catch {
+            // drmInfo() may not be available
+          }
+        }
 
         if (savedState) {
           if (!savedState.paused) {
@@ -1093,6 +1169,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
             onClearLicenseExchanges={() => {
               licenseCaptureRef.current.clear();
               setDrmDiagnosticsState(prev => ({ ...prev, licenseExchanges: [] }));
+            }}
+            onProbeCompatibility={() => {
+              probeCompatibility().then((report) => {
+                setDrmDiagnosticsState(prev => ({ ...prev, compatibility: report }));
+              }).catch(() => {});
             }}
           />
         </Suspense>
