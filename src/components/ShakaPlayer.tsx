@@ -1098,6 +1098,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               allAudioTracks={allAudioTracks}
               showDrmDiagnostics={showDrmDiagnostics}
               onToggleDrmDiagnostics={() => setShowDrmDiagnostics((s) => !s)}
+              drmDiagnosticCount={drmDiagnosticsState.diagnostics?.length}
               showManifestValidator={showManifestValidator}
               onToggleManifestValidator={() => setShowManifestValidator((s) => !s)}
               rawManifestText={rawManifestRef.current}
@@ -1161,6 +1162,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         <Suspense fallback={null}>
           <DrmDiagnosticsPanel
             state={drmDiagnosticsState}
+            manifestUrl={src}
             onClose={() => setShowDrmDiagnostics(false)}
             onClearEmeEvents={() => {
               emeCaptureRef.current.clear();

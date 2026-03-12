@@ -16,6 +16,7 @@ import type { CompatReport, CompatResult } from "../drm/diagnostics/compatChecke
 
 interface DrmDiagnosticsPanelProps {
   state: DrmDiagnosticsState;
+  manifestUrl?: string;
   onClose: () => void;
   onClearEmeEvents?: () => void;
   onClearLicenseExchanges?: () => void;
@@ -351,28 +352,34 @@ function EmeTimelineSection({ events, onClear }: { events: readonly EmeEvent[]; 
 
   return (
     <CollapsibleSection title={`EME Events (${events.length})`} defaultOpen={true}>
-      <div className="vp-drm-timeline-actions">
-        {onClear && (
-          <button className="vp-drm-copy" onClick={onClear}>Clear</button>
-        )}
-        <button
-          className="vp-drm-copy"
-          onClick={() => {
-            const json = JSON.stringify(events, null, 2);
-            navigator.clipboard.writeText(json).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }).catch(() => {});
-          }}
-        >
-          {copied ? "Copied" : "Copy JSON"}
-        </button>
-      </div>
-      <div className="vp-drm-timeline">
-        {events.map((event) => (
-          <EmeEventRow key={event.id} event={event} baseTs={baseTs} />
-        ))}
-      </div>
+      {events.length > 0 ? (
+        <>
+          <div className="vp-drm-timeline-actions">
+            {onClear && (
+              <button className="vp-drm-copy" onClick={onClear}>Clear</button>
+            )}
+            <button
+              className="vp-drm-copy"
+              onClick={() => {
+                const json = JSON.stringify(events, null, 2);
+                navigator.clipboard.writeText(json).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1200);
+                }).catch(() => {});
+              }}
+            >
+              {copied ? "Copied" : "Copy JSON"}
+            </button>
+          </div>
+          <div className="vp-drm-timeline">
+            {events.map((event) => (
+              <EmeEventRow key={event.id} event={event} baseTs={baseTs} />
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="vp-drm-empty">No EME events captured</div>
+      )}
     </CollapsibleSection>
   );
 }
@@ -516,28 +523,34 @@ function LicenseExchangeSection({ exchanges, onClear }: { exchanges: readonly Li
 
   return (
     <CollapsibleSection title={`License Exchanges (${exchanges.length})`} defaultOpen={true}>
-      <div className="vp-drm-timeline-actions">
-        {onClear && (
-          <button className="vp-drm-copy" onClick={onClear}>Clear</button>
-        )}
-        <button
-          className="vp-drm-copy"
-          onClick={() => {
-            const json = JSON.stringify(exchanges, null, 2);
-            navigator.clipboard.writeText(json).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }).catch(() => {});
-          }}
-        >
-          {copied ? "Copied" : "Copy JSON"}
-        </button>
-      </div>
-      <div className="vp-drm-timeline">
-        {exchanges.map((ex) => (
-          <LicenseExchangeRow key={ex.id} exchange={ex} />
-        ))}
-      </div>
+      {exchanges.length > 0 ? (
+        <>
+          <div className="vp-drm-timeline-actions">
+            {onClear && (
+              <button className="vp-drm-copy" onClick={onClear}>Clear</button>
+            )}
+            <button
+              className="vp-drm-copy"
+              onClick={() => {
+                const json = JSON.stringify(exchanges, null, 2);
+                navigator.clipboard.writeText(json).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1200);
+                }).catch(() => {});
+              }}
+            >
+              {copied ? "Copied" : "Copy JSON"}
+            </button>
+          </div>
+          <div className="vp-drm-timeline">
+            {exchanges.map((ex) => (
+              <LicenseExchangeRow key={ex.id} exchange={ex} />
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="vp-drm-empty">No license exchanges captured</div>
+      )}
     </CollapsibleSection>
   );
 }
@@ -699,11 +712,29 @@ function buildSystemGroups(state: DrmDiagnosticsState): SystemGroup[] {
   return Array.from(map.values());
 }
 
-export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents, onClearLicenseExchanges, onProbeCompatibility }: DrmDiagnosticsPanelProps) {
+type TabId = "metadata" | "timeline" | "license" | "diagnostics" | "compat";
+
+export default function DrmDiagnosticsPanel({ state, manifestUrl, onClose, onClearEmeEvents, onClearLicenseExchanges, onProbeCompatibility }: DrmDiagnosticsPanelProps) {
+  const [activeTab, setActiveTab] = useState<TabId>("metadata");
+  const [copied, setCopied] = useState(false);
+
   const systemGroups = buildSystemGroups(state);
   const hlsKeys = state.manifest?.hlsKeys ?? [];
   const tracks = state.initSegment?.tracks ?? [];
   const hasDrm = systemGroups.length > 0 || hlsKeys.length > 0 || tracks.length > 0;
+
+  const emeCount = state.emeEvents?.length ?? 0;
+  const licenseCount = state.licenseExchanges?.length ?? 0;
+  const diagCount = state.diagnostics?.length ?? 0;
+  const compatCount = state.compatibility?.results.length ?? 0;
+
+  const tabs: { id: TabId; label: string; count?: number }[] = [
+    { id: "metadata", label: "Metadata" },
+    { id: "timeline", label: "Timeline", count: emeCount },
+    { id: "license", label: "License", count: licenseCount },
+    { id: "diagnostics", label: "Diagnostics", count: diagCount },
+    { id: "compat", label: "Compat", count: compatCount },
+  ];
 
   return (
     <div className="vp-drm-panel" onClick={(e) => e.stopPropagation()}>
@@ -712,55 +743,102 @@ export default function DrmDiagnosticsPanel({ state, onClose, onClearEmeEvents, 
       </button>
       <div className="vp-drm-title">DRM Diagnostics</div>
 
-      {!hasDrm && (
-        <div className="vp-drm-empty">No DRM detected in this content</div>
-      )}
+      {/* Tab bar */}
+      <div className="vp-drm-tab-bar">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            className={`vp-drm-tab${activeTab === tab.id ? " active" : ""}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+            {tab.count != null && tab.count > 0 && (
+              <span className="vp-drm-tab-count"> ({tab.count})</span>
+            )}
+          </button>
+        ))}
+      </div>
 
-      {/* Per-system groups */}
-      {systemGroups.map((group) => (
-        <CollapsibleSection key={group.systemName} title={group.systemName}>
-          {group.contentProtections.map((cp, i) => (
-            <ContentProtectionRow key={`cp-${i}`} cp={cp} />
+      {/* Tab content */}
+      {activeTab === "metadata" && (
+        <>
+          {!hasDrm && (
+            <div className="vp-drm-empty">No DRM detected in this content</div>
+          )}
+
+          {systemGroups.map((group) => (
+            <CollapsibleSection key={group.systemName} title={group.systemName}>
+              {group.contentProtections.map((cp, i) => (
+                <ContentProtectionRow key={`cp-${i}`} cp={cp} />
+              ))}
+              {group.psshBoxes.map((box, i) => (
+                <PsshBoxView key={`pssh-${i}`} box={box} />
+              ))}
+            </CollapsibleSection>
           ))}
-          {group.psshBoxes.map((box, i) => (
-            <PsshBoxView key={`pssh-${i}`} box={box} />
-          ))}
-        </CollapsibleSection>
-      ))}
 
-      {/* HLS keys (not system-grouped) */}
-      {hlsKeys.length > 0 && (
-        <CollapsibleSection title="HLS Keys">
-          {hlsKeys.map((key, i) => (
-            <HlsKeyRow key={i} hk={key} />
-          ))}
-        </CollapsibleSection>
+          {hlsKeys.length > 0 && (
+            <CollapsibleSection title="HLS Keys">
+              {hlsKeys.map((key, i) => (
+                <HlsKeyRow key={i} hk={key} />
+              ))}
+            </CollapsibleSection>
+          )}
+
+          {tracks.length > 0 && (
+            <CollapsibleSection title="Track Encryption">
+              {tracks.map((track) => (
+                <TrackEncryptionRow key={track.trackId} track={track} />
+              ))}
+            </CollapsibleSection>
+          )}
+        </>
       )}
 
-      {/* Init segment track encryption (per-track, not per-system) */}
-      {tracks.length > 0 && (
-        <CollapsibleSection title="Track Encryption">
-          {tracks.map((track) => (
-            <TrackEncryptionRow key={track.trackId} track={track} />
-          ))}
-        </CollapsibleSection>
+      {activeTab === "timeline" && (
+        <EmeTimelineSection events={state.emeEvents ?? []} onClear={onClearEmeEvents} />
       )}
 
-      {/* EME Event Timeline */}
-      {(state.emeEvents?.length ?? 0) > 0 && (
-        <EmeTimelineSection events={state.emeEvents!} onClear={onClearEmeEvents} />
+      {activeTab === "license" && (
+        <LicenseExchangeSection exchanges={state.licenseExchanges ?? []} onClear={onClearLicenseExchanges} />
       )}
 
-      {/* License Exchange Inspector */}
-      {(state.licenseExchanges?.length ?? 0) > 0 && (
-        <LicenseExchangeSection exchanges={state.licenseExchanges!} onClear={onClearLicenseExchanges} />
+      {activeTab === "diagnostics" && (
+        <DiagnosticsSection diagnostics={state.diagnostics ?? []} />
       )}
 
-      {/* Silent Failure Diagnostics */}
-      <DiagnosticsSection diagnostics={state.diagnostics ?? []} />
+      {activeTab === "compat" && (
+        <CompatibilitySection report={state.compatibility} onProbe={onProbeCompatibility} />
+      )}
 
-      {/* Cross-DRM Compatibility Checker */}
-      <CompatibilitySection report={state.compatibility} onProbe={onProbeCompatibility} />
+      {/* Export footer */}
+      <div className="vp-drm-footer">
+        <div className="vp-drm-export">
+          <button
+            className="vp-drm-export-btn"
+            onClick={() => {
+              import("../drm/diagnostics/reportExport").then(({ copyReport }) => {
+                copyReport(state, manifestUrl).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }).catch(() => {});
+              });
+            }}
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
+          <button
+            className="vp-drm-export-btn"
+            onClick={() => {
+              import("../drm/diagnostics/reportExport").then(({ openPrintReport }) => {
+                openPrintReport(state, manifestUrl);
+              });
+            }}
+          >
+            PDF
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

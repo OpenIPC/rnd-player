@@ -19,6 +19,7 @@ interface UseKeyboardShortcutsOptions {
   onToggleSubtitleByIndex?: (index: number) => void;
   onToggleAllSubtitles?: () => void;
   onToggleHelp?: () => void;
+  onToggleDrmDiagnostics?: () => void;
   onNextScene?: () => void;
   onPrevScene?: () => void;
   enabled?: boolean;
@@ -40,6 +41,7 @@ export function useKeyboardShortcuts({
   onToggleSubtitleByIndex,
   onToggleAllSubtitles,
   onToggleHelp,
+  onToggleDrmDiagnostics,
   onNextScene,
   onPrevScene,
   enabled = true,
@@ -302,6 +304,13 @@ export function useKeyboardShortcuts({
           break;
         }
 
+        case "d":
+        case "D": {
+          e.preventDefault();
+          if (onToggleDrmDiagnostics) onToggleDrmDiagnostics();
+          break;
+        }
+
         case "h":
         case "H":
         case "?": {
@@ -329,6 +338,7 @@ export function useKeyboardShortcuts({
     onToggleSubtitleByIndex,
     onToggleAllSubtitles,
     onToggleHelp,
+    onToggleDrmDiagnostics,
     onNextScene,
     onPrevScene,
     resetShuttle,

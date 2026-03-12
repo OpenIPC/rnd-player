@@ -3312,6 +3312,67 @@ video::-webkit-media-text-track-container {
   border-color: rgba(255, 255, 255, 0.4);
 }
 
+/* DRM Diagnostics — tab bar */
+.vp-drm-tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  margin-bottom: 6px;
+}
+.vp-drm-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 10px;
+  color: #999;
+  font-family: inherit;
+}
+.vp-drm-tab:hover { color: #ccc; }
+.vp-drm-tab.active { color: #fff; border-bottom-color: #fff; }
+.vp-drm-tab-count { color: #777; }
+
+/* DRM Diagnostics — export footer */
+.vp-drm-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  margin-top: 6px;
+  padding-top: 4px;
+  display: flex;
+  justify-content: flex-end;
+}
+.vp-drm-export {
+  display: flex;
+  gap: 4px;
+}
+.vp-drm-export-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  color: #aaa;
+  font-size: 10px;
+  padding: 1px 8px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.vp-drm-export-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+/* DRM Diagnostics — context menu badge */
+.vp-drm-diag-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: #fb3;
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 3px;
+  margin-left: 6px;
+}
+
 /* ── Manifest Validator panel ── */
 
 .vp-mv-panel {

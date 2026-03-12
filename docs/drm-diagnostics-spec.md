@@ -900,9 +900,11 @@ interface CompatResult {
 
 **Independently shippable:** Yes. Failure detection can run independently and display results even without the other sections.
 
-### Phase 5: Polish & Export
+### Phase 5: Polish & Export (IMPLEMENTED)
 
 **Goal:** Refinements and data export, consistent with Manifest Validator's export UX.
+
+**Files:** `src/drm/diagnostics/reportExport.ts`, `src/components/DrmDiagnosticsPanel.tsx` (tabs + footer), `src/hooks/useKeyboardShortcuts.ts` (`D` key), `src/components/ContextMenu.tsx` (badge), `src/components/ShakaPlayer.css` (tab/footer/badge styles)
 
 **Changes:**
 
@@ -1012,8 +1014,8 @@ Same data as plain text but with:
 
 - **Context menu** — "DRM diagnostics" / "Hide DRM diagnostics" toggle item, gated on `moduleConfig.drmDiagnostics && onToggleDrmDiagnostics`. Always shown when module config is enabled (works for both encrypted and unencrypted content — the panel shows "No DRM detected" for unencrypted)
 - **Click isolation** — panel root has `onClick={(e) => e.stopPropagation()}` AND is listed in VideoControls' play/pause click exclusion chain (`target.closest(".vp-drm-panel")`)
-- **Keyboard shortcut** — `D` key toggles panel (Phase 5, not yet implemented)
-- **Auto-badge** — orange dot on context menu item when diagnostics detect issues (Phase 5, not yet implemented)
+- **Keyboard shortcut** — `D` key toggles panel (gated on `moduleConfig.keyboardShortcuts`)
+- **Auto-badge** — orange dot on context menu item when diagnostics detect issues (`drmDiagnosticCount` prop)
 
 ### Styling Conventions (Implemented)
 

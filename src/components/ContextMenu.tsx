@@ -57,6 +57,7 @@ interface ContextMenuProps {
   showDrmDiagnostics: boolean;
   showManifestValidator: boolean;
   validationErrorCount?: number;
+  drmDiagnosticCount?: number;
   isH264: boolean;
   isH265: boolean;
   isAv1: boolean;
@@ -96,6 +97,7 @@ export default function ContextMenu({
   showDrmDiagnostics,
   showManifestValidator,
   validationErrorCount,
+  drmDiagnosticCount,
   isH264,
   isH265,
   isAv1,
@@ -190,6 +192,9 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleDrmDiagnostics}>
           <DrmDiagnosticsIcon />
           {showDrmDiagnostics ? "Hide DRM diagnostics" : "DRM diagnostics"}
+          {!showDrmDiagnostics && drmDiagnosticCount != null && drmDiagnosticCount > 0 && (
+            <span className="vp-drm-diag-badge">{drmDiagnosticCount}</span>
+          )}
         </div>
       )}
       {moduleConfig.manifestValidator && onToggleManifestValidator && (

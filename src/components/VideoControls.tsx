@@ -89,6 +89,8 @@ interface VideoControlsProps {
   /** DRM diagnostics panel state. */
   showDrmDiagnostics?: boolean;
   onToggleDrmDiagnostics?: () => void;
+  /** DRM diagnostic issue count for context menu badge. */
+  drmDiagnosticCount?: number;
   /** Manifest validator panel state. */
   showManifestValidator?: boolean;
   onToggleManifestValidator?: () => void;
@@ -191,6 +193,7 @@ export default function VideoControls({
   allAudioTracks,
   showDrmDiagnostics,
   onToggleDrmDiagnostics,
+  drmDiagnosticCount,
   showManifestValidator,
   onToggleManifestValidator,
   rawManifestText,
@@ -850,6 +853,7 @@ export default function VideoControls({
     onToggleSubtitleByIndex: toggleSubtitleByIndex,
     onToggleAllSubtitles: stableToggleAllSubtitles,
     onToggleHelp: useCallback(() => setShowHelp((s) => !s), []),
+    onToggleDrmDiagnostics,
     onNextScene: sceneData ? goToNextScene : undefined,
     onPrevScene: sceneData ? goToPrevScene : undefined,
     enabled: moduleConfig.keyboardShortcuts,
@@ -1641,6 +1645,7 @@ export default function VideoControls({
           showDrmDiagnostics={!!showDrmDiagnostics}
           showManifestValidator={!!showManifestValidator}
           validationErrorCount={validationErrorCount}
+          drmDiagnosticCount={drmDiagnosticCount}
           isH264={qpHeatmap.isH264}
           isH265={qpHeatmap.isH265}
           isAv1={qpHeatmap.isAv1}
