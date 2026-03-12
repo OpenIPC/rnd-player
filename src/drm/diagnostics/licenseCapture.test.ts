@@ -4,7 +4,6 @@ import {
   maskHeaders,
   maskClearKeyRequest,
   maskClearKeyResponse,
-  maskWidevineRequest,
   maskWidevineResponse,
   maskFairPlayRequest,
   maskFairPlayResponse,

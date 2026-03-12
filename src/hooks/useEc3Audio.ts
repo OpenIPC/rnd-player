@@ -104,6 +104,66 @@ export function useEc3Audio(
     flush: flushPlayback,
   } = useAudioPlayback(videoEl, active);
 
+  const fetchSegments = useCallback(async (currentTime: number) => {
+    const track = activeTrackRef.current;
+    const worker = workerRef.current;
+    if (!track || !worker) {
+      console.log("[ec3] fetchSegments: skip (track=%s worker=%s)", !!track, !!worker);
+      return;
+    }
+
+    const { segments: segInfo } = track;
+
+    // Fetch init segment if not cached (via CORS-aware fetch)
+    if (!initCacheRef.current && segInfo.initUrl) {
+      try {
+        const resp = await corsFetch(segInfo.initUrl);
+        if (resp.ok) {
+          initCacheRef.current = await resp.arrayBuffer();
+        }
+      } catch (err) {
+        console.warn("[useEc3Audio] Failed to fetch init segment:", err);
+        return;
+      }
+    }
+
+    const initData = initCacheRef.current;
+    if (!initData) return;
+
+    // Resolve segment URLs for the prefetch window
+    const endTime = currentTime + PREFETCH_AHEAD;
+    const segmentUrls = resolveSegmentUrls(segInfo, currentTime - 1, endTime);
+
+    for (const seg of segmentUrls) {
+      const key = `${seg.startTime.toFixed(4)}`;
+      if (fetchedSegmentsRef.current.has(key)) continue;
+      fetchedSegmentsRef.current.add(key);
+
+      // Fetch in the background (don't await — allow parallel fetches)
+      corsFetch(seg.url)
+        .then((resp) => {
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          return resp.arrayBuffer();
+        })
+        .then((mediaData) => {
+          if (!workerRef.current) return;
+          workerRef.current.postMessage({
+            type: "decodeEc3",
+            initData: initData.slice(0),
+            mediaData,
+            segmentStartTime: seg.startTime,
+            channels: track.channelCount,
+            sampleRate: track.sampleRate,
+          });
+        })
+        .catch((err) => {
+          console.warn("[useEc3Audio] Segment fetch failed:", seg.url, err);
+          // Remove from fetched so it can be retried
+          fetchedSegmentsRef.current.delete(key);
+        });
+    }
+  }, []);
+
   // Spawn worker on activation
   useEffect(() => {
     if (!active || !videoEl) {
@@ -217,71 +277,12 @@ export function useEc3Audio(
         clearInterval(prefetchTimerRef.current);
         prefetchTimerRef.current = 0;
       }
-      fetchedSegmentsRef.current.clear();
+      fetchedSegmentsRef.current.clear(); // eslint-disable-line react-hooks/exhaustive-deps
       meterBlocksRef.current = [];
       initCacheRef.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, activeTrackId, videoEl, enqueueChunk, flushPlayback]);
-
-  const fetchSegments = useCallback(async (currentTime: number) => {
-    const track = activeTrackRef.current;
-    const worker = workerRef.current;
-    if (!track || !worker) {
-      console.log("[ec3] fetchSegments: skip (track=%s worker=%s)", !!track, !!worker);
-      return;
-    }
-
-    const { segments: segInfo } = track;
-
-    // Fetch init segment if not cached (via CORS-aware fetch)
-    if (!initCacheRef.current && segInfo.initUrl) {
-      try {
-        const resp = await corsFetch(segInfo.initUrl);
-        if (resp.ok) {
-          initCacheRef.current = await resp.arrayBuffer();
-        }
-      } catch (err) {
-        console.warn("[useEc3Audio] Failed to fetch init segment:", err);
-        return;
-      }
-    }
-
-    const initData = initCacheRef.current;
-    if (!initData) return;
-
-    // Resolve segment URLs for the prefetch window
-    const endTime = currentTime + PREFETCH_AHEAD;
-    const segmentUrls = resolveSegmentUrls(segInfo, currentTime - 1, endTime);
-
-    for (const seg of segmentUrls) {
-      const key = `${seg.startTime.toFixed(4)}`;
-      if (fetchedSegmentsRef.current.has(key)) continue;
-      fetchedSegmentsRef.current.add(key);
-
-      // Fetch in the background (don't await — allow parallel fetches)
-      corsFetch(seg.url)
-        .then((resp) => {
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          return resp.arrayBuffer();
-        })
-        .then((mediaData) => {
-          if (!workerRef.current) return;
-          workerRef.current.postMessage({
-            type: "decodeEc3",
-            initData: initData.slice(0),
-            mediaData,
-            segmentStartTime: seg.startTime,
-            channels: track.channelCount,
-            sampleRate: track.sampleRate,
-          });
-        })
-        .catch((err) => {
-          console.warn("[useEc3Audio] Segment fetch failed:", seg.url, err);
-          // Remove from fetched so it can be retried
-          fetchedSegmentsRef.current.delete(key);
-        });
-    }
-  }, []);
 
   const activate = useCallback((track: Ec3TrackInfo) => {
     console.log("[ec3] activate: id=%s lang=%s ch=%d", track.id, track.language, track.channelCount);

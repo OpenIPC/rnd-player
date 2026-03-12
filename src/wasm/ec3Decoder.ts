@@ -110,6 +110,7 @@ export async function createEc3Decoder(
   const mod = await loadWasmModule();
 
   // Late-binding memory reference for WASI stubs that write to WASM memory
+  // eslint-disable-next-line prefer-const
   let mem: WebAssembly.Memory;
   const getView = () => new DataView(mem.buffer);
 

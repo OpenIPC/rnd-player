@@ -469,6 +469,7 @@ export default function VideoControls({
       videoEl.removeEventListener("ratechange", onRateChange);
       videoEl.removeEventListener("progress", onProgress);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoEl]);
 
   // ── Shaka track management ──
@@ -639,6 +640,7 @@ export default function VideoControls({
     };
     containerEl.addEventListener("click", onClick);
     return () => containerEl.removeEventListener("click", onClick);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [containerEl, videoEl]);
 
   // ── Click outside to close popup ──

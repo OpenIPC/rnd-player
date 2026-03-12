@@ -257,7 +257,7 @@ export function useQpHeatmap(
       };
 
       worker.postMessage(msg, [initSegment, mediaSegment]);
-    } catch (err) {
+    } catch {
       pendingUrlRef.current = null;
       if (requestIdRef.current === requestId) {
         setLoading(false);

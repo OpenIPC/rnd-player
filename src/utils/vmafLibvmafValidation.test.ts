@@ -17,7 +17,6 @@ import {
   computeVif,
   computeAdm2,
   computeVmaf,
-  createVmafState,
   motionBlur,
   computeMotion,
 } from "./vmafCore";
@@ -364,8 +363,8 @@ describe("Motion feature", () => {
 
   it("motion2 is 0 for single-frame pairs (matches libvmaf)", () => {
     const cases = getSingleFrameCases();
-    for (const { name, ref, dis } of cases) {
-      const result = computeVmaf(ref, dis, W, H, null, "hd");
+    for (const c of cases) {
+      const result = computeVmaf(c.ref, c.dis, W, H, null, "hd");
       expect(result.features.motion2).toBe(0);
     }
   });

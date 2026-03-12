@@ -188,13 +188,14 @@ export function useAudioMeterFallback(
       }
       blocksRef.current = [];
       lastBlockIdxRef.current = 0;
-      audioTrackIdsRef.current.clear();
-      initDataRef.current.clear();
-      timescaleRef.current.clear();
-      audioConfigRef.current.clear();
-      processedSegmentsRef.current.clear();
+      audioTrackIdsRef.current.clear(); // eslint-disable-line react-hooks/exhaustive-deps
+      initDataRef.current.clear(); // eslint-disable-line react-hooks/exhaustive-deps
+      timescaleRef.current.clear(); // eslint-disable-line react-hooks/exhaustive-deps
+      audioConfigRef.current.clear(); // eslint-disable-line react-hooks/exhaustive-deps
+      processedSegmentsRef.current.clear(); // eslint-disable-line react-hooks/exhaustive-deps
       ptoRef.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, videoEl, player]);
 
   // ── Internal helpers (closures over refs) ──

@@ -26,7 +26,6 @@ import type { VmafState, VmafModelId } from "../utils/vmafCore";
 export type DiffPalette = "grayscale" | "temperature" | "psnr" | "ssim" | "msssim" | "vmaf";
 export type DiffAmplification = 1 | 2 | 4 | 8;
 
-/* eslint-disable @stylistic/indent */
 const VERT_SRC = [
 "#version 300 es",
 "in vec2 a_position;",
@@ -117,7 +116,11 @@ const FRAG_SRC = [
 "  fragColor = vec4(color, 1.0);",
 "}",
 ].join("\n");
-/* eslint-enable @stylistic/indent */
+
+interface VideoWithRVFC extends HTMLVideoElement {
+  requestVideoFrameCallback(callback: VideoFrameRequestCallback): number;
+  cancelVideoFrameCallback(handle: number): void;
+}
 
 interface UseDiffRendererParams {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -933,7 +936,7 @@ export function useDiffRenderer({
         } catch { /* ignore */ }
 
         tryMatch();
-        rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
+        rvfcIdA = (videoA as VideoWithRVFC).requestVideoFrameCallback(onFrameA);
       };
 
       const onFrameB = (_: DOMHighResTimeStamp, meta: RVFCMeta) => {
@@ -960,11 +963,11 @@ export function useDiffRenderer({
         } catch { /* ignore */ }
 
         tryMatch();
-        rvfcIdB = (videoB as any).requestVideoFrameCallback(onFrameB);
+        rvfcIdB = (videoB as VideoWithRVFC).requestVideoFrameCallback(onFrameB);
       };
 
-      rvfcIdA = (videoA as any).requestVideoFrameCallback(onFrameA);
-      rvfcIdB = (videoB as any).requestVideoFrameCallback(onFrameB);
+      rvfcIdA = (videoA as VideoWithRVFC).requestVideoFrameCallback(onFrameA);
+      rvfcIdB = (videoB as VideoWithRVFC).requestVideoFrameCallback(onFrameB);
 
       // rAF loop: bind front textures (guaranteed matched pair) and draw.
       // Between matches, repeats the last good pair — no freeze, no artifacts.
@@ -986,8 +989,8 @@ export function useDiffRenderer({
       rafId = requestAnimationFrame(drawLoop);
 
       return () => {
-        (videoA as any).cancelVideoFrameCallback(rvfcIdA);
-        (videoB as any).cancelVideoFrameCallback(rvfcIdB);
+        (videoA as VideoWithRVFC).cancelVideoFrameCallback(rvfcIdA);
+        (videoB as VideoWithRVFC).cancelVideoFrameCallback(rvfcIdB);
         cancelAnimationFrame(rafId);
       };
     } else {

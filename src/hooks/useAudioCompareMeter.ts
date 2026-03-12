@@ -96,6 +96,62 @@ export function useAudioCompareMeter(
   const lraRef = useRef<LraState | null>(null);
   const blockCounterRef = useRef(0);
 
+  const fetchSegments = useCallback(async (currentTime: number) => {
+    const track = activeTrackRef.current;
+    const worker = workerRef.current;
+    if (!track || !worker) return;
+
+    const { segments: segInfo } = track;
+
+    // Fetch init segment if not cached
+    if (!initCacheRef.current && segInfo.initUrl) {
+      try {
+        const resp = await corsFetch(segInfo.initUrl);
+        if (resp.ok) {
+          initCacheRef.current = await resp.arrayBuffer();
+        }
+      } catch (err) {
+        console.warn("[useAudioCompareMeter] Failed to fetch init segment:", err);
+        return;
+      }
+    }
+
+    const initData = initCacheRef.current;
+    if (!initData) return;
+
+    // Resolve segment URLs for the prefetch window
+    const endTime = currentTime + PREFETCH_AHEAD;
+    const segmentUrls = resolveSegmentUrls(segInfo, currentTime - 1, endTime);
+
+    for (const seg of segmentUrls) {
+      const key = `${seg.startTime.toFixed(4)}`;
+      if (fetchedSegmentsRef.current.has(key)) continue;
+      fetchedSegmentsRef.current.add(key);
+
+      corsFetch(seg.url)
+        .then((resp) => {
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          return resp.arrayBuffer();
+        })
+        .then((mediaData) => {
+          if (!workerRef.current) return;
+
+          workerRef.current.postMessage({
+            type: "decodeEc3",
+            initData: initData.slice(0),
+            mediaData,
+            segmentStartTime: seg.startTime,
+            channels: track.channelCount,
+            sampleRate: track.sampleRate,
+          });
+        })
+        .catch((err) => {
+          console.warn("[useAudioCompareMeter] Segment fetch failed:", seg.url, err);
+          fetchedSegmentsRef.current.delete(key);
+        });
+    }
+  }, []);
+
   // Spawn worker on activation
   useEffect(() => {
     if (!active || !videoEl) {
@@ -216,71 +272,12 @@ export function useAudioCompareMeter(
         clearInterval(prefetchTimerRef.current);
         prefetchTimerRef.current = 0;
       }
-      fetchedSegmentsRef.current.clear();
+      fetchedSegmentsRef.current.clear(); // eslint-disable-line react-hooks/exhaustive-deps
       meterBlocksRef.current = [];
       initCacheRef.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, activeTrackId, videoEl]);
-
-  const fetchSegments = useCallback(async (currentTime: number) => {
-    const track = activeTrackRef.current;
-    const worker = workerRef.current;
-    if (!track || !worker) return;
-
-    const { segments: segInfo } = track;
-
-    // Fetch init segment if not cached
-    if (!initCacheRef.current && segInfo.initUrl) {
-      try {
-        const resp = await corsFetch(segInfo.initUrl);
-        if (resp.ok) {
-          initCacheRef.current = await resp.arrayBuffer();
-        }
-      } catch (err) {
-        console.warn("[useAudioCompareMeter] Failed to fetch init segment:", err);
-        return;
-      }
-    }
-
-    const initData = initCacheRef.current;
-    if (!initData) return;
-
-    // Resolve segment URLs for the prefetch window
-    const endTime = currentTime + PREFETCH_AHEAD;
-    const segmentUrls = resolveSegmentUrls(segInfo, currentTime - 1, endTime);
-
-    for (const seg of segmentUrls) {
-      const key = `${seg.startTime.toFixed(4)}`;
-      if (fetchedSegmentsRef.current.has(key)) continue;
-      fetchedSegmentsRef.current.add(key);
-
-      corsFetch(seg.url)
-        .then((resp) => {
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          return resp.arrayBuffer();
-        })
-        .then((mediaData) => {
-          if (!workerRef.current) return;
-
-          // Always use "decodeEc3" — it has a 3-stage fallback:
-          // 1. OfflineAudioContext on raw fMP4 (Safari)
-          // 2. mp4box demux → ADTS wrap → OfflineAudioContext (AAC in all browsers)
-          // 3. mp4box demux → WASM decoder (EC-3/AC-3)
-          workerRef.current.postMessage({
-            type: "decodeEc3",
-            initData: initData.slice(0),
-            mediaData,
-            segmentStartTime: seg.startTime,
-            channels: track.channelCount,
-            sampleRate: track.sampleRate,
-          });
-        })
-        .catch((err) => {
-          console.warn("[useAudioCompareMeter] Segment fetch failed:", seg.url, err);
-          fetchedSegmentsRef.current.delete(key);
-        });
-    }
-  }, []);
 
   const activate = useCallback((track: Ec3TrackInfo) => {
     activeTrackRef.current = track;

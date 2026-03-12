@@ -12,6 +12,7 @@ export function useSleepWakeRecovery(
 
   const startGuard = useCallback(() => {
     guardUntilRef.current = Date.now() + GUARD_DURATION;
+    // eslint-disable-next-line react-hooks/immutability
     videoEl.currentTime = lastTimeRef.current;
     if (wasPausedRef.current) {
       videoEl.pause();

@@ -36,6 +36,7 @@ export function useAudioAnalyser(videoEl: HTMLVideoElement | null, enabled: bool
   const videoElRef = useRef(videoEl);
   const safariMSERef = useRef(false);
 
+  // eslint-disable-next-line react-hooks/refs -- sync ref to latest prop for stable callbacks
   videoElRef.current = videoEl;
 
   useEffect(() => {

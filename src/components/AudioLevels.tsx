@@ -189,6 +189,7 @@ export default function AudioLevels({
       observer.disconnect();
       lastTimeRef.current = 0;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readLevels, readLoudness]);
 
   const ld = loudnessDisplay;

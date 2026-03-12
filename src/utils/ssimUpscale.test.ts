@@ -64,7 +64,7 @@ const FULL_H = 180;
 const SCALE = 4;
 
 // Use bezkrovny — fastest algorithm per Q4 benchmark results
-const ALGORITHM: "bezkrovny" = "bezkrovny";
+const ALGORITHM = "bezkrovny" as const;
 
 // ---------------------------------------------------------------------------
 // Seeded PRNG

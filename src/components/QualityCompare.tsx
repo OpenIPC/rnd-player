@@ -217,6 +217,8 @@ function GopBar({ frames, activeIdx }: { frames: { type: FrameType; size: number
   );
 }
 
+const VALID_VMAF_MODELS: VmafModelId[] = ["hd", "neg", "phone", "4k"];
+
 export default function QualityCompare({
   videoEl: masterVideo,
   player: masterPlayer,
@@ -306,7 +308,6 @@ export default function QualityCompare({
   const initAmp: DiffAmplification = initialAmp && VALID_AMPS.includes(initialAmp as DiffAmplification) ? initialAmp as DiffAmplification : 1;
   const VALID_PALETTES: DiffPalette[] = ["ssim", "msssim", "psnr", "vmaf", "grayscale", "temperature"];
   const initPalette: DiffPalette = initialPalette && VALID_PALETTES.includes(initialPalette as DiffPalette) ? initialPalette as DiffPalette : "ssim";
-  const VALID_VMAF_MODELS: VmafModelId[] = ["hd", "neg", "phone", "4k"];
   const initVmafModel: VmafModelId = initialVmafModel && VALID_VMAF_MODELS.includes(initialVmafModel as VmafModelId) ? initialVmafModel as VmafModelId : "hd";
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initMode);
   const [flickerInterval, setFlickerInterval] = useState(initFlicker);
@@ -861,7 +862,8 @@ export default function QualityCompare({
       // Re-assert master's position to fire its `seeked` event, which
       // triggers onSeeked → slave sync — the same proven path as
       // keyboard frame stepping.
-      masterVideo.currentTime = masterVideo.currentTime;
+      const t = masterVideo.currentTime;
+      masterVideo.currentTime = t;
     };
     const onSeeked = () => {
       // Clamp slave time to its own duration
@@ -1353,7 +1355,7 @@ export default function QualityCompare({
     if (w < 0.01 || h < 0.01) return; // too small
 
     applyHighlight({ x, y, w, h });
-  }, [masterVideo, applyHighlight]);
+  }, [masterVideo, applyHighlight, clearSleepGuardRef]);
 
   // ── Escape key to clear highlight ──
   useEffect(() => {

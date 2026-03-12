@@ -439,14 +439,12 @@ export default function FilmstripTimeline({
       }
 
       const sOff = startOffsetRef.current;
-      let startTick: number;
-      let endTick: number;
       // Anchor ALL ticks from startOffset so they align with frame
       // boundaries. For sub-second: frame-exact alignment. For
       // whole-second: ticks at sOff, sOff+1, sOff+2, ... so that
       // after the CTO pixel shift they land at round video-time seconds.
-      startTick = sOff + Math.floor(((sl + ctoPx) / pxPerSec - sOff) / tickInterval) * tickInterval;
-      endTick = sOff + Math.ceil(((sl + ctoPx + w) / pxPerSec - sOff) / tickInterval) * tickInterval;
+      const startTick = sOff + Math.floor(((sl + ctoPx) / pxPerSec - sOff) / tickInterval) * tickInterval;
+      const endTick = sOff + Math.ceil(((sl + ctoPx + w) / pxPerSec - sOff) / tickInterval) * tickInterval;
 
       ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
       ctx.font = FONT;
@@ -993,6 +991,7 @@ export default function FilmstripTimeline({
       const videoTime = (x + scrollLeftRef.current) / pxPerSecRef.current;
       const dashTime = videoTime + startOffset;
       const dur = durationRef.current;
+      // eslint-disable-next-line react-hooks/immutability
       videoEl.currentTime = Math.max(startOffset, Math.min(dur, dashTime));
     },
     [videoEl, startOffset],

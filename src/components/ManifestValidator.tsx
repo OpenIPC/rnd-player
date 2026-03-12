@@ -143,7 +143,7 @@ export default function ManifestValidator({
       console.warn("[ManifestValidator] Deep scan failed:", err);
       setDeepScanResult({ issues: [], tracksScanned: 0, segmentsFetched: 0 });
     });
-  }, [player]);
+  }, [player, onErrorCount]);
 
   // Run on mount
   useEffect(() => {

@@ -178,7 +178,7 @@ export function configureSoftwareDecryption(
   const responseFilter: shaka.extern.ResponseFilter = async (
     type: shaka.net.NetworkingEngine.RequestType,
     response: shaka.extern.Response,
-    _context?: shaka.extern.RequestContext,
+    _context?: shaka.extern.RequestContext, // eslint-disable-line @typescript-eslint/no-unused-vars
   ) => {
     // ── MANIFEST: strip ContentProtection so Shaka skips EME ──
     if (type === shaka.net.NetworkingEngine.RequestType.MANIFEST) {

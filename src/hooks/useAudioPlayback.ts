@@ -203,7 +203,7 @@ export function useAudioPlayback(
           // Unmute native audio so it fills the gap until a good chunk plays
           if (mutedByUsRef.current && videoEl) {
             console.log("[playback] drift: unmuting native audio during re-sync");
-            videoEl.volume = prevVolumeRef.current;
+            videoEl.volume = prevVolumeRef.current; // eslint-disable-line react-hooks/immutability
             mutedByUsRef.current = false;
           }
         }
@@ -226,7 +226,7 @@ export function useAudioPlayback(
       }
     }
 
-    rafRef.current = requestAnimationFrame(tick);
+    rafRef.current = requestAnimationFrame(tick); // eslint-disable-line react-hooks/immutability
   }, [videoEl, scheduleNext, cancelAllScheduled]);
 
   const enqueueChunk = useCallback((chunk: PcmChunk) => {
@@ -249,7 +249,7 @@ export function useAudioPlayback(
       // Restore video volume
       if (mutedByUsRef.current && videoEl) {
         console.log("[playback] restoring volume to", prevVolumeRef.current);
-        videoEl.volume = prevVolumeRef.current;
+        videoEl.volume = prevVolumeRef.current; // eslint-disable-line react-hooks/immutability
         mutedByUsRef.current = false;
       }
       isPlayingRef.current = false;

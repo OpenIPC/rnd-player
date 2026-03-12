@@ -108,6 +108,11 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const clearSleepGuardRef = useRef<() => void>(() => {});
   const sessionRef = useRef<SessionManager | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
+  const [playerEl, setPlayerEl] = useState<shaka.Player | null>(null);
+  const [kidVal, setKidVal] = useState<string | null>(null);
+  const [rawManifestVal, setRawManifestVal] = useState<string | null>(null);
   const [safariMSE, setSafariMSE] = useState(false);
   const [ec3Tracks, setEc3Tracks] = useState<Ec3TrackInfo[]>([]);
   const [allAudioTracks, setAllAudioTracks] = useState<Ec3TrackInfo[]>([]);
@@ -153,13 +158,31 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
   const ssimHistoryRef = useRef<Map<number, number>>(new Map());
   const msSsimHistoryRef = useRef<Map<number, number>>(new Map());
   const vmafHistoryRef = useRef<Map<number, number>>(new Map());
+  // Snapshot ref values into state for render-safe access
+  const markReady = useCallback(() => {
+    setVideoEl(videoRef.current);
+    setContainerEl(containerRef.current);
+    setPlayerEl(playerRef.current);
+    setKidVal(kidRef.current);
+    setRawManifestVal(rawManifestRef.current);
+    setPlayerReady(true);
+  }, []);
+  const markUnready = useCallback(() => {
+    setPlayerReady(false);
+    setVideoEl(null);
+    setContainerEl(null);
+    setPlayerEl(null);
+    setKidVal(null);
+    setRawManifestVal(null);
+  }, []);
+
   // EC-3 software decode playback
-  const ec3Audio = useEc3Audio(videoRef.current);
+  const ec3Audio = useEc3Audio(videoEl);
 
   // Boundary previews for progress bar tooltip (independent of filmstrip)
   const { boundaryPreviews, requestBoundaryPreview, clearBoundaryPreviews } = useBoundaryPreviews(
-    playerRef.current,
-    videoRef.current,
+    playerEl,
+    videoEl,
     playerReady && !!sceneData && moduleConfig.sceneMarkers,
     activeKey,
   );
@@ -617,7 +640,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           }
         }
 
-        setPlayerReady(true);
+        markReady();
 
         // Run post-load silent failure checks (unencrypted path)
         if (moduleConfig.drmDiagnostics) {
@@ -667,7 +690,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
     return () => {
       destroyed = true;
-      setPlayerReady(false);
+      markUnready();
       kidRef.current = null;
       sessionRef.current?.destroy();
       sessionRef.current = null;
@@ -675,6 +698,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       player.destroy();
       playerRef.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src, autoPlay, clearKey, startTime, drmConfig]);
 
   const handleKeySubmit = async (key: string, shouldPlay = true) => {
@@ -699,7 +723,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
 
     try {
       await player.load(src);
-      setPlayerReady(true);
+      markReady();
       recordEmeEvent("update", "Content loaded", { success: true });
       if (shouldPlay) videoRef.current?.play().catch(() => {});
 
@@ -767,6 +791,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       setPendingDrmKey(null);
       handleKeySubmit(key, false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingDrmKey, playerReady, needsKey]);
 
   // Auto-load Widevine EME (deferred from main useEffect — same timing
@@ -828,7 +853,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           sessionRef.current.start();
         }
 
-        setPlayerReady(true);
+        markReady();
         recordEmeEvent("update", "Content loaded", { success: true });
         if (autoPlay) videoRef.current?.play().catch(() => {});
       } catch (e) {
@@ -840,6 +865,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         setNeedsKey(true);
       }
     })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingWidevine, playerReady, needsKey]);
 
   // Auto-load FairPlay EME (deferred from main useEffect — same timing
@@ -922,7 +948,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           sessionRef.current.start();
         }
 
-        setPlayerReady(true);
+        markReady();
         recordEmeEvent("update", "Content loaded", { success: true });
         if (autoPlay) videoRef.current?.play().catch(() => {});
       } catch (e) {
@@ -934,6 +960,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         setNeedsKey(true);
       }
     })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFairPlay, playerReady, needsKey]);
 
   // Sync EME events to diagnostics state when panel is open
@@ -1049,22 +1076,22 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         {moduleConfig.watermark &&
           watermark &&
           playerReady &&
-          videoRef.current && (
+          videoEl && (
             <Suspense fallback={null}>
               <WatermarkOverlay
-                videoEl={videoRef.current}
+                videoEl={videoEl}
                 watermark={watermark}
               />
             </Suspense>
           )}
         {playerReady &&
-          videoRef.current &&
-          containerRef.current &&
-          playerRef.current && (
+          videoEl &&
+          containerEl &&
+          playerEl && (
             <VideoControls
-              videoEl={videoRef.current}
-              containerEl={containerRef.current}
-              player={playerRef.current}
+              videoEl={videoEl}
+              containerEl={containerEl}
+              player={playerEl}
               src={src}
               clearKey={activeKey}
               drmConfig={drmConfig}
@@ -1101,23 +1128,23 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
               drmDiagnosticCount={drmDiagnosticsState.diagnostics?.length}
               showManifestValidator={showManifestValidator}
               onToggleManifestValidator={() => setShowManifestValidator((s) => !s)}
-              rawManifestText={rawManifestRef.current}
+              rawManifestText={rawManifestVal}
             />
           )}
         {moduleConfig.qualityCompare &&
           compareMode &&
           slaveSrc &&
           playerReady &&
-          videoRef.current &&
-          playerRef.current && (
+          videoEl &&
+          playerEl && (
             <Suspense fallback={null}>
               <QualityCompare
-                videoEl={videoRef.current}
-                player={playerRef.current}
+                videoEl={videoEl}
+                player={playerEl}
                 src={src}
                 slaveSrc={slaveSrc}
                 clearKey={activeKey}
-                kid={kidRef.current ?? undefined}
+                kid={kidVal ?? undefined}
                 initialHeightA={compareQa}
                 initialHeightB={compareQb}
                 initialZoom={compareZoom}
@@ -1198,12 +1225,12 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
       {moduleConfig.filmstrip &&
         showFilmstrip &&
         playerReady &&
-        videoRef.current &&
-        playerRef.current && (
+        videoEl &&
+        playerEl && (
           <Suspense fallback={null}>
             <FilmstripTimeline
-              videoEl={videoRef.current}
-              player={playerRef.current}
+              videoEl={videoEl}
+              player={playerEl}
               onClose={() => setShowFilmstrip(false)}
               clearKey={activeKey}
               inPoint={inPoint}

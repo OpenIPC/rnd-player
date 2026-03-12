@@ -107,7 +107,7 @@ export default function AudioCompare({
 
   // Track channel counts for layout
   const [trackACh, setTrackACh] = useState(2);
-  const [trackBCh, setTrackBCh] = useState(2);
+  const trackBCh = trackB.active ? trackB.channelCount : 0;
 
   // Loudness display data for bottom panel (updated at ~4 Hz)
   const [loudnessA, setLoudnessA] = useState<LoudnessData | null>(null);
@@ -145,13 +145,6 @@ export default function AudioCompare({
     }
   };
 
-  // Update track B channel count
-  useEffect(() => {
-    if (trackB.active) {
-      setTrackBCh(trackB.channelCount);
-    }
-  }, [trackB.active, trackB.channelCount]);
-
   // Canvas paint loop
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -184,9 +177,7 @@ export default function AudioCompare({
       if (levelsA.length > 0 && levelsA.length !== trackACh) {
         setTrackACh(levelsA.length);
       }
-      if (levelsB.length > 0 && levelsB.length !== trackBCh) {
-        setTrackBCh(levelsB.length);
-      }
+      // trackBCh is derived from trackB.channelCount — no need to set
 
       // Update DOM readouts at ~4 Hz
       if (timestamp - lastDisplayUpdateRef.current >= 250) {
@@ -320,6 +311,7 @@ export default function AudioCompare({
       observer.disconnect();
       lastTimeRef.current = 0;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackAReadLevels, trackAReadLoudness, trackB.readLevels, trackB.readLoudness]);
 
   const ldA = loudnessA;
