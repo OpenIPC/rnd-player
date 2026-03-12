@@ -22,6 +22,14 @@ A browser-based video player and stream analyzer for DASH and HLS. Paste a manif
 
 **Stats panel** — codecs, resolution, frame rate, dropped frames, buffer health, network throughput, color gamut, and more. One right-click away.
 
+**QP Heatmap** — per-macroblock quantization parameter visualization for H.264, HEVC, and AV1 using reference decoders compiled to WASM (JM, HM, dav1d). Multi-frame mode with segment cache — step through frames and see QP values update instantly. Open the Segment Frames Modal to view all decoded frames in a grid with QP overlays. Works on encrypted content.
+
+**Manifest Validator** — proactive stream validation panel. Detects timeline gaps and overlaps, BMFF structure issues (senc/trun mismatch, truncated segments, sequence errors), codec cross-reference mismatches, and mixed frame rates. Export reports as clipboard Markdown or PDF.
+
+**DRM Diagnostics** — five-phase diagnostic toolkit accessible via `D` shortcut: PSSH metadata inspector, EME event timeline, license exchange inspector, silent failure detector (12 automated checks), and cross-DRM compatibility probe across Widevine, PlayReady, FairPlay, and ClearKey with robustness levels. Tabbed UI with exportable reports.
+
+**Audio comparison** — side-by-side dual-track loudness comparison with independent Track A/B metering. Split-panel dBFS bars, LUFS delta indicators, dual-trace sparkline, and summary deltas (Integrated, True Peak, LRA).
+
 ## For Language Learners
 
 **Multi-track subtitles** — display multiple subtitle tracks simultaneously, each color-coded from a 9-color palette. Drag any track to your preferred vertical position (persisted across sessions). Toggle individual tracks with number keys 1–9, or all at once with C.
@@ -32,7 +40,7 @@ A browser-based video player and stream analyzer for DASH and HLS. Paste a manif
 
 ## For Developers
 
-**Modular architecture** — 10 optional feature modules (filmstrip, quality compare, stats, audio levels, subtitles, segment export, adaptation toast, keyboard shortcuts, sleep/wake recovery, scene markers), each independently toggleable at runtime. Three build presets strip unused code at compile time:
+**Modular architecture** — 15 optional feature modules (filmstrip, quality compare, stats, audio levels, audio compare, subtitles, segment export, adaptation toast, keyboard shortcuts, sleep/wake recovery, scene markers, QP heatmap, watermark, DRM diagnostics, manifest validator), each independently toggleable at runtime. Three build presets strip unused code at compile time:
 
 | Preset | Command | What's included |
 |--------|---------|-----------------|
@@ -44,9 +52,9 @@ A browser-based video player and stream analyzer for DASH and HLS. Paste a manif
 
 **Component integration** — built with React 19 + TypeScript + Vite. The `ShakaPlayer` component accepts a manifest URL, optional ClearKey hex, module config, and scene data as props. Module config can be passed programmatically to control which features are active.
 
-**Cross-browser DRM** — auto-detects ClearKey DRM from DASH manifests. On browsers where EME silently fails (macOS WebKit) or is absent (Linux WebKitGTK), falls back to software AES-128-CTR decryption transparently. Filmstrip, frame export, and boundary previews all work on encrypted content.
+**Cross-browser DRM** — supports ClearKey (auto-detected from DASH manifests), Widevine (via proxy), and FairPlay (Safari legacy EME). On browsers where EME silently fails (macOS WebKit) or is absent (Linux WebKitGTK), falls back to software AES-128-CTR decryption transparently. Filmstrip, frame export, and boundary previews all work on encrypted content.
 
-**Codec coverage** — H.264, HEVC/H.265, AV1, VP9. Adaptation toast shows codec names when they change during ABR switches.
+**Codec coverage** — H.264, HEVC/H.265, AV1, VP9. EC-3 (Dolby Digital Plus) software decode via WASM FFmpeg for browsers without native support, with channel-aware loudness metering. Adaptation toast shows codec names when they change during ABR switches.
 
 **CORS handling** — three-tier fetch strategy (direct → cache-bust workaround → optional HMAC-authenticated proxy) handles cross-origin CDN requests without server-side changes.
 
@@ -57,6 +65,9 @@ A browser-based video player and stream analyzer for DASH and HLS. Paste a manif
 - **ABR adaptation toast** — two-phase notification (pending → confirmed) when the player switches quality. Shows old/new resolution, bitrate, and codec. Green for upgrades, amber for downgrades.
 - **Clip export** — set in/out points with I/O keys, pick a rendition, and download the segment as MP4.
 - **Keyboard-driven workflow** — J/K/L shuttle (up to 16×), frame-step with ←/→ or comma/period, volume, fullscreen, scene navigation. Press ? for the full shortcut reference.
+- **Multi-frame-rate quality menu** — FPS tab selector for manifests with mixed 24/30/60 fps tracks. Current FPS shown in the quality button label.
+- **Forensic watermark overlay** — canvas-based watermark rendered over DRM-protected content for leak tracing.
+- **Enhanced error diagnostics** — structured error overlay with fetch failure detection, ISM CDN hints, and PlayReady OPM/RDP failure diagnosis.
 - **Sleep/wake recovery** — detects system sleep via timer-gap analysis and `visibilitychange`, then restores playback position automatically.
 - **Shareable URLs** — every player state (time with ms precision, quality, compare mode, zoom, highlight, scene data) is serializable to URL parameters.
 
