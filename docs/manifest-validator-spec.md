@@ -25,7 +25,7 @@ Stream Diagnostics catches **symptoms** ("HTTP 500 on segment fetch"). The Manif
 
 ---
 
-## Motivating Example — CDP CBCS Clear Endpoint Bug
+## Motivating Example — ISM CBCS Clear Endpoint Bug
 
 A real-world packaging bug that the Manifest Validator would catch at three diagnostic layers:
 
@@ -263,7 +263,7 @@ Validate the structure of init segments and (optionally sampled) media segments.
 | BMFF-008 | For encrypted: `tenc` box present with valid `default_isProtected`, `default_Per_Sample_IV_Size`, `default_KID` | Error | CENC spec |
 | BMFF-009 | For encrypted: `schm` box has scheme type `cenc` or `cbcs` | Error | CENC spec |
 | BMFF-010 | `senc` box present in media segments when encrypted | Warning | CENC spec (samples need per-sample IV/subsample info) |
-| BMFF-011 | `tenc.isProtected=1` but content served unencrypted (clear endpoint) | Warning | Encryption metadata present without actual encryption — may trigger AES filter bugs on CDP origins |
+| BMFF-011 | `tenc.isProtected=1` but content served unencrypted (clear endpoint) | Warning | Encryption metadata present without actual encryption — may trigger AES filter bugs on ISM origins |
 
 #### 4.2 Media Segment Deep Scan (on-demand)
 
@@ -271,7 +271,7 @@ These checks require fetching actual media segments and are gated behind a "Deep
 
 | Rule ID | Check | Severity | Notes |
 |---|---|---|---|
-| BMFF-S01 | `senc` sub-sample byte totals match `trun` sample sizes | Error | Sum of `(clear_bytes + cipher_bytes)` per sample must equal `trun` sample size. Mismatch causes AES filter truncation on CDP. |
+| BMFF-S01 | `senc` sub-sample byte totals match `trun` sample sizes | Error | Sum of `(clear_bytes + cipher_bytes)` per sample must equal `trun` sample size. Mismatch causes AES filter truncation on ISM origins. |
 | BMFF-S02 | `Content-Length` matches received bytes | Error | Truncated response detection — headers sent before body error |
 | BMFF-S03 | `moof` sequence numbers are monotonically increasing | Warning | Gaps indicate missing or misordered fragments |
 | BMFF-S04 | `tfdt` base media decode time matches expected timeline position | Warning | Cross-reference with manifest segment timeline |
@@ -546,7 +546,7 @@ User loads manifest
    - BMFF-007: Recognized brands in `ftyp` — known list includes `isom`/`iso2`–`iso9`, `avc1`/`hvc1`/`hev1`/`av01`/`vp09`, `mp41`/`mp42`/`mp71`, `dash`/`msdh`/`msix`, `cmfc`/`cmfl`/`cmff`, `piff` (Microsoft PIFF/Smooth Streaming), `M4V`/`M4A`
    - BMFF-008: `tenc` has IV size or constant IV when `isProtected=1`
    - BMFF-009: Encryption scheme is `cenc`/`cbcs`/`cens`/`cbc1`
-   - BMFF-011: `tenc.isProtected=1` with non-zero KID but Shaka reports stream as unencrypted (the CDP clear-endpoint pattern)
+   - BMFF-011: `tenc.isProtected=1` with non-zero KID but Shaka reports stream as unencrypted (the ISM clear-endpoint pattern)
    - Reuses `extractTenc()` and `extractScheme()` from `src/workers/cencDecrypt.ts`
 
 2. **`src/utils/manifestValidation/codecValidator.ts`**
@@ -557,7 +557,7 @@ User loads manifest
    - CS-003: Codec string in manifest doesn't match init segment sample entry type
    - CS-007: Encrypted sample entry (`encv`/`enca`) missing `sinf` box
 
-3. **16 unit tests** in `bmffValidator.test.ts` — mocked mp4box + cencDecrypt, covers BMFF-001/002/003/007/009/011/ERR, ISM CDP encryption-on-clear pattern, piff brand acceptance, fetch deduplication, brand issue deduplication
+3. **16 unit tests** in `bmffValidator.test.ts` — mocked mp4box + cencDecrypt, covers BMFF-001/002/003/007/009/011/ERR, ISM encryption-on-clear pattern, piff brand acceptance, fetch deduplication, brand issue deduplication
 
 4. **16 unit tests** in `codecValidator.test.ts` — mocked mp4box, covers CS-001/003/007, codec equivalence pairs (avc1/avc3, hvc1/hev1), encrypted encv/enca wrappers with sinf.frma resolution, HLS-specific checks, audio codecs, fetch deduplication
 
@@ -567,7 +567,7 @@ User loads manifest
 
 ### Stage 3 — Media Segment Deep Scan (DONE)
 
-**Goal**: Fetch actual media segments and validate internal consistency. This is what directly catches the CDP senc/trun bug. Gated behind a "Deep Scan" button — not auto-run, since fetching is expensive.
+**Goal**: Fetch actual media segments and validate internal consistency. This is what directly catches the ISM senc/trun bug. Gated behind a "Deep Scan" button — not auto-run, since fetching is expensive.
 
 **Implemented:**
 
@@ -576,8 +576,8 @@ User loads manifest
    - `extractScanTracksFromShaka(player, initFetchFn, maxSegs)` — Shaka integration helper, gets segment URLs + IV sizes from init segment tenc
    - Internal parsers: `parseTrun` (sample sizes from trun flags), `parseTfhdDefaultSize`, `parseMfhd` (sequence numbers), `parseTfdt` (v0/v1 base decode time)
    - Reuses `findBoxData`, `parseSencFromSegment`, `extractTenc` from `cencDecrypt.ts`
-   - Configurable `maxSegmentsPerTrack` (default: 1 — seg0 is the most common failure point per the CDP bug)
-   - **BMFF-S01**: `senc` sub-sample byte totals ≠ `trun` sample sizes (the exact CDP bug). Reports count, affected sample indices, and byte shortfall range.
+   - Configurable `maxSegmentsPerTrack` (default: 1 — seg0 is the most common failure point per the ISM bug)
+   - **BMFF-S01**: `senc` sub-sample byte totals ≠ `trun` sample sizes (the exact ISM bug). Reports count, affected sample indices, and byte shortfall range.
    - **BMFF-S02**: `Content-Length` header vs received bytes mismatch (truncation detection). Also reports fetch failures.
    - **BMFF-S03**: `moof` sequence numbers monotonically increasing within a track
    - **BMFF-S04**: `tfdt` base media decode time matches expected timeline position (0.1s tolerance)

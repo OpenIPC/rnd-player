@@ -111,7 +111,7 @@ describe("codecValidator", () => {
     expect(issues.filter((i) => i.id === "CS-003")).toHaveLength(0);
   });
 
-  describe("encrypted content (ISM CDP pattern)", () => {
+  describe("encrypted content (ISM pattern)", () => {
     it("CS-003: resolves codec through encv → sinf → frma", async () => {
       // ISM encrypted: stsd has "encv" wrapper, real codec in sinf.frma
       mockMp4.moov = {

@@ -92,9 +92,9 @@ describe("parseMpd", () => {
   });
 });
 
-// Realistic CDP MPD fragment — mirrors the real-world manifest from real-world mixed-fps manifest
+// Realistic MPD fragment — mirrors a real-world mixed-fps manifest
 // that caused A/V desync due to mixed 25fps/50fps in one AdaptationSet.
-const CDP_MPD = `<?xml version="1.0" encoding="UTF-8"?>
+const MIXED_FPS_MPD = `<?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
      xmlns:cenc="urn:mpeg:cenc:2013"
      profiles="urn:mpeg:dash:profile:isoff-live:2011"
@@ -129,9 +129,9 @@ const CDP_MPD = `<?xml version="1.0" encoding="UTF-8"?>
   </Period>
 </MPD>`;
 
-describe("Mixed frame rate regression — mixed frame rate A/V desync (mixed frame rate A/V desync)", () => {
+describe("Mixed frame rate A/V desync regression", () => {
   it("detects DASH-112 error for 25fps/50fps mix in single AdaptationSet", () => {
-    const issues = validateDash(parseMpd(CDP_MPD));
+    const issues = validateDash(parseMpd(MIXED_FPS_MPD));
     const dash112 = issues.filter((i) => i.id === "DASH-112");
     expect(dash112).toHaveLength(1);
     expect(dash112[0].severity).toBe("error");
@@ -147,7 +147,7 @@ describe("Mixed frame rate regression — mixed frame rate A/V desync (mixed fra
   });
 
   it("does not flag audio AdaptationSets", () => {
-    const issues = validateDash(parseMpd(CDP_MPD));
+    const issues = validateDash(parseMpd(MIXED_FPS_MPD));
     // DASH-112 should only fire for the video AS, not audio
     const dash112 = issues.filter((i) => i.id === "DASH-112");
     expect(dash112).toHaveLength(1);
@@ -155,17 +155,17 @@ describe("Mixed frame rate regression — mixed frame rate A/V desync (mixed fra
   });
 
   it("parses all 14 video representations from mixed-fps manifest", () => {
-    const parsed = parseMpd(CDP_MPD);
+    const parsed = parseMpd(MIXED_FPS_MPD);
     const videoAS = parsed.periods[0].adaptationSets[0];
     expect(videoAS.representations).toHaveLength(14);
   });
 });
 
-// Realistic CDP MPD fragment — mirrors the real-world manifest from real-world empty-timeline manifest
+// Realistic MPD fragment — mirrors a real-world empty-timeline manifest
 // that caused the player to hang forever. Video AdaptationSet has 9 Representations with valid
 // codecs/resolution but an empty <SegmentTimeline> (zero <S> entries). Audio has 2864 segment
 // entries. mediaPresentationDuration is non-zero (PT1H35M21.417S).
-const CDP_EMPTY_TIMELINE_MPD = `<?xml version="1.0" encoding="UTF-8"?>
+const EMPTY_TIMELINE_MPD = `<?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
      profiles="urn:mpeg:dash:profile:isoff-live:2011"
      type="static"
@@ -204,9 +204,9 @@ const CDP_EMPTY_TIMELINE_MPD = `<?xml version="1.0" encoding="UTF-8"?>
   </Period>
 </MPD>`;
 
-describe("Mixed frame rate regression — empty video SegmentTimeline player hang (empty video SegmentTimeline player hang)", () => {
+describe("Empty video SegmentTimeline player hang regression", () => {
   it("detects DASH-007 error for empty video SegmentTimeline", () => {
-    const issues = validateDash(parseMpd(CDP_EMPTY_TIMELINE_MPD));
+    const issues = validateDash(parseMpd(EMPTY_TIMELINE_MPD));
     const dash007 = issues.filter((i) => i.id === "DASH-007");
     expect(dash007).toHaveLength(1);
     expect(dash007[0].severity).toBe("error");
@@ -217,7 +217,7 @@ describe("Mixed frame rate regression — empty video SegmentTimeline player han
   });
 
   it("does not flag the populated audio AdaptationSet", () => {
-    const issues = validateDash(parseMpd(CDP_EMPTY_TIMELINE_MPD));
+    const issues = validateDash(parseMpd(EMPTY_TIMELINE_MPD));
     const dash007 = issues.filter((i) => i.id === "DASH-007");
     expect(dash007).toHaveLength(1);
     // Only video AS flagged, not audio
@@ -225,18 +225,18 @@ describe("Mixed frame rate regression — empty video SegmentTimeline player han
   });
 
   it("parses all 9 video representations and 1 audio representation", () => {
-    const parsed = parseMpd(CDP_EMPTY_TIMELINE_MPD);
+    const parsed = parseMpd(EMPTY_TIMELINE_MPD);
     expect(parsed.periods[0].adaptationSets[0].representations).toHaveLength(1); // audio
     expect(parsed.periods[0].adaptationSets[1].representations).toHaveLength(9); // video
   });
 
   it("parses audio SegmentTimeline as populated (count > 0)", () => {
-    const parsed = parseMpd(CDP_EMPTY_TIMELINE_MPD);
+    const parsed = parseMpd(EMPTY_TIMELINE_MPD);
     expect(parsed.periods[0].adaptationSets[0].segmentTimelineCount).toBe(4); // 4 <S> entries in trimmed fixture
   });
 
   it("parses video SegmentTimeline as empty (count = 0)", () => {
-    const parsed = parseMpd(CDP_EMPTY_TIMELINE_MPD);
+    const parsed = parseMpd(EMPTY_TIMELINE_MPD);
     expect(parsed.periods[0].adaptationSets[1].segmentTimelineCount).toBe(0);
   });
 });
@@ -353,7 +353,7 @@ describe("validateDash", () => {
   });
 
   describe("DASH-112: Mixed frame rates", () => {
-    it("CDP reproduction — 25fps + 50fps in one AS", () => {
+    it("reproduction — 25fps + 50fps in one AS", () => {
       const xml = mpd(
         videoAS(
           rep('id="1" bandwidth="1000000" width="1280" height="720" frameRate="25" codecs="avc1.4d401f"') +

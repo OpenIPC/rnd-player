@@ -191,8 +191,8 @@ describe("timelineValidator", () => {
     expect(issues).toHaveLength(0);
   });
 
-  describe("ISM-like multi-track scenario (CDP pattern)", () => {
-    // Models the real CDP bug: 5 video reps in 2 duration groups + 2 audio tracks
+  describe("ISM-like multi-track scenario", () => {
+    // Models a real ISM bug: 5 video reps in 2 duration groups + 2 audio tracks
     // SD video (486p, 576p): 128 segments x ~3.175s = ~406.4s
     // HD video (720p, 900p, 1080p): 127 segments x ~3.183s = ~404.2s
     // Audio: 204 segments x ~1.992s = ~406.4s (different segment grid)

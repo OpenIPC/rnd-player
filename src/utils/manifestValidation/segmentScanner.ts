@@ -3,7 +3,7 @@
  *
  * Fetches actual media segments and compares moof box structure (trun sample
  * sizes, senc sub-sample entries, mfhd sequence numbers, tfdt timestamps)
- * against expected values. Catches packaging bugs like the CDP senc/trun
+ * against expected values. Catches packaging bugs like the ISM senc/trun
  * mismatch that causes truncated responses on clear endpoints.
  *
  * Pure validation logic — no Shaka dependency. Shaka integration helper

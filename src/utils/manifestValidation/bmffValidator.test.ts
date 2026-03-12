@@ -213,7 +213,7 @@ describe("bmffValidator", () => {
     expect(brand[0].detail).toContain("video 720p");
   });
 
-  describe("encryption metadata (ISM CDP pattern)", () => {
+  describe("encryption metadata (ISM pattern)", () => {
     // ISM content: tenc with non-zero KID present but content served clear
 
     it("BMFF-011: warns about encryption metadata on clear content", async () => {

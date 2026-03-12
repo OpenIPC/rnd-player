@@ -95,7 +95,7 @@ function makeTfdt(baseDecodeTime: number, version = 0): number[] {
 
 /**
  * Build a senc box with per-sample sub-sample entries.
- * ivSize=0 → no per-sample IVs (CDP CBCS clear pattern).
+ * ivSize=0 → no per-sample IVs (ISM CBCS clear pattern).
  */
 function makeSenc(
   samples: Array<{ subsamples: Array<{ clear: number; encrypted: number }> }>,
@@ -234,9 +234,9 @@ describe("segmentScanner", () => {
     });
   });
 
-  describe("BMFF-S01: senc/trun mismatch (CDP bug)", () => {
+  describe("BMFF-S01: senc/trun mismatch (ISM bug)", () => {
     it("detects sub-sample byte totals short of trun sizes", async () => {
-      // Models the CDP bug: 10/27 samples have senc sub-sample totals 2-5 bytes
+      // Models the ISM bug: 10/27 samples have senc sub-sample totals 2-5 bytes
       // short of trun sample sizes
       const sampleCount = 27;
       const samples = Array.from({ length: sampleCount }, (_, i) => ({
@@ -722,9 +722,9 @@ describe("segmentScanner", () => {
   });
 });
 
-// --- Mixed frame rate regression — mixed frame rate at container level (BMFF-S05) ---
+// --- Mixed frame rate regression at container level (BMFF-S05) ---
 //
-// Models real-world mixed-fps manifest where ISM origin serves 25fps and 50fps
+// Models a real-world ISM origin that serves 25fps and 50fps
 // renditions in the same AdaptationSet but OMITS @frameRate from the MPD.
 // DASH-112 (manifest-level) cannot fire without @frameRate. BMFF-S05 catches
 // the same A/V desync root cause by reading actual sample_duration from
@@ -734,8 +734,8 @@ describe("segmentScanner", () => {
 //   25fps tracks: timescale=10000000, default_sample_duration=400000
 //   50fps tracks: timescale=10000000, default_sample_duration=200000
 
-describe("Mixed frame rate regression — mixed frame rate detected at container level (BMFF-S05)", () => {
-  // Build segments mirroring real ISM origin container values
+describe("Mixed frame rate regression at container level (BMFF-S05)", () => {
+  // Build segments mirroring real ISM container values
   const ISM_TIMESCALE = 10_000_000;
 
   function ismVideoTrack(
@@ -764,7 +764,7 @@ describe("Mixed frame rate regression — mixed frame rate detected at container
     return { track, segment };
   }
 
-  // 7 renditions at 25fps + 7 at 50fps, matching the mixed-fps manifest structure
+  // 7 renditions at 25fps + 7 at 50fps, matching the real-world manifest structure
   const renditions25fps = [
     ismVideoTrack("video 480x270",   "http://ism/v1.m4s",  1, 400_000, 80),
     ismVideoTrack("video 640x360",   "http://ism/v2.m4s",  2, 400_000, 80),
@@ -808,7 +808,7 @@ describe("Mixed frame rate regression — mixed frame rate detected at container
     expect(s05[0].detail).toContain("A/V desync");
   });
 
-  it("reports the correct fps values from ISM origin timescale/duration", async () => {
+  it("reports the correct fps values from ISM timescale/duration", async () => {
     const { issues } = await scanSegments(allTracks, ismFetch);
 
     const s05 = issues.find((i) => i.id === "BMFF-S05")!;
@@ -833,7 +833,7 @@ describe("Mixed frame rate regression — mixed frame rate detected at container
     expect(issues.filter((i) => i.id === "BMFF-S05")).toHaveLength(0);
   });
 
-  it("audio tracks do not interfere with CDP video fps detection", async () => {
+  it("audio tracks do not interfere with video fps detection", async () => {
     const audioSeg = makeMoof({
       sequenceNumber: 1,
       trackId: 15,

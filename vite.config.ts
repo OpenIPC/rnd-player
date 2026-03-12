@@ -108,7 +108,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       host: '0.0.0.0',
-      allowedHosts: ['localhost'],
+      allowedHosts: true,
     },
     plugins: [react(), devLogRelay()],
     test: {
