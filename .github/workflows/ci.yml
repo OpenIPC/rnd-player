@@ -134,7 +134,7 @@ jobs:
     needs: [generate-fixtures]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' && matrix.browser == 'webkit' }}
+    continue-on-error: false
     strategy:
       fail-fast: false
       matrix:

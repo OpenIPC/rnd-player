@@ -72,6 +72,11 @@ test.describe("HEVC playback", () => {
     // level by browser identity rather than catching load failures generically
     // — the latter would also mask fixture bugs and player regressions.
     test.skip(browserName === "firefox", "Firefox HEVC MSE probe is unreliable on Linux/macOS");
+
+    test.skip(
+      browserName === "webkit" && process.platform === "linux",
+      "WebKitGTK HEVC MSE probe reports supported but playback crashes the browser"
+    );
   });
 
   for (const [seekTime, expectedFrame] of [
