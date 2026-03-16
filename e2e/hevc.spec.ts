@@ -145,6 +145,11 @@ test.describe("HEVC filmstrip", () => {
     const supported = await probeHevcMseSupport(page);
     test.skip(!supported, "Browser does not support HEVC via MSE");
     test.skip(browserName === "firefox", "Firefox HEVC MSE probe is unreliable on Linux/macOS");
+
+    test.skip(
+      browserName === "webkit" && process.platform === "linux",
+      "WebKitGTK HEVC MSE probe reports supported but playback crashes the browser"
+    );
   });
 
   test("thumbnails render after loading", async ({ page }) => {

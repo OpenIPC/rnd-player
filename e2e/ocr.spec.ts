@@ -51,6 +51,13 @@ test.describe("seek verification", () => {
 // ── Frame stepping (ArrowRight / ArrowLeft) ──────────────────────────
 
 test.describe("frame stepping", () => {
+  test.beforeEach(async ({ browserName }) => {
+    test.skip(
+      browserName === "webkit" && process.platform === "linux",
+      "WebKitGTK frame stepping produces inaccurate seeks"
+    );
+  });
+
   test("ArrowRight steps forward one frame", async ({ page }) => {
     await loadPlayerWithDash(page);
     await seekTo(page, 0);
