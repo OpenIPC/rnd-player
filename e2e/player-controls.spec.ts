@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { loadPlayerWithFixture } from "./helpers";
+import { loadPlayerWithFixture, loadPlayerWithCompare } from "./helpers";
 
 test.describe("Player controls", () => {
   test.beforeEach(async ({ page }) => {
@@ -178,5 +178,48 @@ test.describe("Player controls", () => {
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     }
     await expect(page.locator(".vp-controls-wrapper")).not.toHaveClass(/vp-hidden/, { timeout: 3_000 });
+  });
+});
+
+test.describe("Compare mode", () => {
+  test.beforeEach(async ({ page }) => {
+    await loadPlayerWithCompare(page);
+    await page.locator(".vp-compare-overlay").waitFor({ state: "attached", timeout: 15_000 });
+  });
+
+  test("click-to-play works in compare mode (no double-toggle)", async ({ page }) => {
+    // Ensure master video is paused so the draw layer appears
+    await page.evaluate(() => document.querySelector("video")!.pause());
+    await page.locator(".vp-compare-draw").waitFor({ state: "visible", timeout: 10_000 });
+    // Click far from the split slider to avoid vp-compare-strip interception
+    const box = await page.locator(".vp-compare-draw").boundingBox();
+    await page.mouse.click(box!.x + box!.width * 0.8, box!.y + box!.height / 2);
+
+    const playing = await page.evaluate(() => !document.querySelector("video")!.paused);
+    expect(playing).toBe(true);
+
+    // Catches the "play then immediately pause" regression
+    await page.waitForTimeout(300);
+    const stillPlaying = await page.evaluate(() => !document.querySelector("video")!.paused);
+    expect(stillPlaying).toBe(true);
+  });
+
+  test("clicking compare toolbar controls does not toggle playback", async ({ page }) => {
+    // Start playing so we can detect an unwanted pause
+    await page.evaluate(async () => {
+      await document.querySelector("video")!.play();
+    });
+
+    // Click a select in the toolbar
+    const select = page.locator(".vp-compare-select").first();
+    await expect(select).toBeVisible();
+    await select.click();
+    // Dismiss the select dropdown by pressing Escape
+    await page.keyboard.press("Escape");
+
+    // Video should still be playing — not paused by the click
+    await page.waitForTimeout(300);
+    const stillPlaying = await page.evaluate(() => !document.querySelector("video")!.paused);
+    expect(stillPlaying).toBe(true);
   });
 });

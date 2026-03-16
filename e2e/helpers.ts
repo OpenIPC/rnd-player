@@ -10,6 +10,46 @@ const fixturePath = join(__dirname, "fixtures", "test-video.mp4");
 const videoBytes = readFileSync(fixturePath);
 
 /**
+ * Intercepts requests for the test video fixture and navigates to the player
+ * in compare mode (both v and compare params use the same fixture).
+ * Waits until the controls overlay is visible (player fully loaded).
+ */
+export async function loadPlayerWithCompare(page: Page) {
+  await page.route(
+    (url) => url.pathname.endsWith("/test-video.mp4"),
+    (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: "video/mp4",
+        body: videoBytes,
+      });
+    },
+  );
+
+  // Ensure WebGL2 probe returns true so qualityCompare module is enabled
+  // (headless Chromium may not expose WebGL2 on some systems)
+  await page.addInitScript(() => {
+    const origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type: string, ...args: unknown[]) {
+      if (type === "webgl2") {
+        // Return a truthy object so the probe succeeds; if real context
+        // is available it will be used, otherwise return a stub.
+        const real = origGetContext.call(this, type, ...args as []);
+        if (real) return real;
+        return {} as WebGL2RenderingContext;
+      }
+      return origGetContext.call(this, type, ...args as []);
+    } as typeof origGetContext;
+  });
+
+  await page.goto("/?v=/test-video.mp4&compare=/test-video.mp4");
+  await page.locator(".vp-controls-wrapper").waitFor({
+    state: "visible",
+    timeout: 15_000,
+  });
+}
+
+/**
  * Intercepts requests for the test video fixture and navigates to the player.
  * Waits until the controls overlay is visible (player fully loaded).
  */

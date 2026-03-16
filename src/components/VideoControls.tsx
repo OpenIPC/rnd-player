@@ -634,6 +634,9 @@ export default function VideoControls({
       // Bottom bar (progress + controls row) is inside the video area but
       // should not trigger play/pause — controls have their own handlers.
       if (target.closest(".vp-bottom-bar")) return;
+      // Compare draw layer handles play via onPointerUp — don't double-toggle.
+      // Compare toolbar/strip have their own controls — don't trigger play/pause.
+      if (target.closest(".vp-compare-draw, .vp-compare-toolbar, .vp-compare-strip")) return;
       guardUntilRef.current = 0; // user intent — disable sleep/wake guard
       if (videoEl.paused) videoEl.play();
       else videoEl.pause();
