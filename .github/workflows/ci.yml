@@ -76,9 +76,64 @@ jobs:
           path: public/*.wasm
           retention-days: 1
 
+  generate-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute fixture hash
+        id: hash
+        run: echo "value=$(bash e2e/fixture-hash.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Check fixture cache
+        id: cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if bash e2e/download-fixtures.sh "${{ runner.temp }}/dash-fixture"; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install ffmpeg and fonts
+        if: steps.cache.outputs.hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Install Shaka Packager
+        if: steps.cache.outputs.hit != 'true'
+        run: |
+          VERSION="v3.2.0"
+          BIN="packager-linux-x64"
+          URL="https://github.com/shaka-project/shaka-packager/releases/download/$VERSION/$BIN"
+          curl -fsSL "$URL" -o packager && chmod +x packager
+          sudo mv packager /usr/local/bin/
+
+      - name: Generate DASH fixtures
+        if: steps.cache.outputs.hit != 'true'
+        run: bash e2e/generate-dash-fixture.sh "${{ runner.temp }}/dash-fixture"
+
+      - name: Upload fixtures to GitHub Release
+        if: steps.cache.outputs.hit != 'true' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash e2e/upload-fixtures.sh "${{ runner.temp }}/dash-fixture"
+
+      - name: Upload fixtures as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-fixtures
+          path: ${{ runner.temp }}/dash-fixture
+          retention-days: 1
+
   e2e:
+    needs: [generate-fixtures]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     continue-on-error: ${{ matrix.os == 'ubuntu-latest' && matrix.browser == 'webkit' }}
     strategy:
       fail-fast: false
@@ -103,6 +158,12 @@ jobs:
 
       - run: npm ci
 
+      - name: Download E2E fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-fixtures
+          path: ${{ runner.temp }}/dash-fixture
+
       - name: Install Playwright browser (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: npx playwright install --with-deps ${{ matrix.browser }}
@@ -119,20 +180,6 @@ jobs:
         if: matrix.browser == 'firefox' && matrix.os == 'ubuntu-latest'
         run: sudo apt-get install -y gstreamer1.0-libav
 
-      - name: Install ffmpeg and fonts (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get install -y ffmpeg fonts-dejavu-core
-
-      - name: Install ffmpeg with drawtext (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew install ffmpeg-full
-          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
-
-      - name: Install ffmpeg (Windows)
-        if: runner.os == 'Windows'
-        run: choco install ffmpeg -y
-
       - name: Install HEVC Video Extensions (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
@@ -145,28 +192,6 @@ jobs:
           $pkg = Get-AppxPackage -Name "Microsoft.HEVCVideoExtension*" -ErrorAction SilentlyContinue
           if ($pkg) { Write-Host "HEVC installed: $($pkg.Version)" }
           else { Write-Host "HEVC not found after install" }
-
-      - name: Install Shaka Packager
-        shell: bash
-        run: |
-          VERSION="v3.2.0"
-          case "$RUNNER_OS" in
-            Linux)  BIN="packager-linux-x64" ;;
-            macOS)  BIN="packager-osx-arm64" ;;
-            Windows) BIN="packager-win-x64.exe" ;;
-          esac
-          URL="https://github.com/shaka-project/shaka-packager/releases/download/$VERSION/$BIN"
-          curl -fsSL "$URL" -o packager && chmod +x packager
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            mv packager "$RUNNER_TOOL_CACHE/packager.exe"
-            echo "$RUNNER_TOOL_CACHE" >> "$GITHUB_PATH"
-          else
-            sudo mv packager /usr/local/bin/
-          fi
-
-      - name: Generate DASH fixture
-        shell: bash
-        run: bash e2e/generate-dash-fixture.sh "${{ runner.temp }}/dash-fixture"
 
       - name: Run Playwright tests
         shell: bash
@@ -213,7 +238,7 @@ jobs:
 
   deploy:
     if: github.ref == 'refs/heads/main'
-    needs: [test, e2e, wasm-build]
+    needs: [test, e2e, wasm-build, generate-fixtures]
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -300,11 +325,11 @@ jobs:
             fs.writeFileSync('site/versions.json', JSON.stringify(dirs, null, 2) + '\n');
           "
 
-      - name: Generate DASH fixture for Pages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-          bash e2e/generate-dash-fixture.sh site/fixtures/frames
+      - name: Download E2E fixtures for Pages
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-fixtures
+          path: site/fixtures/frames
 
       - name: Download screenshots
         uses: actions/download-artifact@v4

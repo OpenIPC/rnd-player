@@ -246,16 +246,22 @@ ffmpeg -y -loglevel error \
   -c:a aac -b:a 128k \
   "$HEVC_SOURCE"
 
-echo "==> Packaging HEVC as DASH with 2 video renditions + audio..."
+echo "==> Packaging HEVC as DASH with 5 video renditions + audio..."
 ffmpeg -y -loglevel error \
   -i "$HEVC_SOURCE" \
   -filter_complex "\
-    [0:v]split=2[v1][v2];\
+    [0:v]split=5[v1][v2][v3][v4][v5];\
     [v1]scale=1920:1080[out1];\
-    [v2]scale=854:480[out2]\
+    [v2]scale=1280:720[out2];\
+    [v3]scale=854:480[out3];\
+    [v4]scale=640:360[out4];\
+    [v5]scale=426:240[out5]\
   " \
   -map "[out1]" -c:v:0 libx265 -b:v:0 2000k -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
-  -map "[out2]" -c:v:1 libx265 -b:v:1 400k  -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
+  -map "[out2]" -c:v:1 libx265 -b:v:1 1500k -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
+  -map "[out3]" -c:v:2 libx265 -b:v:2 500k  -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
+  -map "[out4]" -c:v:3 libx265 -b:v:3 400k  -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
+  -map "[out5]" -c:v:4 libx265 -b:v:4 300k  -preset ultrafast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30" \
   -map 0:a -c:a aac -b:a 128k \
   -use_timeline 1 -use_template 1 \
   -seg_duration 2 \
@@ -315,12 +321,18 @@ ffmpeg -y -loglevel error \
 ffmpeg -y -loglevel error \
   -i "$HEVC_AQ_SOURCE" \
   -filter_complex "\
-    [0:v]split=2[v1][v2];\
+    [0:v]split=5[v1][v2][v3][v4][v5];\
     [v1]scale=1920:1080[out1];\
-    [v2]scale=854:480[out2]\
+    [v2]scale=1280:720[out2];\
+    [v3]scale=854:480[out3];\
+    [v4]scale=640:360[out4];\
+    [v5]scale=426:240[out5]\
   " \
   -map "[out1]" -c:v:0 libx265 -b:v:0 2000k -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
-  -map "[out2]" -c:v:1 libx265 -b:v:1 400k  -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
+  -map "[out2]" -c:v:1 libx265 -b:v:1 1500k -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
+  -map "[out3]" -c:v:2 libx265 -b:v:2 500k  -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
+  -map "[out4]" -c:v:3 libx265 -b:v:3 400k  -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
+  -map "[out5]" -c:v:4 libx265 -b:v:4 300k  -preset veryfast -tag:v hvc1 -x265-params "keyint=30:min-keyint=30:aq-mode=2:aq-strength=1.0" \
   -map 0:a -c:a aac -b:a 128k \
   -use_timeline 1 -use_template 1 \
   -seg_duration 2 \
@@ -386,16 +398,22 @@ ffmpeg -y -loglevel error \
   -c:a aac -b:a 128k \
   "$AV1_SOURCE"
 
-echo "==> Packaging AV1 as DASH with 2 video renditions + audio..."
+echo "==> Packaging AV1 as DASH with 5 video renditions + audio..."
 ffmpeg -y -loglevel error \
   -i "$AV1_SOURCE" \
   -filter_complex "\
-    [0:v]split=2[v1][v2];\
+    [0:v]split=5[v1][v2][v3][v4][v5];\
     [v1]scale=1920:1080[out1];\
-    [v2]scale=854:480[out2]\
+    [v2]scale=1280:720[out2];\
+    [v3]scale=854:480[out3];\
+    [v4]scale=640:360[out4];\
+    [v5]scale=426:240[out5]\
   " \
   -map "[out1]" -c:v:0 "$AV1_ENCODER" -b:v:0 2000k $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
-  -map "[out2]" -c:v:1 "$AV1_ENCODER" -b:v:1 400k  $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
+  -map "[out2]" -c:v:1 "$AV1_ENCODER" -b:v:1 1500k $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
+  -map "[out3]" -c:v:2 "$AV1_ENCODER" -b:v:2 500k  $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
+  -map "[out4]" -c:v:3 "$AV1_ENCODER" -b:v:3 400k  $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
+  -map "[out5]" -c:v:4 "$AV1_ENCODER" -b:v:4 300k  $AV1_EXTRA_FLAGS -g "$FPS" -keyint_min "$FPS" \
   -map 0:a -c:a aac -b:a 128k \
   -use_timeline 1 -use_template 1 \
   -seg_duration 2 \
