@@ -30,7 +30,7 @@ export async function loadPlayerWithCompare(page: Page) {
   // (headless Chromium may not expose WebGL2 on some systems)
   await page.addInitScript(() => {
     const origGetContext = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (type: string, ...args: unknown[]) {
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, type: string, ...args: unknown[]) {
       if (type === "webgl2") {
         // Return a truthy object so the probe succeeds; if real context
         // is available it will be used, otherwise return a stub.
