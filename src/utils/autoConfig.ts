@@ -15,6 +15,7 @@ export function autoConfig(
   }
   if (!profile.webGL2) {
     config.qualityCompare = false;
+    config.filmGrain = false;
   }
   if (!profile.webAudio) {
     config.audioLevels = false;

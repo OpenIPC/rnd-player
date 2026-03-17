@@ -94,6 +94,12 @@ const MODULE_INFO: ModuleInfo[] = [
     label: "Watermark",
     description: "Forensic watermark overlay for DRM-protected content",
   },
+  {
+    key: "filmGrain",
+    label: "Film grain synthesis",
+    description: "Real-time film grain overlay using AV1-style AR process (WebGL2)",
+    hardGate: (p) => !p.webGL2 ? "Requires WebGL2" : null,
+  },
 ];
 
 export default function SettingsModal({

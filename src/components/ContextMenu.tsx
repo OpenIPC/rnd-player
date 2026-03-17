@@ -14,6 +14,7 @@ import {
   CompareIcon,
   FilmstripIcon,
   QpHeatmapIcon,
+  FilmGrainIcon,
   DrmDiagnosticsIcon,
   ManifestValidatorIcon,
 } from "./icons";
@@ -39,6 +40,7 @@ interface ContextMenuProps {
   onToggleCompare: (() => void) | undefined;
   onToggleFilmstrip: (() => void) | undefined;
   onToggleQpHeatmap: (() => void) | undefined;
+  onToggleFilmGrain: (() => void) | undefined;
   onToggleDrmDiagnostics: (() => void) | undefined;
   onToggleManifestValidator: (() => void) | undefined;
 
@@ -54,6 +56,7 @@ interface ContextMenuProps {
   showCompare: boolean;
   showFilmstrip: boolean;
   showQpHeatmap: boolean;
+  showFilmGrain: boolean;
   showDrmDiagnostics: boolean;
   showManifestValidator: boolean;
   validationErrorCount?: number;
@@ -81,6 +84,7 @@ export default function ContextMenu({
   onToggleCompare,
   onToggleFilmstrip,
   onToggleQpHeatmap,
+  onToggleFilmGrain,
   onToggleDrmDiagnostics,
   onToggleManifestValidator,
   hasMarkers,
@@ -94,6 +98,7 @@ export default function ContextMenu({
   showCompare,
   showFilmstrip,
   showQpHeatmap,
+  showFilmGrain,
   showDrmDiagnostics,
   showManifestValidator,
   validationErrorCount,
@@ -186,6 +191,12 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleQpHeatmap}>
           <QpHeatmapIcon />
           {showQpHeatmap ? "Hide QP heatmap" : "QP heatmap"}
+        </div>
+      )}
+      {moduleConfig.filmGrain && onToggleFilmGrain && (
+        <div className="vp-context-menu-item" onClick={onToggleFilmGrain}>
+          <FilmGrainIcon />
+          {showFilmGrain ? "Hide film grain" : "Film grain"}
         </div>
       )}
       {moduleConfig.drmDiagnostics && onToggleDrmDiagnostics && (

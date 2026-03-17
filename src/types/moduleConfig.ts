@@ -14,6 +14,7 @@ export interface PlayerModuleConfig {
   watermark: boolean;
   drmDiagnostics: boolean;
   manifestValidator: boolean;
+  filmGrain: boolean;
 }
 
 export const MODULE_DEFAULTS: PlayerModuleConfig = {
@@ -32,4 +33,5 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   watermark: true,
   drmDiagnostics: true,
   manifestValidator: true,
+  filmGrain: true,
 };

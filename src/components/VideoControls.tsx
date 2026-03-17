@@ -27,6 +27,8 @@ const StatsPanel = lazy(() => import("./StatsPanel"));
 const AudioLevels = lazy(() => import("./AudioLevels"));
 const AudioCompare = lazy(() => import("./AudioCompare"));
 const QpHeatmapOverlay = lazy(() => import("./QpHeatmapOverlay"));
+const FilmGrainOverlay = lazy(() => import("./FilmGrainOverlay"));
+const FilmGrainPanel = lazy(() => import("./FilmGrainPanel"));
 const ManifestValidator = lazy(() => import("./ManifestValidator"));
 const SettingsModal = lazy(() => import("./SettingsModal"));
 import AdaptationToast from "./AdaptationToast";
@@ -46,6 +48,8 @@ import type { UseEc3AudioResult } from "../hooks/useEc3Audio";
 import type { DrmConfig } from "../drm/types";
 import { useTrackAMeter } from "../hooks/useTrackAMeter";
 import { useQpHeatmap } from "../hooks/useQpHeatmap";
+import { loadFilmGrainParams, saveFilmGrainParams } from "../types/filmGrain";
+import type { FilmGrainParams } from "../types/filmGrain";
 
 interface VideoControlsProps {
   videoEl: HTMLVideoElement;
@@ -241,6 +245,8 @@ export default function VideoControls({
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showQpHeatmap, setShowQpHeatmap] = useState(false);
+  const [showFilmGrain, setShowFilmGrain] = useState(false);
+  const [filmGrainParams, setFilmGrainParams] = useState<FilmGrainParams>(loadFilmGrainParams);
   const [validationErrorCount, setValidationErrorCount] = useState<number | undefined>(undefined);
 
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0 as never);
@@ -1628,6 +1634,10 @@ export default function VideoControls({
             setShowQpHeatmap((s) => !s);
             setContextMenu(null);
           } : undefined}
+          onToggleFilmGrain={moduleConfig.filmGrain ? () => {
+            setShowFilmGrain((s) => !s);
+            setContextMenu(null);
+          } : undefined}
           onToggleDrmDiagnostics={onToggleDrmDiagnostics ? () => {
             onToggleDrmDiagnostics();
             setContextMenu(null);
@@ -1647,6 +1657,7 @@ export default function VideoControls({
           showCompare={!!showCompare}
           showFilmstrip={!!showFilmstrip}
           showQpHeatmap={showQpHeatmap}
+          showFilmGrain={showFilmGrain}
           showDrmDiagnostics={!!showDrmDiagnostics}
           showManifestValidator={!!showManifestValidator}
           validationErrorCount={validationErrorCount}
@@ -1774,6 +1785,28 @@ export default function VideoControls({
             <QpHeatmapOverlay videoEl={videoEl} data={qpHeatmap.data} />
           </Suspense>,
           videoEl.parentElement
+        )}
+
+      {/* Film grain overlay — portaled into video's parent (.vp-video-area) */}
+      {moduleConfig.filmGrain && showFilmGrain && videoEl.parentElement &&
+        createPortal(
+          <Suspense fallback={null}>
+            <FilmGrainOverlay videoEl={videoEl} params={filmGrainParams} />
+          </Suspense>,
+          videoEl.parentElement
+        )}
+
+      {/* Film grain control panel — portaled into container */}
+      {moduleConfig.filmGrain && showFilmGrain &&
+        createPortal(
+          <Suspense fallback={null}>
+            <FilmGrainPanel
+              params={filmGrainParams}
+              onChange={(p) => { setFilmGrainParams(p); saveFilmGrainParams(p); }}
+              onClose={() => setShowFilmGrain(false)}
+            />
+          </Suspense>,
+          containerEl
         )}
 
       {/* Help modal — portaled to body */}

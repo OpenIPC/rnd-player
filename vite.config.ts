@@ -46,6 +46,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     segmentExport: false,
     qpHeatmap: false,
     manifestValidator: false,
+    filmGrain: false,
   },
   minimal: {
     filmstrip: false,
@@ -61,6 +62,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     sceneMarkers: false,
     qpHeatmap: false,
     manifestValidator: false,
+    filmGrain: false,
   },
 }
 
@@ -86,6 +88,7 @@ function resolveModulePreset(): ModulePreset | undefined {
     sleepWakeRecovery: true,
     sceneMarkers: true,
     qpHeatmap: true,
+    filmGrain: true,
   }
   return { ...defaults, ...preset }
 }

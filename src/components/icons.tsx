@@ -304,6 +304,24 @@ export function ManifestValidatorIcon() {
   );
 }
 
+export function FilmGrainIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="currentColor">
+      <circle cx="4" cy="4" r="1.2" opacity="0.7" />
+      <circle cx="10" cy="3" r="1" opacity="0.5" />
+      <circle cx="16" cy="5" r="1.3" opacity="0.8" />
+      <circle cx="7" cy="8" r="1.1" opacity="0.6" />
+      <circle cx="13" cy="9" r="1.4" opacity="0.4" />
+      <circle cx="3" cy="12" r="1" opacity="0.9" />
+      <circle cx="9" cy="13" r="1.2" opacity="0.5" />
+      <circle cx="17" cy="12" r="1.1" opacity="0.7" />
+      <circle cx="5" cy="17" r="1.3" opacity="0.6" />
+      <circle cx="12" cy="16" r="1" opacity="0.8" />
+      <circle cx="16" cy="18" r="1.2" opacity="0.4" />
+    </svg>
+  );
+}
+
 export function DrmDiagnosticsIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">
