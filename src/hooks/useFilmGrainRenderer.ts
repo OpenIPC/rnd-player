@@ -274,6 +274,7 @@ export function useFilmGrainRenderer({
     const { gl, program, texVideo, vao, uIntensity, uGrainSize, uFrameOffset, uBlendMode, uChromatic, uResolution } = state;
 
     let rafId: number;
+    let frameCount = 0;
 
     const render = () => {
       if (contextLostRef.current || !activeRef.current || !videoEl) return;
@@ -334,9 +335,11 @@ export function useFilmGrainRenderer({
       gl.uniform1i(gl.getUniformLocation(program, "u_grain"), 1);
       gl.uniform1f(uIntensity, (p.intensity / 100) * 0.15);
       gl.uniform1f(uGrainSize, GRAIN_TEXTURE_SIZE);
-      // Irrational multipliers prevent periodic aliasing; stable when paused
-      const t = videoEl.currentTime;
-      gl.uniform2f(uFrameOffset, fract(t * 1.7321), fract(t * 2.2360));
+      const h = grainHash(frameCount);
+      if (!videoEl.paused) {
+        frameCount = (frameCount + 1) | 0;
+      }
+      gl.uniform2f(uFrameOffset, (h & 0xFFFF) / 65536, ((h >>> 16) & 0xFFFF) / 65536);
       gl.uniform1i(uBlendMode, p.blendMode === "multiplicative" ? 1 : 0);
       gl.uniform1i(uChromatic, p.chromatic ? 1 : 0);
       gl.uniform2f(uResolution, vpW, vpH);
@@ -372,6 +375,9 @@ export function useFilmGrainRenderer({
   }, []);
 }
 
-function fract(x: number): number {
-  return x - Math.floor(x);
+function grainHash(x: number): number {
+  let z = (x + 0x9E3779B9) | 0;
+  z = Math.imul(z ^ (z >>> 15), 0x85EBCA6B) | 0;
+  z = Math.imul(z ^ (z >>> 13), 0xC2B2AE35) | 0;
+  return (z ^ (z >>> 16)) >>> 0;
 }
