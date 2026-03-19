@@ -765,7 +765,8 @@ export async function fetchAndValidateHlsChildren(
 ): Promise<ValidationIssue[]> {
   if (!playlist.isMultivariant) return [];
 
-  const childUrls: { url: string; label: string }[] = [];
+  // Collect video children (from EXT-X-STREAM-INF)
+  const videoChildren: { url: string; label: string; type: "video" | "audio" }[] = [];
   for (const si of playlist.streamInfs) {
     const url = resolveUrl(baseUrl, si.uri);
     const label = si.resolution
@@ -773,28 +774,41 @@ export async function fetchAndValidateHlsChildren(
       : si.bandwidth
         ? `${si.bandwidth}bps`
         : si.uri;
-    childUrls.push({ url, label });
+    videoChildren.push({ url, label, type: "video" });
   }
 
+  // Collect audio children (from EXT-X-MEDIA TYPE=AUDIO with URI)
+  const audioChildren: { url: string; label: string; type: "video" | "audio" }[] = [];
+  for (const media of playlist.mediaTags) {
+    if (media.type === "AUDIO" && media.uri) {
+      const url = resolveUrl(baseUrl, media.uri);
+      const label = media.name ?? media.groupId ?? media.uri;
+      audioChildren.push({ url, label: `audio "${label}"`, type: "audio" });
+    }
+  }
+
+  const allChildUrls = [...videoChildren, ...audioChildren];
+
   // Deduplicate by URL
-  const uniqueChildren = childUrls.filter(
-    (c, i) => childUrls.findIndex((o) => o.url === c.url) === i,
+  const uniqueChildren = allChildUrls.filter(
+    (c, i) => allChildUrls.findIndex((o) => o.url === c.url) === i,
   );
 
   // Fetch and parse children
   const childResults = await Promise.all(
-    uniqueChildren.map(async ({ url, label }) => {
+    uniqueChildren.map(async ({ url, label, type }) => {
       try {
         const text = await fetchFn(url);
         const parsed = parseHlsPlaylist(text);
-        return { playlist: parsed, sourceUrl: url, label };
+        return { playlist: parsed, sourceUrl: url, label, type };
       } catch {
         return null;
       }
     }),
   );
 
-  const children = childResults.filter((c): c is ParsedHlsMediaPlaylist => c !== null);
+  type ChildWithType = ParsedHlsMediaPlaylist & { type: "video" | "audio" };
+  const children = childResults.filter((c): c is ChildWithType => c !== null);
 
   const issues: ValidationIssue[] = [];
 
@@ -826,7 +840,47 @@ export async function fetchAndValidateHlsChildren(
     }
   }
 
+  // HLS-209: Audio/video duration mismatch across child playlists
+  const childDurations = children
+    .filter((c) => c.playlist.segments.length > 0)
+    .map((c) => ({
+      label: c.label,
+      type: c.type,
+      duration: c.playlist.segments.reduce((sum, s) => sum + s.duration, 0),
+    }));
+
+  const videoDurations = childDurations.filter((d) => d.type === "video");
+  const audioDurations = childDurations.filter((d) => d.type === "audio");
+
+  if (videoDurations.length > 0 && audioDurations.length > 0) {
+    // Compare each audio track against the first video track
+    const refVideo = videoDurations[0];
+    for (const audio of audioDurations) {
+      const diff = Math.abs(refVideo.duration - audio.duration);
+      if (diff > 2) {
+        const ratio = Math.min(refVideo.duration, audio.duration) / Math.max(refVideo.duration, audio.duration);
+        const pct = ((1 - ratio) * 100).toFixed(0);
+        issues.push({
+          id: "HLS-209",
+          severity: "error",
+          category: "Timeline",
+          message: `Audio/video duration mismatch (${diff.toFixed(1)}s difference, ${pct}%)`,
+          detail:
+            `${audio.label}: ${formatDuration(audio.duration)} (${audio.duration.toFixed(1)}s) vs ` +
+            `${refVideo.label}: ${formatDuration(refVideo.duration)} (${refVideo.duration.toFixed(1)}s). ` +
+            `Playback will stop at the shorter track's end.`,
+        });
+      }
+    }
+  }
+
   return issues;
+}
+
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds - m * 60;
+  return `${m}m${s.toFixed(0)}s`;
 }
 
 function resolveUrl(base: string, relative: string): string {

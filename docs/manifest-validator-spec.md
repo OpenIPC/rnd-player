@@ -165,6 +165,7 @@ Validate the internal structure and required attributes of the manifest itself.
 | HLS-206 | Discontinuity count matches across renditions | Error | RFC 8216 §6.2.2 |
 | HLS-207 | Live playlist has >= 3 target durations of segments | Warning | RFC 8216 §6.2.2 |
 | HLS-208 | `EXT-X-MAP` present for fMP4 segments | Error | RFC 8216 §4.3.2.5 |
+| HLS-209 | Audio/video duration mismatch across child playlists | Error | — |
 
 #### 1.2 DASH (ISO 23009-1 / DASH-IF IOP)
 
@@ -366,7 +367,7 @@ src/
       dashValidator.ts                 — [Stage 4] MPD XML structure + DASH-IF IOP checks
       dashValidator.test.ts            — 52 unit tests
       hlsValidator.ts                  — [Stage 4] HLS m3u8 line-based parser + RFC 8216 checks
-      hlsValidator.test.ts             — 54 unit tests
+      hlsValidator.test.ts             — 58 unit tests
       compatValidator.ts               — [Stage 4] Cross-platform compatibility warnings (not yet implemented)
   types/
     moduleConfig.ts                    — manifestValidator field added
@@ -647,16 +648,18 @@ User loads manifest
    - `validateHlsMediaPlaylist(media)` — validates fetched child playlists with source label prefix
    - `fetchAndValidateHlsChildren(playlist, baseUrl, fetchFn)` — Phase 2: fetches child media playlists, validates each, and runs cross-rendition checks:
      - **HLS-206**: Discontinuity count mismatch across renditions
+     - **HLS-209**: Audio/video duration mismatch — computes total EXTINF durations for video (from EXT-X-STREAM-INF children) and audio (from EXT-X-MEDIA TYPE=AUDIO children), fires error when difference >2s. Reports absolute diff, percentage, and human-readable durations. Catches the ISM packaging bug where 95 segments × 3.2s video vs 95 segments × 2.0s audio produces 304s vs 190s (114s / 37% mismatch).
    - Skipped rules (require segment byte fetching): HLS-202, HLS-203, HLS-204
    - Runs in Stage 1b (multivariant text checks) + Stage 2 (child playlist fetching in `Promise.all` alongside BMFF/codec)
 
-4. **54 unit tests** in `hlsValidator.test.ts`:
+4. **58 unit tests** in `hlsValidator.test.ts`:
    - Parser tests: attribute parsing, RESOLUTION, quoted commas, BOM, multivariant/media detection, I-frame stream infs, duplicate attributes, FRAME-RATE, EXT-X-VERSION
    - Structural checks: HLS-001 through HLS-008
    - Multivariant checks: HLS-101 through HLS-109
    - Media playlist checks: HLS-003, HLS-006, HLS-007, HLS-201, HLS-205, HLS-207, HLS-208
    - Cross-rendition checks: HLS-206 discontinuity count mismatch (match, mismatch, fetch failure)
-   - QA regression scenarios: realistic multivariant with duration-mismatched variants, child playlist with segment exceeding TARGETDURATION
+   - HLS-209 audio/video duration mismatch (ISM bug pattern, matching durations, small diff tolerance)
+   - QA regression scenarios: realistic multivariant with duration-mismatched variants, child playlist with segment exceeding TARGETDURATION, ISM origin 95×3.2s video vs 95×2.0s audio reproduction
 
 **Files:** `hlsValidator.ts` (parser + validator), `hlsValidator.test.ts` (54 tests), `runValidation.ts` (Stage 1b + Stage 2 orchestration)
 

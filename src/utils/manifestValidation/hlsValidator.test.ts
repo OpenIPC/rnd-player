@@ -500,6 +500,91 @@ describe("fetchAndValidateHlsChildren — HLS-206", () => {
   });
 });
 
+// --- HLS-209: Audio/video duration mismatch ---
+
+describe("fetchAndValidateHlsChildren — HLS-209", () => {
+  it("HLS-209: audio 60% shorter than video (QA ISM bug)", async () => {
+    // Mirrors the real ISM bug: 95 segments for both, but video=3.2s, audio=2.0s
+    const masterText = multivariant(
+      [
+        streamInf('BANDWIDTH=1280000,CODECS="avc1.4D401F,mp4a.40.2",AUDIO="aud",RESOLUTION=1280x720', "video/stream.m3u8"),
+      ],
+      mediaTag('TYPE=AUDIO,GROUP-ID="aud",NAME="Main",URI="audio/stream.m3u8"') + "\n",
+    );
+    const master = parseHlsPlaylist(masterText);
+
+    // 95 video segments × 3.2s = 304s (5m04s)
+    const videoSegs = Array.from({ length: 95 }, (_, i) => segment(3.2, `s-${i + 1}.m4s`));
+    const videoChild = mediaPlaylist(videoSegs, { targetDuration: 4, extra: '#EXT-X-MAP:URI="s-0.m4s"' });
+
+    // 95 audio segments × 2.0s = 190s (3m10s)
+    const audioSegs = Array.from({ length: 95 }, (_, i) => segment(2.0, `s-${i + 1}.m4s`));
+    const audioChild = mediaPlaylist(audioSegs, { targetDuration: 2, extra: '#EXT-X-MAP:URI="s-0.m4s"' });
+
+    const children: Record<string, string> = {
+      "http://cdn/video/stream.m3u8": videoChild,
+      "http://cdn/audio/stream.m3u8": audioChild,
+    };
+    const fetchFn = async (url: string) => {
+      if (url in children) return children[url];
+      throw new Error("not found");
+    };
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    const hls209 = issues.find((i) => i.id === "HLS-209");
+    expect(hls209).toBeDefined();
+    expect(hls209!.severity).toBe("error");
+    expect(hls209!.category).toBe("Timeline");
+    expect(hls209!.message).toContain("114");
+    expect(hls209!.message).toContain("37%");
+    expect(hls209!.detail).toContain("3m10s");
+    expect(hls209!.detail).toContain("5m4s");
+  });
+
+  it("no HLS-209 when audio/video durations match", async () => {
+    const masterText = multivariant(
+      [
+        streamInf('BANDWIDTH=1280000,CODECS="avc1.4D401F,mp4a.40.2",AUDIO="aud",RESOLUTION=1280x720', "video/stream.m3u8"),
+      ],
+      mediaTag('TYPE=AUDIO,GROUP-ID="aud",NAME="Main",URI="audio/stream.m3u8"') + "\n",
+    );
+    const master = parseHlsPlaylist(masterText);
+
+    const segs = [segment(6, "seg0.ts"), segment(6, "seg1.ts"), segment(6, "seg2.ts")];
+    const childText = mediaPlaylist(segs, { targetDuration: 6 });
+    const fetchFn = async () => childText;
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    expect(issues.find((i) => i.id === "HLS-209")).toBeUndefined();
+  });
+
+  it("HLS-209: small difference (<2s) is not flagged", async () => {
+    const masterText = multivariant(
+      [
+        streamInf('BANDWIDTH=1280000,CODECS="avc1.4D401F,mp4a.40.2",AUDIO="aud",RESOLUTION=1280x720', "video/stream.m3u8"),
+      ],
+      mediaTag('TYPE=AUDIO,GROUP-ID="aud",NAME="Main",URI="audio/stream.m3u8"') + "\n",
+    );
+    const master = parseHlsPlaylist(masterText);
+
+    const videoChild = mediaPlaylist([segment(6, "seg0.ts"), segment(6, "seg1.ts")], { targetDuration: 6 });
+    // Audio 1s shorter — within tolerance
+    const audioChild = mediaPlaylist([segment(5.5, "seg0.ts"), segment(5.5, "seg1.ts")], { targetDuration: 6 });
+
+    const children: Record<string, string> = {
+      "http://cdn/video/stream.m3u8": videoChild,
+      "http://cdn/audio/stream.m3u8": audioChild,
+    };
+    const fetchFn = async (url: string) => {
+      if (url in children) return children[url];
+      throw new Error("not found");
+    };
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    expect(issues.find((i) => i.id === "HLS-209")).toBeUndefined();
+  });
+});
+
 // --- QA bug scenario ---
 
 describe("QA regression — duration mismatch HLS stream", () => {
@@ -562,5 +647,50 @@ describe("QA regression — duration mismatch HLS stream", () => {
     const hls201 = issues.filter((i) => i.id === "HLS-201");
     expect(hls201.length).toBeGreaterThanOrEqual(1);
     expect(hls201[0].message).toContain("[1280x720]");
+  });
+
+  it("ISM origin bug: 95 segs × 3.2s video vs 95 segs × 2.0s audio", async () => {
+    // Exact reproduction of QA-reported ISM manifest bug
+    const masterText = `#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud_mp4a.40.2",NAME="Commentary",LANGUAGE="ru",DEFAULT=YES,URI="audio_15/stream.m3u8"
+#EXT-X-STREAM-INF:AUDIO="aud_mp4a.40.2",BANDWIDTH=651362,CODECS="avc1.4D4015,mp4a.40.2",RESOLUTION=480x270,FRAME-RATE=25
+video_1/stream.m3u8
+#EXT-X-STREAM-INF:AUDIO="aud_mp4a.40.2",BANDWIDTH=5309954,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,FRAME-RATE=25
+video_7/stream.m3u8
+`;
+    const master = parseHlsPlaylist(masterText);
+
+    // Video: 95 × 3.2s = 304s
+    const videoSegs = Array.from({ length: 95 }, (_, i) => segment(3.2, `s-${i + 1}.m4s`));
+    const videoPlaylist = mediaPlaylist(videoSegs, { targetDuration: 4, version: 6, extra: '#EXT-X-MAP:URI="s-0.m4s"' });
+
+    // Audio: 95 × 2.0s = 190s (pattern: 3× 2.005330 + 1× 1.983997)
+    const audioSegs: string[] = [];
+    for (let i = 0; i < 95; i++) {
+      const dur = (i % 4 === 3) ? 1.983997 : 2.005330;
+      audioSegs.push(segment(dur, `s-${i + 1}.m4s`));
+    }
+    const audioPlaylist = mediaPlaylist(audioSegs, { targetDuration: 2, version: 6, extra: '#EXT-X-MAP:URI="s-0.m4s"' });
+
+    const children: Record<string, string> = {
+      "http://cdn/video_1/stream.m3u8": videoPlaylist,
+      "http://cdn/video_7/stream.m3u8": videoPlaylist,
+      "http://cdn/audio_15/stream.m3u8": audioPlaylist,
+    };
+    const fetchFn = async (url: string) => {
+      if (url in children) return children[url];
+      throw new Error("not found");
+    };
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+
+    // HLS-209: Audio/video duration mismatch
+    const hls209 = issues.filter((i) => i.id === "HLS-209");
+    expect(hls209).toHaveLength(1);
+    expect(hls209[0].severity).toBe("error");
+    expect(hls209[0].message).toContain("114");
+    expect(hls209[0].detail).toContain("audio");
+    expect(hls209[0].detail).toContain("480x270");
   });
 });
