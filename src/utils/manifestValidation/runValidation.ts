@@ -4,6 +4,7 @@ import { validateTimelines, extractTimelinesFromShaka } from "./timelineValidato
 import { validateBmff, extractStreamsFromShaka } from "./bmffValidator";
 import { validateCodecs } from "./codecValidator";
 import { parseMpd, validateDash } from "./dashValidator";
+import { parseHlsPlaylist, validateHls, fetchAndValidateHlsChildren } from "./hlsValidator";
 import { scanSegments, extractScanTracksFromShaka } from "./segmentScanner";
 import type { ScanProgress, DeepScanResult } from "./segmentScanner";
 
@@ -32,8 +33,18 @@ export async function runValidation(
     dashIssues = validateDash(parseMpd(rawManifestText));
   }
 
+  // Stage 1b: HLS validation (line-based text checks, no fetching)
+  let hlsIssues: ValidationIssue[] = [];
+  const parsedHls =
+    manifestType === "HLS" && rawManifestText
+      ? parseHlsPlaylist(rawManifestText)
+      : null;
+  if (parsedHls) {
+    hlsIssues = validateHls(parsedHls);
+  }
+
   // Report Stage 1 + 1b results immediately
-  const stage1Issues = [...timelineIssues, ...dashIssues];
+  const stage1Issues = [...timelineIssues, ...dashIssues, ...hlsIssues];
   if (onProgress) onProgress(stage1Issues);
 
   // Stage 2: BMFF + Codec validation (fetches init segments)
@@ -44,7 +55,21 @@ export async function runValidation(
     return resp.arrayBuffer();
   };
 
-  const [bmffIssues, codecIssues] = await Promise.all([
+  const textFetch = async (url: string): Promise<string> => {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+    return resp.text();
+  };
+
+  const hlsChildPromise =
+    parsedHls && manifestType === "HLS"
+      ? fetchAndValidateHlsChildren(parsedHls, manifestUrl, textFetch).catch((e) => {
+          console.warn("[ManifestValidator] HLS child validation failed:", e);
+          return [] as ValidationIssue[];
+        })
+      : Promise.resolve([] as ValidationIssue[]);
+
+  const [bmffIssues, codecIssues, hlsChildIssues] = await Promise.all([
     validateBmff(streams, fetchInit).catch((e) => {
       console.warn("[ManifestValidator] BMFF validation failed:", e);
       return [] as ValidationIssue[];
@@ -56,9 +81,10 @@ export async function runValidation(
       console.warn("[ManifestValidator] Codec validation failed:", e);
       return [] as ValidationIssue[];
     }),
+    hlsChildPromise,
   ]);
 
-  const issues = [...timelineIssues, ...dashIssues, ...bmffIssues, ...codecIssues];
+  const issues = [...timelineIssues, ...dashIssues, ...hlsIssues, ...bmffIssues, ...codecIssues, ...hlsChildIssues];
   const duration = performance.now() - start;
 
   return {

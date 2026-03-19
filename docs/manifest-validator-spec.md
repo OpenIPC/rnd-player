@@ -364,8 +364,10 @@ src/
       segmentScanner.test.ts           — 20 unit tests (synthetic BMFF segments)
       reportExport.ts                  — Text + HTML report generation (clipboard copy, print-to-PDF)
       dashValidator.ts                 — [Stage 4] MPD XML structure + DASH-IF IOP checks
-      hlsValidator.ts                  — [Stage 4] HLS playlist text parsing + RFC 8216 checks
-      compatValidator.ts               — [Stage 4] Cross-platform compatibility warnings
+      dashValidator.test.ts            — 52 unit tests
+      hlsValidator.ts                  — [Stage 4] HLS m3u8 line-based parser + RFC 8216 checks
+      hlsValidator.test.ts             — 54 unit tests
+      compatValidator.ts               — [Stage 4] Cross-platform compatibility warnings (not yet implemented)
   types/
     moduleConfig.ts                    — manifestValidator field added
 ```
@@ -415,20 +417,23 @@ User loads manifest
          │   extractTimelinesFromShaka(player)
          │   └─ validateTimelines(timelines) → TL-001..TL-006
          │
-         ├─ Stage 1b (instant, no fetching — DASH MPD XML checks):
-         │   parseMpd(rawManifestText)
-         │   └─ validateDash(mpd) → DASH-001..DASH-007, DASH-102..DASH-106, DASH-112, DASH-113
-         │   └─ onProgress(timelineIssues + dashIssues) → panel shows results immediately
+         ├─ Stage 1b (instant, no fetching — manifest text checks):
+         │   ├─ [DASH] parseMpd(rawManifestText)
+         │   │   └─ validateDash(mpd) → DASH-001..DASH-007, DASH-102..DASH-106, DASH-112, DASH-113
+         │   └─ [HLS] parseHlsPlaylist(rawManifestText)
+         │       └─ validateHls(playlist) → HLS-001..HLS-008, HLS-101..HLS-109, HLS-201..HLS-208
+         │   └─ onProgress(timelineIssues + dashIssues + hlsIssues) → panel shows results immediately
          │
-         ├─ Stage 2 (fetches init segments, parallel):
+         ├─ Stage 2 (fetches init segments + child playlists, parallel):
          │   extractStreamsFromShaka(player) → stream info + init URLs
          │   ├─ validateBmff(streams, fetch) → BMFF-001..BMFF-011
          │   │   └─ mp4box parse → ftyp/moov/mvex/tenc/schm checks
-         │   └─ validateCodecs(streams, fetch) → CS-001, CS-003, CS-007
-         │       └─ mp4box parse → stsd sample entry comparison
+         │   ├─ validateCodecs(streams, fetch) → CS-001, CS-003, CS-007
+         │   │   └─ mp4box parse → stsd sample entry comparison
+         │   └─ [HLS] fetchAndValidateHlsChildren(playlist, baseUrl, fetch) → HLS-003..HLS-208, HLS-206
+         │       └─ fetch child m3u8 → parse → validate each + cross-rendition discontinuity check
          │
          ├─ [Stage 3] segmentScanner — media segment deep scan (on-demand)
-         ├─ [Stage 4] hlsValidator — HLS manifest text parsing (not yet implemented)
          └─ [Stage 4] compatValidator — cross-platform warnings (not yet implemented)
          │
          ▼
@@ -604,7 +609,7 @@ User loads manifest
 - "[View segment details →]" expandable table showing per-sample senc vs trun comparison
 - Web Worker for scanning many segments (current main-thread async/await is fine for small N)
 
-### Stage 4 — DASH/HLS Manifest Text Validation (DASH partial)
+### Stage 4 — DASH/HLS Manifest Text Validation (DASH + HLS implemented)
 
 **Goal**: Parse raw manifest text for spec compliance. These are pure text/XML checks that complement the structural checks from earlier stages.
 
@@ -630,19 +635,32 @@ User loads manifest
 
 **Not yet implemented (DASH):** DASH-101, DASH-107 through DASH-110, DASH-201 through DASH-205, DASH-301 through DASH-305
 
-**HLS validator (not yet implemented):**
+**HLS validator (implemented):**
 
-3. **Implement `hlsValidator.ts`**
-   - Lightweight line-based parser for m3u8 format (Shaka doesn't expose raw AST)
-   - Extract tags, attribute-lists, segment URIs, EXTINF durations
-   - Playlist-level checks: HLS-001 through HLS-008
-   - Multivariant playlist checks: HLS-101 through HLS-109
-   - Segment-level checks: HLS-201 through HLS-208
-   - For bitrate accuracy checks (HLS-203, HLS-204): use measured bitrates from `useBitrateGraph.ts` if available
+3. **`hlsValidator.ts`** — pure validation module (no Shaka dependency)
+   - `parseHlsPlaylist(text)` — line-based m3u8 parser with state-machine attribute-list parsing (handles commas inside quoted strings, e.g. `CODECS="avc1.4d401f,mp4a.40.2"`)
+   - Detects multivariant vs media playlist, BOM, control characters, duplicate attributes, EXT-X-VERSION consistency
+   - `validateHls(playlist)` — Phase 1 checks (instant, no fetching):
+     - Playlist-level: HLS-001 through HLS-008 (EXTM3U, VERSION, mixed playlist type, BOM, duplicate attrs)
+     - Multivariant: HLS-101 through HLS-109 (BANDWIDTH, CODECS, RESOLUTION, FRAME-RATE, MEDIA tag validation, dangling group refs, I-frame playlists, cellular variant)
+     - Media playlist: HLS-003, HLS-006, HLS-007, HLS-201, HLS-205, HLS-207, HLS-208 (TARGETDURATION, tag ordering, segment duration, byte-range, live playlist depth, fMP4 EXT-X-MAP)
+   - `validateHlsMediaPlaylist(media)` — validates fetched child playlists with source label prefix
+   - `fetchAndValidateHlsChildren(playlist, baseUrl, fetchFn)` — Phase 2: fetches child media playlists, validates each, and runs cross-rendition checks:
+     - **HLS-206**: Discontinuity count mismatch across renditions
+   - Skipped rules (require segment byte fetching): HLS-202, HLS-203, HLS-204
+   - Runs in Stage 1b (multivariant text checks) + Stage 2 (child playlist fetching in `Promise.all` alongside BMFF/codec)
 
-4. **Unit tests** with sample m3u8 playlists (valid and intentionally broken)
+4. **54 unit tests** in `hlsValidator.test.ts`:
+   - Parser tests: attribute parsing, RESOLUTION, quoted commas, BOM, multivariant/media detection, I-frame stream infs, duplicate attributes, FRAME-RATE, EXT-X-VERSION
+   - Structural checks: HLS-001 through HLS-008
+   - Multivariant checks: HLS-101 through HLS-109
+   - Media playlist checks: HLS-003, HLS-006, HLS-007, HLS-201, HLS-205, HLS-207, HLS-208
+   - Cross-rendition checks: HLS-206 discontinuity count mismatch (match, mismatch, fetch failure)
+   - QA regression scenarios: realistic multivariant with duration-mismatched variants, child playlist with segment exceeding TARGETDURATION
 
-**Compatibility validator:**
+**Files:** `hlsValidator.ts` (parser + validator), `hlsValidator.test.ts` (54 tests), `runValidation.ts` (Stage 1b + Stage 2 orchestration)
+
+**Compatibility validator (not yet implemented):**
 
 5. **Implement `compatValidator.ts`**
    - Pure logic based on manifest type + codec strings + encryption scheme
