@@ -431,8 +431,8 @@ User loads manifest
          │   │   └─ mp4box parse → ftyp/moov/mvex/tenc/schm checks
          │   ├─ validateCodecs(streams, fetch) → CS-001, CS-003, CS-007
          │   │   └─ mp4box parse → stsd sample entry comparison
-         │   └─ [HLS] fetchAndValidateHlsChildren(playlist, baseUrl, fetch) → HLS-003..HLS-208, HLS-206
-         │       └─ fetch child m3u8 → parse → validate each + cross-rendition discontinuity check
+         │   └─ [HLS] fetchAndValidateHlsChildren(playlist, baseUrl, fetch) → HLS-003..HLS-209, HLS-206, HLS-209
+         │       └─ fetch child m3u8 → parse → validate each + cross-rendition checks
          │
          ├─ [Stage 3] segmentScanner — media segment deep scan (on-demand)
          └─ [Stage 4] compatValidator — cross-platform warnings (not yet implemented)
@@ -661,7 +661,7 @@ User loads manifest
    - HLS-209 audio/video duration mismatch (ISM bug pattern, matching durations, small diff tolerance)
    - QA regression scenarios: realistic multivariant with duration-mismatched variants, child playlist with segment exceeding TARGETDURATION, ISM origin 95×3.2s video vs 95×2.0s audio reproduction
 
-**Files:** `hlsValidator.ts` (parser + validator), `hlsValidator.test.ts` (54 tests), `runValidation.ts` (Stage 1b + Stage 2 orchestration)
+**Files:** `hlsValidator.ts` (parser + validator), `hlsValidator.test.ts` (58 tests), `runValidation.ts` (Stage 1b + Stage 2 orchestration)
 
 **Compatibility validator (not yet implemented):**
 
