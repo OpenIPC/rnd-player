@@ -59,6 +59,11 @@ struct QpContext {
   int qp_frame_sizes[MAX_QP_FRAMES];
   int qp_frame_count;
   int multi_frame_mode;
+  /* Prediction mode cache: 0=intra, 1=inter, 2=skip */
+  uint8_t *mode_cache;
+  int mode_cache_size;
+  uint8_t *mode_frames[MAX_QP_FRAMES];
+  int mode_frame_sizes[MAX_QP_FRAMES];
 };
 
 /* -- Active context & output buffer (for error recovery and frame callback) -- */
@@ -77,6 +82,10 @@ static struct {
   int height_blocks;  /* offset 12: height in 8x8 blocks */
 } g_error_recovery = {0, 0, 0, 0};
 
+/* -- Capture QP+mode values from a specific picture -- */
+
+static void capture_qp_from_pic(QpContext *ctx, TComPic *pic);
+
 /* -- Capture QP values from the picture list -- */
 
 static void capture_qp_from_list(QpContext *ctx, TComList<TComPic*> *pcListPic) {
@@ -90,6 +99,11 @@ static void capture_qp_from_list(QpContext *ctx, TComList<TComPic*> *pcListPic) 
       pic = p;
     }
   }
+  if (!pic) return;
+  capture_qp_from_pic(ctx, pic);
+}
+
+static void capture_qp_from_pic(QpContext *ctx, TComPic *pic) {
   if (!pic) return;
 
   TComPicSym *picSym = pic->getPicSym();
@@ -115,6 +129,17 @@ static void capture_qp_from_list(QpContext *ctx, TComList<TComPic*> *pcListPic) 
       return;
     }
     ctx->qp_cache_size = totalBlocks;
+  }
+
+  /* Ensure mode cache is large enough */
+  if (totalBlocks > ctx->mode_cache_size) {
+    free(ctx->mode_cache);
+    ctx->mode_cache = (uint8_t *)malloc(totalBlocks);
+    if (!ctx->mode_cache) {
+      ctx->mode_cache_size = 0;
+      return;
+    }
+    ctx->mode_cache_size = totalBlocks;
   }
 
   /* Extract QP at 8x8 granularity.
@@ -179,6 +204,16 @@ static void capture_qp_from_list(QpContext *ctx, TComList<TComPic*> *pcListPic) 
       if (qp > 51) qp = 51;
 
       ctx->qp_cache[by * widthBlocks + bx] = (uint8_t)qp;
+
+      /* Prediction mode from slice type (frame-level).
+       * Per-block getPredictionMode()/isSkipped() requires all pictures to be
+       * fully decoded, but HM only reconstructs ~3 pictures from a DASH segment.
+       * The JS worker determines per-sample modes from NALU types instead. */
+      if (ctx->mode_cache) {
+        TComSlice *sl = pic->getSlice(0);
+        ctx->mode_cache[by * widthBlocks + bx] =
+          (sl && sl->getSliceType() == I_SLICE) ? 0 : 1;
+      }
     }
   }
 
@@ -198,9 +233,14 @@ static void maybe_append_multi_frame(QpContext *ctx) {
     if (total > 0) {
       int idx = ctx->qp_frame_count;
       ctx->qp_frames[idx] = (uint8_t *)malloc(total);
+      ctx->mode_frames[idx] = (uint8_t *)malloc(total);
       if (ctx->qp_frames[idx]) {
         memcpy(ctx->qp_frames[idx], ctx->qp_cache, total);
         ctx->qp_frame_sizes[idx] = total;
+        if (ctx->mode_frames[idx] && ctx->mode_cache) {
+          memcpy(ctx->mode_frames[idx], ctx->mode_cache, total);
+          ctx->mode_frame_sizes[idx] = total;
+        }
         ctx->qp_frame_count++;
       }
     }
@@ -214,15 +254,23 @@ extern "C" void hm265_on_frame_output(void) {
   }
 }
 
-/**
- * Called from patched xFlushOutput() in TAppDecTop.cpp when flushing remaining frames.
- * The patch sets g_current_pic_list before calling this.
- */
 extern "C" void hm265_on_flush_output(void) {
   if (g_active_ctx && g_active_ctx->initialized && g_current_pic_list) {
     capture_qp_from_list(g_active_ctx, g_current_pic_list);
     maybe_append_multi_frame(g_active_ctx);
   }
+}
+
+/**
+ * Called per-picture from xWriteOutput/xFlushOutput loops, BEFORE the picture
+ * is destroyed. Captures pictures that weren't caught by the list-based callback.
+ */
+extern "C" void hm265_on_pic_output(TComPic *pic) {
+  if (!g_active_ctx || !g_active_ctx->initialized || !pic) return;
+  QpContext *ctx = g_active_ctx;
+
+  capture_qp_from_pic(ctx, pic);
+  maybe_append_multi_frame(ctx);
 }
 
 /* -- Exported API -- */
@@ -339,6 +387,8 @@ void hm265_qp_set_multi_frame(QpContext *ctx, int enable) {
   for (int i = 0; i < ctx->qp_frame_count; i++) {
     free(ctx->qp_frames[i]);
     ctx->qp_frames[i] = nullptr;
+    free(ctx->mode_frames[i]);
+    ctx->mode_frames[i] = nullptr;
   }
   ctx->qp_frame_count = 0;
 }
@@ -361,16 +411,45 @@ int hm265_qp_copy_frame_qps(QpContext *ctx, int frame_idx, uint8_t *out, int max
   return total;
 }
 
+/** Copy prediction modes from last decoded frame. */
+__attribute__((export_name("hm265_qp_copy_modes")))
+int hm265_qp_copy_modes(QpContext *ctx, uint8_t *out, int max_blocks) {
+  if (!ctx || !ctx->frame_ready || !ctx->mode_cache || !out) return 0;
+
+  int total = ctx->cached_width_blocks * ctx->cached_height_blocks;
+  if (total > max_blocks) total = max_blocks;
+  if (total > ctx->mode_cache_size) total = ctx->mode_cache_size;
+
+  memcpy(out, ctx->mode_cache, total);
+  return total;
+}
+
+/** Copy prediction modes for a specific frame index (multi-frame mode). */
+__attribute__((export_name("hm265_qp_copy_frame_modes")))
+int hm265_qp_copy_frame_modes(QpContext *ctx, int frame_idx, uint8_t *out, int max_blocks) {
+  if (!ctx || frame_idx < 0 || frame_idx >= ctx->qp_frame_count) return 0;
+  if (!ctx->mode_frames[frame_idx] || !out) return 0;
+
+  int total = ctx->mode_frame_sizes[frame_idx];
+  if (total > max_blocks) total = max_blocks;
+
+  memcpy(out, ctx->mode_frames[frame_idx], total);
+  return total;
+}
+
 __attribute__((export_name("hm265_qp_destroy")))
 void hm265_qp_destroy(QpContext *ctx) {
   if (!ctx) return;
 
   for (int i = 0; i < ctx->qp_frame_count; i++) {
     free(ctx->qp_frames[i]);
+    free(ctx->mode_frames[i]);
   }
 
   free(ctx->qp_cache);
+  free(ctx->mode_cache);
   ctx->qp_cache = nullptr;
+  ctx->mode_cache = nullptr;
   delete ctx;
 }
 

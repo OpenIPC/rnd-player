@@ -245,6 +245,7 @@ export default function VideoControls({
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showQpHeatmap, setShowQpHeatmap] = useState(false);
+  const [showPredModes, setShowPredModes] = useState(false);
   const [showFilmGrain, setShowFilmGrain] = useState(false);
   const [filmGrainParams, setFilmGrainParams] = useState<FilmGrainParams>(loadFilmGrainParams);
   const [validationErrorCount, setValidationErrorCount] = useState<number | undefined>(undefined);
@@ -274,7 +275,7 @@ export default function VideoControls({
   const trackAMeter = useTrackAMeter(videoEl, player, !!safariMSE, ec3Audio);
 
   // ── QP heatmap (H.264 macroblock QP visualization) ──
-  const qpHeatmap = useQpHeatmap(player, videoEl, showQpHeatmap && moduleConfig.qpHeatmap, !playing, clearKey);
+  const qpHeatmap = useQpHeatmap(player, videoEl, (showQpHeatmap || showPredModes) && moduleConfig.qpHeatmap, !playing, clearKey);
 
   // Identify active Track A in allAudioTracks (for AudioCompare filtering/sorting)
   const trackAId = useMemo(() => {
@@ -1634,6 +1635,10 @@ export default function VideoControls({
             setShowQpHeatmap((s) => !s);
             setContextMenu(null);
           } : undefined}
+          onTogglePredModes={moduleConfig.qpHeatmap && (qpHeatmap.isH264 || qpHeatmap.isH265 || qpHeatmap.isAv1) ? () => {
+            setShowPredModes((s) => !s);
+            setContextMenu(null);
+          } : undefined}
           onToggleFilmGrain={moduleConfig.filmGrain ? () => {
             setShowFilmGrain((s) => !s);
             setContextMenu(null);
@@ -1657,6 +1662,7 @@ export default function VideoControls({
           showCompare={!!showCompare}
           showFilmstrip={!!showFilmstrip}
           showQpHeatmap={showQpHeatmap}
+          showPredModes={showPredModes}
           showFilmGrain={showFilmGrain}
           showDrmDiagnostics={!!showDrmDiagnostics}
           showManifestValidator={!!showManifestValidator}
@@ -1778,11 +1784,15 @@ export default function VideoControls({
         </Suspense>
       )}
 
-      {/* QP heatmap overlay — portaled into video's parent (.vp-video-area), not full container */}
-      {moduleConfig.qpHeatmap && showQpHeatmap && qpHeatmap.data && videoEl.parentElement &&
+      {/* QP heatmap / prediction modes overlay — portaled into video's parent (.vp-video-area) */}
+      {moduleConfig.qpHeatmap && (showQpHeatmap || showPredModes) && qpHeatmap.data && videoEl.parentElement &&
         createPortal(
           <Suspense fallback={null}>
-            <QpHeatmapOverlay videoEl={videoEl} data={qpHeatmap.data} />
+            <QpHeatmapOverlay
+              videoEl={videoEl}
+              data={qpHeatmap.data}
+              displayMode={showQpHeatmap && showPredModes ? "both" : showPredModes ? "modes" : "qp"}
+            />
           </Suspense>,
           videoEl.parentElement
         )}

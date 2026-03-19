@@ -9,6 +9,7 @@ export interface QpHeatmapData {
   heightMbs: number;
   minQp: number;
   maxQp: number;
+  modeValues?: Uint8Array;
 }
 
 interface UseQpHeatmapResult {
@@ -126,6 +127,7 @@ export function useQpHeatmap(
       heightMbs: result.heightMbs,
       minQp: result.globalMinQp,
       maxQp: result.globalMaxQp,
+      modeValues: frame.modeValues,
     });
   }, []);
 

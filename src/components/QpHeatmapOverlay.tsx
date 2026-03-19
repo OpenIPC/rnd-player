@@ -1,9 +1,12 @@
 import { useEffect, useRef } from "react";
 import type { QpHeatmapData } from "../hooks/useQpHeatmap";
 
+export type QpDisplayMode = "qp" | "modes" | "both";
+
 interface QpHeatmapOverlayProps {
   videoEl: HTMLVideoElement;
   data: QpHeatmapData;
+  displayMode?: QpDisplayMode;
 }
 
 /**
@@ -33,6 +36,13 @@ function qpToColor(qp: number, minQp: number, maxQp: number): [number, number, n
   return [r, g, b];
 }
 
+/** Prediction mode → color: intra=yellow, inter=blue, skip=dark */
+function modeToColor(mode: number): [number, number, number] {
+  if (mode === 0) return [255, 220, 50];   // intra
+  if (mode === 2) return [40, 40, 40];     // skip
+  return [50, 120, 255];                    // inter
+}
+
 /**
  * Compute the video's rendered area within its container,
  * accounting for object-fit: contain letterboxing.
@@ -52,13 +62,47 @@ function getVideoRect(videoEl: HTMLVideoElement): {
   const scale = Math.min(containerW / videoW, containerH / videoH);
   const renderedW = videoW * scale;
   const renderedH = videoH * scale;
-  const x = (containerW - renderedW) / 2;
-  const y = (containerH - renderedH) / 2;
+  const xOff = (containerW - renderedW) / 2;
+  const yOff = (containerH - renderedH) / 2;
 
-  return { x, y, width: renderedW, height: renderedH };
+  return { x: xOff, y: yOff, width: renderedW, height: renderedH };
 }
 
-export default function QpHeatmapOverlay({ videoEl, data }: QpHeatmapOverlayProps) {
+function drawModeLegend(
+  ctx: CanvasRenderingContext2D,
+  legendX: number,
+  legendY: number,
+  legendW: number,
+) {
+  const legendH = 24;
+
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.beginPath();
+  ctx.roundRect(legendX, legendY, legendW, legendH, 4);
+  ctx.fill();
+
+  const labels: Array<{ label: string; color: string }> = [
+    { label: "Intra", color: "rgb(255,220,50)" },
+    { label: "Inter", color: "rgb(50,120,255)" },
+    { label: "Skip", color: "rgb(40,40,40)" },
+  ];
+
+  ctx.font = "9px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+
+  let cx = legendX + 6;
+  const cy = legendY + legendH / 2;
+  for (const { label, color } of labels) {
+    ctx.fillStyle = color;
+    ctx.fillRect(cx, cy - 4, 8, 8);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, cx + 10, cy);
+    cx += ctx.measureText(label).width + 18;
+  }
+}
+
+export default function QpHeatmapOverlay({ videoEl, data, displayMode = "qp" }: QpHeatmapOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -78,58 +122,145 @@ export default function QpHeatmapOverlay({ videoEl, data }: QpHeatmapOverlayProp
       ctx.clearRect(0, 0, containerW, containerH);
 
       const { x, y, width, height } = getVideoRect(videoEl);
-      const { qpValues, widthMbs, heightMbs, minQp, maxQp } = data;
+      const { qpValues, widthMbs, heightMbs, minQp, maxQp, modeValues } = data;
 
       const mbW = width / widthMbs;
       const mbH = height / heightMbs;
 
-      // Draw QP heatmap
-      ctx.globalAlpha = 0.5;
-      for (let row = 0; row < heightMbs; row++) {
-        for (let col = 0; col < widthMbs; col++) {
-          const idx = row * widthMbs + col;
-          if (idx >= qpValues.length) continue;
-          const qp = qpValues[idx];
-          const [r, g, b] = qpToColor(qp, minQp, maxQp);
-          ctx.fillStyle = `rgb(${r},${g},${b})`;
-          ctx.fillRect(x + col * mbW, y + row * mbH, Math.ceil(mbW), Math.ceil(mbH));
+      const showQp = displayMode === "qp" || displayMode === "both";
+      const showModes = (displayMode === "modes" || displayMode === "both") && modeValues;
+
+      // Draw QP heatmap or mode overlay
+      if (showQp && displayMode !== "both") {
+        ctx.globalAlpha = 0.5;
+        for (let row = 0; row < heightMbs; row++) {
+          for (let col = 0; col < widthMbs; col++) {
+            const idx = row * widthMbs + col;
+            if (idx >= qpValues.length) continue;
+            const qp = qpValues[idx];
+            const [r, g, b] = qpToColor(qp, minQp, maxQp);
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(x + col * mbW, y + row * mbH, Math.ceil(mbW), Math.ceil(mbH));
+          }
+        }
+      } else if (showModes && displayMode === "modes") {
+        ctx.globalAlpha = 0.5;
+        for (let row = 0; row < heightMbs; row++) {
+          for (let col = 0; col < widthMbs; col++) {
+            const idx = row * widthMbs + col;
+            if (idx >= modeValues.length) continue;
+            const [r, g, b] = modeToColor(modeValues[idx]);
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(x + col * mbW, y + row * mbH, Math.ceil(mbW), Math.ceil(mbH));
+          }
+        }
+      } else if (displayMode === "both") {
+        // QP heatmap with mode borders
+        ctx.globalAlpha = 0.5;
+        for (let row = 0; row < heightMbs; row++) {
+          for (let col = 0; col < widthMbs; col++) {
+            const idx = row * widthMbs + col;
+            if (idx >= qpValues.length) continue;
+            const qp = qpValues[idx];
+            const [r, g, b] = qpToColor(qp, minQp, maxQp);
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(x + col * mbW, y + row * mbH, Math.ceil(mbW), Math.ceil(mbH));
+          }
+        }
+        if (modeValues) {
+          ctx.globalAlpha = 0.8;
+          ctx.lineWidth = 1;
+          for (let row = 0; row < heightMbs; row++) {
+            for (let col = 0; col < widthMbs; col++) {
+              const idx = row * widthMbs + col;
+              if (idx >= modeValues.length) continue;
+              const [r, g, b] = modeToColor(modeValues[idx]);
+              ctx.strokeStyle = `rgb(${r},${g},${b})`;
+              ctx.strokeRect(x + col * mbW + 0.5, y + row * mbH + 0.5, mbW - 1, mbH - 1);
+            }
+          }
         }
       }
 
-      // Draw legend in bottom-right corner
+      // Draw legend
       ctx.globalAlpha = 1;
-      const legendW = 120;
-      const legendH = 44;
-      const legendX = x + width - legendW - 8;
-      const legendY = y + height - legendH - 8;
 
-      ctx.fillStyle = "rgba(0,0,0,0.7)";
-      ctx.beginPath();
-      ctx.roundRect(legendX, legendY, legendW, legendH, 4);
-      ctx.fill();
+      if (showQp && (!showModes || displayMode === "qp")) {
+        // QP gradient legend
+        const legendW = 120;
+        const legendH = 44;
+        const legendX = x + width - legendW - 8;
+        const legendY = y + height - legendH - 8;
 
-      // Color bar
-      const barX = legendX + 8;
-      const barY = legendY + 6;
-      const barW = legendW - 16;
-      const barH = 10;
-      const gradient = ctx.createLinearGradient(barX, 0, barX + barW, 0);
-      gradient.addColorStop(0, "rgb(0,0,255)");
-      gradient.addColorStop(0.25, "rgb(0,255,255)");
-      gradient.addColorStop(0.5, "rgb(0,255,0)");
-      gradient.addColorStop(0.75, "rgb(255,255,0)");
-      gradient.addColorStop(1, "rgb(255,0,0)");
-      ctx.fillStyle = gradient;
-      ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.beginPath();
+        ctx.roundRect(legendX, legendY, legendW, legendH, 4);
+        ctx.fill();
 
-      // QP range labels
-      ctx.fillStyle = "#fff";
-      ctx.font = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-      ctx.textBaseline = "top";
-      ctx.textAlign = "left";
-      ctx.fillText(`QP ${minQp}`, barX, barY + barH + 4);
-      ctx.textAlign = "right";
-      ctx.fillText(`${maxQp}`, barX + barW, barY + barH + 4);
+        const barX = legendX + 8;
+        const barY = legendY + 6;
+        const barW = legendW - 16;
+        const barH = 10;
+        const gradient = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+        gradient.addColorStop(0, "rgb(0,0,255)");
+        gradient.addColorStop(0.25, "rgb(0,255,255)");
+        gradient.addColorStop(0.5, "rgb(0,255,0)");
+        gradient.addColorStop(0.75, "rgb(255,255,0)");
+        gradient.addColorStop(1, "rgb(255,0,0)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(barX, barY, barW, barH);
+
+        ctx.fillStyle = "#fff";
+        ctx.font = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+        ctx.textBaseline = "top";
+        ctx.textAlign = "left";
+        ctx.fillText(`QP ${minQp}`, barX, barY + barH + 4);
+        ctx.textAlign = "right";
+        ctx.fillText(`${maxQp}`, barX + barW, barY + barH + 4);
+      } else if (showModes && displayMode === "modes") {
+        // Mode legend
+        const legendW = 150;
+        const legendX = x + width - legendW - 8;
+        const legendY = y + height - 32;
+        drawModeLegend(ctx, legendX, legendY, legendW);
+      } else if (displayMode === "both") {
+        // QP legend + mode legend stacked
+        const qpLegendW = 120;
+        const qpLegendH = 44;
+        const qpLegendX = x + width - qpLegendW - 8;
+        const modeLegendW = 150;
+        const modeLegendX = x + width - modeLegendW - 8;
+        const modeLegendY = y + height - 32;
+        const qpLegendY = modeLegendY - qpLegendH - 4;
+
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.beginPath();
+        ctx.roundRect(qpLegendX, qpLegendY, qpLegendW, qpLegendH, 4);
+        ctx.fill();
+
+        const barX = qpLegendX + 8;
+        const barY = qpLegendY + 6;
+        const barW = qpLegendW - 16;
+        const barH = 10;
+        const gradient = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+        gradient.addColorStop(0, "rgb(0,0,255)");
+        gradient.addColorStop(0.25, "rgb(0,255,255)");
+        gradient.addColorStop(0.5, "rgb(0,255,0)");
+        gradient.addColorStop(0.75, "rgb(255,255,0)");
+        gradient.addColorStop(1, "rgb(255,0,0)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(barX, barY, barW, barH);
+
+        ctx.fillStyle = "#fff";
+        ctx.font = "10px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+        ctx.textBaseline = "top";
+        ctx.textAlign = "left";
+        ctx.fillText(`QP ${minQp}`, barX, barY + barH + 4);
+        ctx.textAlign = "right";
+        ctx.fillText(`${maxQp}`, barX + barW, barY + barH + 4);
+
+        drawModeLegend(ctx, modeLegendX, modeLegendY, modeLegendW);
+      }
     };
 
     draw();
@@ -138,7 +269,7 @@ export default function QpHeatmapOverlay({ videoEl, data }: QpHeatmapOverlayProp
     const observer = new ResizeObserver(draw);
     observer.observe(videoEl);
     return () => observer.disconnect();
-  }, [videoEl, data]);
+  }, [videoEl, data, displayMode]);
 
   return (
     <canvas

@@ -295,6 +295,22 @@ export function QpHeatmapIcon() {
   );
 }
 
+export function PredModesIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 20 20" fill="currentColor">
+      <rect x="1" y="1" width="5" height="5" rx="0.8" fill="rgb(255,220,50)" />
+      <rect x="7.5" y="1" width="5" height="5" rx="0.8" fill="rgb(50,120,255)" />
+      <rect x="14" y="1" width="5" height="5" rx="0.8" fill="rgb(40,40,40)" />
+      <rect x="1" y="7.5" width="5" height="5" rx="0.8" fill="rgb(50,120,255)" />
+      <rect x="7.5" y="7.5" width="5" height="5" rx="0.8" fill="rgb(40,40,40)" />
+      <rect x="14" y="7.5" width="5" height="5" rx="0.8" fill="rgb(50,120,255)" />
+      <rect x="1" y="14" width="5" height="5" rx="0.8" fill="rgb(255,220,50)" />
+      <rect x="7.5" y="14" width="5" height="5" rx="0.8" fill="rgb(50,120,255)" />
+      <rect x="14" y="14" width="5" height="5" rx="0.8" fill="rgb(40,40,40)" />
+    </svg>
+  );
+}
+
 export function ManifestValidatorIcon() {
   return (
     <svg {...svgProps} fill="none" stroke="currentColor" strokeWidth="1.8">

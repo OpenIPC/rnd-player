@@ -60,6 +60,11 @@ typedef struct {
     int qp_frame_sizes[MAX_QP_FRAMES];
     int qp_frame_count;
     int multi_frame_mode;
+    /* Prediction mode cache: 0=intra, 1=inter, 2=skip */
+    uint8_t *mode_cache;
+    int mode_cache_size;
+    uint8_t *mode_frames[MAX_QP_FRAMES];
+    int mode_frame_sizes[MAX_QP_FRAMES];
 } QpContext;
 
 /* ── Active context & output buffer (for error recovery and frame callback) ── */
@@ -102,9 +107,27 @@ static void capture_qp_map(QpContext *ctx) {
         ctx->qp_cache_size = total;
     }
 
-    /* Copy QP values — mb_data is a flat array in raster scan order */
+    /* Ensure mode cache is large enough */
+    if (total > ctx->mode_cache_size) {
+        free(ctx->mode_cache);
+        ctx->mode_cache = (uint8_t *)malloc(total);
+        if (!ctx->mode_cache) {
+            ctx->mode_cache_size = 0;
+            return;
+        }
+        ctx->mode_cache_size = total;
+    }
+
+    /* Copy QP values and prediction modes — mb_data is a flat array in raster scan order */
     for (int i = 0; i < total; i++) {
         ctx->qp_cache[i] = (uint8_t)p_Vid->mb_data[i].qp;
+        if (p_Vid->mb_data[i].skip_flag) {
+            ctx->mode_cache[i] = 2;  /* skip */
+        } else if (p_Vid->mb_data[i].is_intra_block) {
+            ctx->mode_cache[i] = 0;  /* intra */
+        } else {
+            ctx->mode_cache[i] = 1;  /* inter */
+        }
     }
 
     ctx->cached_width_mbs = w;
@@ -128,9 +151,14 @@ void jm264_on_frame_decoded(void) {
                 if (total > 0) {
                     int idx = g_active_ctx->qp_frame_count;
                     g_active_ctx->qp_frames[idx] = (uint8_t *)malloc(total);
+                    g_active_ctx->mode_frames[idx] = (uint8_t *)malloc(total);
                     if (g_active_ctx->qp_frames[idx]) {
                         memcpy(g_active_ctx->qp_frames[idx], g_active_ctx->qp_cache, total);
                         g_active_ctx->qp_frame_sizes[idx] = total;
+                        if (g_active_ctx->mode_frames[idx] && g_active_ctx->mode_cache) {
+                            memcpy(g_active_ctx->mode_frames[idx], g_active_ctx->mode_cache, total);
+                            g_active_ctx->mode_frame_sizes[idx] = total;
+                        }
                         g_active_ctx->qp_frame_count++;
                     }
                 }
@@ -351,6 +379,8 @@ void jm264_qp_set_multi_frame(QpContext *ctx, int enable) {
     for (int i = 0; i < ctx->qp_frame_count; i++) {
         free(ctx->qp_frames[i]);
         ctx->qp_frames[i] = NULL;
+        free(ctx->mode_frames[i]);
+        ctx->mode_frames[i] = NULL;
     }
     ctx->qp_frame_count = 0;
 }
@@ -375,6 +405,32 @@ int jm264_qp_copy_frame_qps(QpContext *ctx, int frame_idx, uint8_t *out, int max
     return total;
 }
 
+/** Copy prediction modes from last decoded frame. */
+__attribute__((export_name("jm264_qp_copy_modes")))
+int jm264_qp_copy_modes(QpContext *ctx, uint8_t *out, int max_mbs) {
+    if (!ctx || !ctx->frame_ready || !ctx->mode_cache || !out) return 0;
+
+    int total = ctx->cached_width_mbs * ctx->cached_height_mbs;
+    if (total > max_mbs) total = max_mbs;
+    if (total > ctx->mode_cache_size) total = ctx->mode_cache_size;
+
+    memcpy(out, ctx->mode_cache, total);
+    return total;
+}
+
+/** Copy prediction modes for a specific frame index (multi-frame mode). */
+__attribute__((export_name("jm264_qp_copy_frame_modes")))
+int jm264_qp_copy_frame_modes(QpContext *ctx, int frame_idx, uint8_t *out, int max_mbs) {
+    if (!ctx || frame_idx < 0 || frame_idx >= ctx->qp_frame_count) return 0;
+    if (!ctx->mode_frames[frame_idx] || !out) return 0;
+
+    int total = ctx->mode_frame_sizes[frame_idx];
+    if (total > max_mbs) total = max_mbs;
+
+    memcpy(out, ctx->mode_frames[frame_idx], total);
+    return total;
+}
+
 __attribute__((export_name("jm264_qp_destroy")))
 void jm264_qp_destroy(QpContext *ctx) {
     if (!ctx) return;
@@ -383,12 +439,14 @@ void jm264_qp_destroy(QpContext *ctx) {
         CloseDecoder();
     }
 
-    /* Free multi-frame QP caches */
+    /* Free multi-frame QP and mode caches */
     for (int i = 0; i < ctx->qp_frame_count; i++) {
         free(ctx->qp_frames[i]);
+        free(ctx->mode_frames[i]);
     }
 
     free(ctx->qp_cache);
+    free(ctx->mode_cache);
     free(ctx);
 }
 

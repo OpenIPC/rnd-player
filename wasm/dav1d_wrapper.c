@@ -63,6 +63,13 @@ struct QpContext {
   int qp_frame_sizes[MAX_QP_FRAMES];
   int qp_frame_count;
   int multi_frame_mode;
+  /* Prediction mode cache: 0=intra, 1=inter, 2=skip */
+  uint8_t *mode_cache;
+  int mode_cache_size;
+  uint8_t *mode_frames[MAX_QP_FRAMES];
+  int mode_frame_sizes[MAX_QP_FRAMES];
+  /* Frame-level prediction type from last decoded picture */
+  int last_frame_is_key;
 };
 
 /* ── Error recovery struct ── */
@@ -99,8 +106,22 @@ static void expand_sb_to_8x8(struct QpContext *ctx) {
     ctx->qp_cache_size = totalBlocks;
   }
 
+  /* Ensure mode cache is large enough */
+  if (totalBlocks > ctx->mode_cache_size) {
+    free(ctx->mode_cache);
+    ctx->mode_cache = (uint8_t *)malloc(totalBlocks);
+    if (!ctx->mode_cache) {
+      ctx->mode_cache_size = 0;
+      return;
+    }
+    ctx->mode_cache_size = totalBlocks;
+  }
+
   /* Expand: each SB covers (sb_size/8) x (sb_size/8) blocks of 8x8 */
   int blocksPerSb = g_qp_sb_size / 8;
+
+  /* Frame-level prediction mode: key frame → intra (0), inter frame → inter (1) */
+  uint8_t frameMode = ctx->last_frame_is_key ? 0 : 1;
 
   for (int by = 0; by < heightBlocks; by++) {
     for (int bx = 0; bx < widthBlocks; bx++) {
@@ -117,6 +138,9 @@ static void expand_sb_to_8x8(struct QpContext *ctx) {
       if (idx >= MAX_SB_GRID) idx = MAX_SB_GRID - 1;
 
       ctx->qp_cache[by * widthBlocks + bx] = g_qp_sb_grid[idx];
+      if (ctx->mode_cache) {
+        ctx->mode_cache[by * widthBlocks + bx] = frameMode;
+      }
     }
   }
 
@@ -132,9 +156,14 @@ static void maybe_append_multi_frame(struct QpContext *ctx) {
     if (total > 0) {
       int idx = ctx->qp_frame_count;
       ctx->qp_frames[idx] = (uint8_t *)malloc(total);
+      ctx->mode_frames[idx] = (uint8_t *)malloc(total);
       if (ctx->qp_frames[idx]) {
         memcpy(ctx->qp_frames[idx], ctx->qp_cache, total);
         ctx->qp_frame_sizes[idx] = total;
+        if (ctx->mode_frames[idx] && ctx->mode_cache) {
+          memcpy(ctx->mode_frames[idx], ctx->mode_cache, total);
+          ctx->mode_frame_sizes[idx] = total;
+        }
         ctx->qp_frame_count++;
       }
     }
@@ -226,6 +255,7 @@ int dav1d_qp_decode(struct QpContext *ctx, const uint8_t *obu_buf, int len) {
       if (res == 0) {
         g_qp_frame_w = pic.p.w;
         g_qp_frame_h = pic.p.h;
+        ctx->last_frame_is_key = (pic.frame_hdr && pic.frame_hdr->frame_type == DAV1D_FRAME_TYPE_KEY) ? 1 : 0;
         expand_sb_to_8x8(ctx);
         maybe_append_multi_frame(ctx);
         dav1d_picture_unref(&pic);
@@ -247,6 +277,7 @@ int dav1d_qp_decode(struct QpContext *ctx, const uint8_t *obu_buf, int len) {
       if (drain_res == 0) {
         g_qp_frame_w = pic.p.w;
         g_qp_frame_h = pic.p.h;
+        ctx->last_frame_is_key = (pic.frame_hdr && pic.frame_hdr->frame_type == DAV1D_FRAME_TYPE_KEY) ? 1 : 0;
         expand_sb_to_8x8(ctx);
         maybe_append_multi_frame(ctx);
         dav1d_picture_unref(&pic);
@@ -274,6 +305,7 @@ int dav1d_qp_flush(struct QpContext *ctx) {
     if (res == 0) {
       g_qp_frame_w = pic.p.w;
       g_qp_frame_h = pic.p.h;
+      ctx->last_frame_is_key = (pic.frame_hdr && pic.frame_hdr->frame_type == DAV1D_FRAME_TYPE_KEY) ? 1 : 0;
       expand_sb_to_8x8(ctx);
       maybe_append_multi_frame(ctx);
       dav1d_picture_unref(&pic);
@@ -322,6 +354,8 @@ void dav1d_qp_set_multi_frame(struct QpContext *ctx, int enable) {
   for (int i = 0; i < ctx->qp_frame_count; i++) {
     free(ctx->qp_frames[i]);
     ctx->qp_frames[i] = NULL;
+    free(ctx->mode_frames[i]);
+    ctx->mode_frames[i] = NULL;
   }
   ctx->qp_frame_count = 0;
 }
@@ -344,6 +378,32 @@ int dav1d_qp_copy_frame_qps(struct QpContext *ctx, int frame_idx, uint8_t *out, 
   return total;
 }
 
+/** Copy prediction modes from last decoded frame. */
+__attribute__((export_name("dav1d_qp_copy_modes")))
+int dav1d_qp_copy_modes(struct QpContext *ctx, uint8_t *out, int max_blocks) {
+  if (!ctx || !ctx->frame_ready || !ctx->mode_cache || !out) return 0;
+
+  int total = ctx->cached_width_blocks * ctx->cached_height_blocks;
+  if (total > max_blocks) total = max_blocks;
+  if (total > ctx->mode_cache_size) total = ctx->mode_cache_size;
+
+  memcpy(out, ctx->mode_cache, total);
+  return total;
+}
+
+/** Copy prediction modes for a specific frame index (multi-frame mode). */
+__attribute__((export_name("dav1d_qp_copy_frame_modes")))
+int dav1d_qp_copy_frame_modes(struct QpContext *ctx, int frame_idx, uint8_t *out, int max_blocks) {
+  if (!ctx || frame_idx < 0 || frame_idx >= ctx->qp_frame_count) return 0;
+  if (!ctx->mode_frames[frame_idx] || !out) return 0;
+
+  int total = ctx->mode_frame_sizes[frame_idx];
+  if (total > max_blocks) total = max_blocks;
+
+  memcpy(out, ctx->mode_frames[frame_idx], total);
+  return total;
+}
+
 __attribute__((export_name("dav1d_qp_destroy")))
 void dav1d_qp_destroy(struct QpContext *ctx) {
   if (!ctx) return;
@@ -353,9 +413,12 @@ void dav1d_qp_destroy(struct QpContext *ctx) {
   }
   for (int i = 0; i < ctx->qp_frame_count; i++) {
     free(ctx->qp_frames[i]);
+    free(ctx->mode_frames[i]);
   }
   free(ctx->qp_cache);
+  free(ctx->mode_cache);
   ctx->qp_cache = NULL;
+  ctx->mode_cache = NULL;
   free(ctx);
 }
 

@@ -2753,6 +2753,33 @@ video::-webkit-media-text-track-container {
   color: rgba(255, 255, 255, 0.4);
 }
 
+/* ── Prediction mode toggle + legend ── */
+
+.vp-segment-mode-toggle-active {
+  background: rgba(255, 200, 50, 0.25);
+  color: rgb(255, 220, 100);
+  border-color: rgba(255, 200, 50, 0.4);
+}
+
+.vp-segment-mode-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 16px;
+  font-size: 10px;
+  font-family: monospace;
+  color: rgba(255, 255, 255, 0.5);
+  flex-shrink: 0;
+}
+
+.vp-segment-mode-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
 /* ── QP heatmap overlay on frame thumbnail ── */
 
 .vp-segment-frame-qp-canvas {

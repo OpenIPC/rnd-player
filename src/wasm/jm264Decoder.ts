@@ -44,6 +44,10 @@ export interface Jm264QpInstance {
   getFrameCount(): number;
   /** Copy QP values for a specific frame index (multi-frame mode). */
   copyFrameQps(index: number): { qpValues: Uint8Array; count: number };
+  /** Copy prediction modes (0=intra, 1=inter, 2=skip) from last decoded frame. */
+  copyModes(): { modeValues: Uint8Array; count: number };
+  /** Copy prediction modes for a specific frame index (multi-frame mode). */
+  copyFrameModes(index: number): { modeValues: Uint8Array; count: number };
   /** True after WasiExit (error during decode) — instance is no longer usable. */
   readonly destroyed: boolean;
   /** Release all resources. */
@@ -67,6 +71,8 @@ interface WasmExports {
   jm264_qp_set_multi_frame: (ctx: number, enable: number) => void;
   jm264_qp_get_frame_count: (ctx: number) => number;
   jm264_qp_copy_frame_qps: (ctx: number, frameIdx: number, out: number, max: number) => number;
+  jm264_qp_copy_modes: (ctx: number, out: number, max: number) => number;
+  jm264_qp_copy_frame_modes: (ctx: number, frameIdx: number, out: number, max: number) => number;
 }
 
 /** Max Annex B buffer size (8MB should cover any segment's worth of NALUs). */
@@ -207,7 +213,8 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
   // Allocate buffers in WASM memory
   const annexBPtr = exports.jm264_qp_malloc(MAX_ANNEXB_SIZE);
   const qpOutPtr = exports.jm264_qp_malloc(MAX_MBS);
-  if (annexBPtr === 0 || qpOutPtr === 0) {
+  const modeOutPtr = exports.jm264_qp_malloc(MAX_MBS);
+  if (annexBPtr === 0 || qpOutPtr === 0 || modeOutPtr === 0) {
     throw new Error("Failed to allocate WASM memory for JM264 decoder");
   }
 
@@ -343,11 +350,28 @@ export async function createJm264QpDecoder(): Promise<Jm264QpInstance> {
       return { qpValues, count };
     },
 
+    copyModes(): { modeValues: Uint8Array; count: number } {
+      if (destroyed) return { modeValues: new Uint8Array(0), count: 0 };
+      const count = exports.jm264_qp_copy_modes(ctxPtr, modeOutPtr, MAX_MBS);
+      const modeValues = new Uint8Array(count);
+      modeValues.set(new Uint8Array(exports.memory.buffer, modeOutPtr, count));
+      return { modeValues, count };
+    },
+
+    copyFrameModes(index: number): { modeValues: Uint8Array; count: number } {
+      if (destroyed) return { modeValues: new Uint8Array(0), count: 0 };
+      const count = exports.jm264_qp_copy_frame_modes(ctxPtr, index, modeOutPtr, MAX_MBS);
+      const modeValues = new Uint8Array(count);
+      modeValues.set(new Uint8Array(exports.memory.buffer, modeOutPtr, count));
+      return { modeValues, count };
+    },
+
     destroy() {
       if (destroyed) return; // After WasiExit, WASM calls are unsafe
       destroyed = true;
       exports.jm264_qp_free(annexBPtr);
       exports.jm264_qp_free(qpOutPtr);
+      exports.jm264_qp_free(modeOutPtr);
       exports.jm264_qp_destroy(ctxPtr);
     },
   };

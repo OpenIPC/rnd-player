@@ -314,6 +314,54 @@ function QpOverlayCanvas({
   return <canvas ref={canvasRef} className="vp-segment-frame-qp-canvas" />;
 }
 
+function modeToColor(mode: number): [number, number, number] {
+  if (mode === 0) return [255, 220, 50];   // intra
+  if (mode === 2) return [40, 40, 40];     // skip
+  return [50, 120, 255];                    // inter
+}
+
+function ModeOverlayCanvas({
+  modeValues,
+  widthMbs,
+  heightMbs,
+  bitmapWidth,
+  bitmapHeight,
+}: {
+  modeValues: Uint8Array;
+  widthMbs: number;
+  heightMbs: number;
+  bitmapWidth: number;
+  bitmapHeight: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.width = bitmapWidth;
+    canvas.height = bitmapHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const mbW = bitmapWidth / widthMbs;
+    const mbH = bitmapHeight / heightMbs;
+
+    ctx.globalAlpha = 0.5;
+    for (let row = 0; row < heightMbs; row++) {
+      for (let col = 0; col < widthMbs; col++) {
+        const idx = row * widthMbs + col;
+        if (idx >= modeValues.length) continue;
+        const [r, g, b] = modeToColor(modeValues[idx]);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(col * mbW, row * mbH, Math.ceil(mbW), Math.ceil(mbH));
+      }
+    }
+  }, [modeValues, widthMbs, heightMbs, bitmapWidth, bitmapHeight]);
+
+  return <canvas ref={canvasRef} className="vp-segment-frame-qp-canvas" />;
+}
+
 /* ── Frame thumbnail canvas ── */
 
 function FrameCanvasInner({ bitmap }: { bitmap: ImageBitmap }) {
@@ -340,6 +388,7 @@ function FramePreview({
   frameHeight,
   qpData,
   qpSegment,
+  modeData,
   onClose,
   onNavigate,
 }: {
@@ -349,11 +398,13 @@ function FramePreview({
   frameHeight: number;
   qpData: PerFrameQp | null;
   qpSegment: QpMapSegmentResult | null;
+  modeData?: Uint8Array;
   onClose: () => void;
   onNavigate: (frameIndex: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const qpCanvasRef = useRef<HTMLCanvasElement>(null);
+  const modeCanvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -389,6 +440,32 @@ function FramePreview({
       }
     }
   }, [frame, qpData, qpSegment]);
+
+  useEffect(() => {
+    const canvas = modeCanvasRef.current;
+    if (!canvas || !modeData || !qpSegment) return;
+
+    canvas.width = frame.bitmap.width;
+    canvas.height = frame.bitmap.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const { widthMbs, heightMbs } = qpSegment;
+    const mbW = frame.bitmap.width / widthMbs;
+    const mbH = frame.bitmap.height / heightMbs;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 0.5;
+    for (let row = 0; row < heightMbs; row++) {
+      for (let col = 0; col < widthMbs; col++) {
+        const idx = row * widthMbs + col;
+        if (idx >= modeData.length) continue;
+        const [r, g, b] = modeToColor(modeData[idx]);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(col * mbW, row * mbH, Math.ceil(mbW), Math.ceil(mbH));
+      }
+    }
+  }, [frame, modeData, qpSegment]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -431,6 +508,9 @@ function FramePreview({
             <canvas ref={canvasRef} className="vp-frame-preview-canvas" />
             {qpData && qpSegment && (
               <canvas ref={qpCanvasRef} className="vp-frame-preview-qp-canvas" />
+            )}
+            {modeData && qpSegment && (
+              <canvas ref={modeCanvasRef} className="vp-frame-preview-qp-canvas" />
             )}
           </div>
           <div className="vp-frame-preview-info">
@@ -611,12 +691,13 @@ export default function SegmentFramesModal({
   const [loading, setLoading] = useState(true);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [showQp, setShowQp] = useState(false);
+  const [showModes, setShowModes] = useState(false);
   const requestIdRef = useRef<string | null>(null);
   const framesRef = useRef<FrameEntry[]>([]);
   const gridRef = useRef<HTMLDivElement>(null);
 
   const { qpSegment, qpLoading, qpAvailable } = useSegmentQp(
-    player, segmentStartTime, showQp, clearKey,
+    player, segmentStartTime, showQp || showModes, clearKey,
   );
 
   useEffect(() => {
@@ -707,7 +788,17 @@ export default function SegmentFramesModal({
               title={showQp ? "Hide QP heatmap" : "Show per-frame QP heatmap"}
             >
               QP
-              {qpLoading && <span className="vp-segment-qp-spinner" />}
+              {qpLoading && !showModes && <span className="vp-segment-qp-spinner" />}
+            </button>
+          )}
+          {qpAvailable && (
+            <button
+              className={`vp-segment-qp-toggle ${showModes ? "vp-segment-mode-toggle-active" : ""}`}
+              onClick={() => setShowModes((v) => !v)}
+              title={showModes ? "Hide prediction modes" : "Show per-frame prediction modes"}
+            >
+              Modes
+              {qpLoading && showModes && !showQp && <span className="vp-segment-qp-spinner" />}
             </button>
           )}
           <button className="vp-segment-frames-close" onClick={onClose}>
@@ -725,12 +816,25 @@ export default function SegmentFramesModal({
             <span className="vp-segment-qp-legend-range">{qpSegment.globalMinQp} &ndash; {qpSegment.globalMaxQp}</span>
           </div>
         )}
+        {showModes && qpSegment?.hasModes && (
+          <div className="vp-segment-mode-legend">
+            <span className="vp-segment-mode-swatch" style={{ background: "rgb(255,220,50)" }} />
+            <span>Intra</span>
+            <span className="vp-segment-mode-swatch" style={{ background: "rgb(50,120,255)" }} />
+            <span>Inter</span>
+            <span className="vp-segment-mode-swatch" style={{ background: "rgb(40,40,40)" }} />
+            <span>Skip</span>
+          </div>
+        )}
         <div className="vp-segment-frames-grid" ref={gridRef}>
           {frames.map((f, arrIdx) => {
             const showDts = Math.abs(f.cts - f.dts) > 0.0005;
             const frameQp = showQp && qpSegment && arrIdx < qpSegment.frames.length
               ? qpSegment.frames[arrIdx]
               : null;
+            const frameModes = showModes && qpSegment?.hasModes && arrIdx < qpSegment.frames.length
+              ? qpSegment.frames[arrIdx].modeValues
+              : undefined;
             return (
               <div key={f.frameIndex} className="vp-segment-frame-card" data-frame-index={f.frameIndex}>
                 <div
@@ -747,6 +851,15 @@ export default function SegmentFramesModal({
                       qpData={frameQp}
                       globalMinQp={qpSegment.globalMinQp}
                       globalMaxQp={qpSegment.globalMaxQp}
+                      widthMbs={qpSegment.widthMbs}
+                      heightMbs={qpSegment.heightMbs}
+                      bitmapWidth={f.bitmap.width}
+                      bitmapHeight={f.bitmap.height}
+                    />
+                  )}
+                  {frameModes && qpSegment && (
+                    <ModeOverlayCanvas
+                      modeValues={frameModes}
                       widthMbs={qpSegment.widthMbs}
                       heightMbs={qpSegment.heightMbs}
                       bitmapWidth={f.bitmap.width}
@@ -793,6 +906,9 @@ export default function SegmentFramesModal({
         const pfQp = showQp && qpSegment && pfIdx >= 0 && pfIdx < qpSegment.frames.length
           ? qpSegment.frames[pfIdx]
           : null;
+        const pfModes = showModes && qpSegment?.hasModes && pfIdx >= 0 && pfIdx < qpSegment.frames.length
+          ? qpSegment.frames[pfIdx].modeValues
+          : undefined;
         return (
           <FramePreview
             frame={pf}
@@ -801,6 +917,7 @@ export default function SegmentFramesModal({
             frameHeight={frameHeight}
             qpData={pfQp}
             qpSegment={qpSegment}
+            modeData={pfModes}
             onClose={() => setPreviewIndex(null)}
             onNavigate={setPreviewIndex}
           />

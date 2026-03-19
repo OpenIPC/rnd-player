@@ -204,6 +204,7 @@ top_level_decls = """
 extern TComList<TComPic*> *g_current_pic_list;
 extern "C" void hm265_on_frame_output(void);
 extern "C" void hm265_on_flush_output(void);
+extern "C" void hm265_on_pic_output(TComPic *pic);
 """
 src = src[:insert_after] + top_level_decls + src[insert_after:]
 
@@ -231,6 +232,39 @@ with open(src_path, 'w') as f:
     f.write(src)
 
 print("    xWriteOutput/xFlushOutput patched for QP capture")
+PYEOF
+fi
+
+# Patch 2b: TAppDecTop.cpp — Per-picture callback in output loops
+if ! grep -q "hm265_on_pic_output" "${TAPPDECTOP_SRC}" 2>/dev/null; then
+  echo "  Patch 2b: TAppDecTop.cpp — per-picture QP capture in output loops"
+
+  TAPPDECTOP_SRC_PATH="${TAPPDECTOP_SRC}" python3 << 'PYEOF'
+import re, os
+
+src_path = os.environ.get("TAPPDECTOP_SRC_PATH")
+with open(src_path, 'r') as f:
+    src = f.read()
+
+# Insert per-picture callback in xWriteOutput frame loop (before setOutputMark(false))
+# Pattern: in xWriteOutput, "pcPic->setOutputMark(false);\n      }\n\n      iterPic++;\n    }\n  }\n}"
+# We add hm265_on_pic_output(pcPic) before setOutputMark in the frame decoding branch
+old = '        pcPic->setOutputMark(false);\n      }\n\n      iterPic++;\n    }\n  }\n}'
+new = '        /* WASM: capture QP/mode per-picture */\n        hm265_on_pic_output(pcPic);\n\n        pcPic->setOutputMark(false);\n      }\n\n      iterPic++;\n    }\n  }\n}'
+assert old in src, "xWriteOutput per-pic patch: pattern not found"
+src = src.replace(old, new, 1)
+
+# Insert per-picture callback in xFlushOutput frame loop (before destroy)
+# Pattern: "pcPic->setOutputMark(false);\n      }\n      if(pcPic != NULL)\n      {\n        pcPic->destroy();"
+old2 = '        pcPic->setOutputMark(false);\n      }\n      if(pcPic != NULL)\n      {\n        pcPic->destroy();'
+new2 = '        pcPic->setOutputMark(false);\n      }\n      /* WASM: capture QP/mode per-picture before destroy */\n      if (pcPic && pcPic->getReconMark()) {\n        hm265_on_pic_output(pcPic);\n      }\n      if(pcPic != NULL)\n      {\n        pcPic->destroy();'
+assert old2 in src, "xFlushOutput per-pic patch: pattern not found"
+src = src.replace(old2, new2, 1)
+
+with open(src_path, 'w') as f:
+    f.write(src)
+
+print("    Per-picture callbacks added in output loops")
 PYEOF
 fi
 

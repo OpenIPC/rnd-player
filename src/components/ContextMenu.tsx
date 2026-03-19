@@ -14,6 +14,7 @@ import {
   CompareIcon,
   FilmstripIcon,
   QpHeatmapIcon,
+  PredModesIcon,
   FilmGrainIcon,
   DrmDiagnosticsIcon,
   ManifestValidatorIcon,
@@ -40,6 +41,7 @@ interface ContextMenuProps {
   onToggleCompare: (() => void) | undefined;
   onToggleFilmstrip: (() => void) | undefined;
   onToggleQpHeatmap: (() => void) | undefined;
+  onTogglePredModes: (() => void) | undefined;
   onToggleFilmGrain: (() => void) | undefined;
   onToggleDrmDiagnostics: (() => void) | undefined;
   onToggleManifestValidator: (() => void) | undefined;
@@ -56,6 +58,7 @@ interface ContextMenuProps {
   showCompare: boolean;
   showFilmstrip: boolean;
   showQpHeatmap: boolean;
+  showPredModes: boolean;
   showFilmGrain: boolean;
   showDrmDiagnostics: boolean;
   showManifestValidator: boolean;
@@ -84,6 +87,7 @@ export default function ContextMenu({
   onToggleCompare,
   onToggleFilmstrip,
   onToggleQpHeatmap,
+  onTogglePredModes,
   onToggleFilmGrain,
   onToggleDrmDiagnostics,
   onToggleManifestValidator,
@@ -98,6 +102,7 @@ export default function ContextMenu({
   showCompare,
   showFilmstrip,
   showQpHeatmap,
+  showPredModes,
   showFilmGrain,
   showDrmDiagnostics,
   showManifestValidator,
@@ -191,6 +196,12 @@ export default function ContextMenu({
         <div className="vp-context-menu-item" onClick={onToggleQpHeatmap}>
           <QpHeatmapIcon />
           {showQpHeatmap ? "Hide QP heatmap" : "QP heatmap"}
+        </div>
+      )}
+      {moduleConfig.qpHeatmap && (isH264 || isH265 || isAv1) && onTogglePredModes && (
+        <div className="vp-context-menu-item" onClick={onTogglePredModes}>
+          <PredModesIcon />
+          {showPredModes ? "Hide prediction modes" : "Prediction modes"}
         </div>
       )}
       {moduleConfig.filmGrain && onToggleFilmGrain && (

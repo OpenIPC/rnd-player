@@ -339,6 +339,82 @@ function extractNalusFromSample(
   return nalus;
 }
 
+/**
+ * Determine per-sample prediction mode from HEVC NALU types.
+ * Returns 0=intra for I-slices (IDR/CRA/BLA), 1=inter for P/B-slices.
+ * Reads only the first VCL NALU of each sample (doesn't need decryption for type byte).
+ */
+function extractPerSampleModesHEVC(
+  mediaData: Uint8Array,
+  naluLengthSize: number,
+): Uint8Array {
+  const sizes = parseTrunSizes(mediaData);
+  const mdatBox = findBox(mediaData, 'mdat', 0, mediaData.length);
+  if (!mdatBox) return new Uint8Array(0);
+
+  const modes = new Uint8Array(sizes.length);
+  modes.fill(1); // default: inter
+  let dataPos = mdatBox.offset + 8;
+  for (let i = 0; i < sizes.length; i++) {
+    // Scan NALUs within the sample to find the first VCL NALU (type <= 31)
+    let nPos = dataPos;
+    const sampleEnd = dataPos + sizes[i];
+    while (nPos + naluLengthSize < sampleEnd) {
+      let len = 0;
+      for (let j = 0; j < naluLengthSize; j++) len = (len << 8) | mediaData[nPos + j];
+      nPos += naluLengthSize;
+      if (len <= 0 || nPos + len > sampleEnd) break;
+      const naluType = (mediaData[nPos] >> 1) & 0x3f;
+      if (naluType <= 31) {
+        // VCL NALU found — classify by type
+        // HEVC: 16-23 = IRAP (BLA, IDR, CRA) → intra; 0-15 = trailing/etc → inter
+        modes[i] = (naluType >= 16 && naluType <= 23) ? 0 : 1;
+        break;
+      }
+      nPos += len;
+    }
+    dataPos += sizes[i];
+  }
+  return modes;
+}
+
+/**
+ * Determine per-sample prediction mode from H.264 NALU types.
+ * Returns 0=intra for IDR slices (type 5), 1=inter for non-IDR (types 1-4).
+ */
+function extractPerSampleModesH264(
+  mediaData: Uint8Array,
+  naluLengthSize: number,
+): Uint8Array {
+  const sizes = parseTrunSizes(mediaData);
+  const mdatBox = findBox(mediaData, 'mdat', 0, mediaData.length);
+  if (!mdatBox) return new Uint8Array(0);
+
+  const modes = new Uint8Array(sizes.length);
+  modes.fill(1); // default: inter
+  let dataPos = mdatBox.offset + 8;
+  for (let i = 0; i < sizes.length; i++) {
+    // Scan NALUs within the sample to find the first VCL NALU (types 1-5)
+    let nPos = dataPos;
+    const sampleEnd = dataPos + sizes[i];
+    while (nPos + naluLengthSize < sampleEnd) {
+      let len = 0;
+      for (let j = 0; j < naluLengthSize; j++) len = (len << 8) | mediaData[nPos + j];
+      nPos += naluLengthSize;
+      if (len <= 0 || nPos + len > sampleEnd) break;
+      const naluType = mediaData[nPos] & 0x1f;
+      if (naluType >= 1 && naluType <= 5) {
+        // H.264: type 5 = IDR slice → intra, types 1-4 = non-IDR → inter
+        modes[i] = (naluType === 5) ? 0 : 1;
+        break;
+      }
+      nPos += len;
+    }
+    dataPos += sizes[i];
+  }
+  return modes;
+}
+
 /** Extract VCL NALUs directly from trun + mdat, with optional CENC decryption. */
 async function extractSamplesDirectly(
   mediaData: Uint8Array,
@@ -651,8 +727,10 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
       let globalMinQp = 255;
       let globalMaxQp = 0;
 
+      let hasModes = false;
       for (let i = 0; i < frameCount; i++) {
         const { qpValues, count } = decoder.copyFrameQps(i);
+        const { modeValues } = decoder.copyFrameModes(i);
         let minQp = 255, maxQp = 0, sum = 0;
         for (let j = 0; j < count; j++) {
           if (qpValues[j] < minQp) minQp = qpValues[j];
@@ -661,7 +739,14 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         }
         if (minQp < globalMinQp) globalMinQp = minQp;
         if (maxQp > globalMaxQp) globalMaxQp = maxQp;
-        frames.push({ qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp });
+
+        const frame: PerFrameQp = { qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp };
+        if (modeValues.length > 0) {
+          frame.modeValues = modeValues;
+          hasModes = true;
+          transferables.push(modeValues.buffer as ArrayBuffer);
+        }
+        frames.push(frame);
         transferables.push(qpValues.buffer as ArrayBuffer);
       }
 
@@ -673,6 +758,7 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         blockSize,
         globalMinQp,
         globalMaxQp,
+        hasModes,
       };
       self.postMessage(response, { transfer: transferables });
     } finally {
@@ -747,11 +833,10 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         return;
       }
 
-      const frames: PerFrameQp[] = [];
-      const transferables: ArrayBuffer[] = [];
+      // Get QP data from HM (limited to ~3 frames from IDR)
+      const hmFrames: Array<{ qpValues: Uint8Array; count: number; minQp: number; maxQp: number; sum: number }> = [];
       let globalMinQp = 255;
       let globalMaxQp = 0;
-
       for (let i = 0; i < frameCount; i++) {
         const { qpValues, count } = decoder.copyFrameQps(i);
         let minQp = 255, maxQp = 0, sum = 0;
@@ -762,11 +847,49 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         }
         if (minQp < globalMinQp) globalMinQp = minQp;
         if (maxQp > globalMaxQp) globalMaxQp = maxQp;
-        frames.push({ qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp });
-        transferables.push(qpValues.buffer as ArrayBuffer);
+        hmFrames.push({ qpValues, count, minQp, maxQp, sum });
       }
 
       if (!decoder.destroyed) decoder.destroy();
+
+      // Per-sample prediction mode from NALU types (frame-level: intra/inter).
+      // HM only decodes ~3 frames from a DASH segment, so we expand to match
+      // the actual sample count and use NALU types for accurate mode classification.
+      const sampleModes = extractPerSampleModesHEVC(mediaData, 4);
+      const sampleCount = sampleModes.length;
+      const totalBlocks = widthMbs * heightMbs;
+      const outputCount = sampleCount > 0 ? sampleCount : frameCount;
+
+      const frames: PerFrameQp[] = [];
+      const transferables: ArrayBuffer[] = [];
+
+      for (let i = 0; i < outputCount; i++) {
+        // QP: pick from nearest HM frame
+        const hmIdx = frameCount > 0
+          ? Math.min(frameCount - 1, Math.floor((i / outputCount) * frameCount))
+          : 0;
+        const hm = hmFrames[hmIdx];
+        const qpValues = hm ? new Uint8Array(hm.qpValues) : new Uint8Array(totalBlocks);
+
+        const frame: PerFrameQp = {
+          qpValues,
+          avgQp: hm ? (hm.count > 0 ? hm.sum / hm.count : 0) : 0,
+          minQp: hm ? hm.minQp : 0,
+          maxQp: hm ? hm.maxQp : 0,
+        };
+
+        // Mode: frame-level from NALU type
+        if (i < sampleCount) {
+          const modeValues = new Uint8Array(totalBlocks);
+          modeValues.fill(sampleModes[i]);
+          frame.modeValues = modeValues;
+          transferables.push(modeValues.buffer as ArrayBuffer);
+        }
+        frames.push(frame);
+        transferables.push(qpValues.buffer as ArrayBuffer);
+      }
+
+      const hasModes = sampleCount > 0;
 
       const response: QpMapSegmentResult = {
         type: "qpSegment",
@@ -776,6 +899,7 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         blockSize,
         globalMinQp,
         globalMaxQp,
+        hasModes,
       };
       self.postMessage(response, { transfer: transferables });
     } else {
@@ -813,13 +937,18 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         return;
       }
 
+      // NALU-based per-sample modes as fallback
+      const sampleModesH264 = extractPerSampleModesH264(mediaData, 4);
+
       const frames: PerFrameQp[] = [];
       const transferables: ArrayBuffer[] = [];
       let globalMinQp = 255;
       let globalMaxQp = 0;
+      let hasModes = false;
 
       for (let i = 0; i < frameCount; i++) {
         const { qpValues, count } = decoder.copyFrameQps(i);
+        const { modeValues } = decoder.copyFrameModes(i);
         let minQp = 255, maxQp = 0, sum = 0;
         for (let j = 0; j < count; j++) {
           if (qpValues[j] < minQp) minQp = qpValues[j];
@@ -828,7 +957,22 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         }
         if (minQp < globalMinQp) globalMinQp = minQp;
         if (maxQp > globalMaxQp) globalMaxQp = maxQp;
-        frames.push({ qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp });
+
+        const frame: PerFrameQp = { qpValues, avgQp: count > 0 ? sum / count : 0, minQp, maxQp };
+        if (modeValues.length > 0) {
+          // JM provides per-MB modes — use them
+          frame.modeValues = modeValues;
+          hasModes = true;
+          transferables.push(modeValues.buffer as ArrayBuffer);
+        } else if (i < sampleModesH264.length) {
+          // Fallback: frame-level mode from NALU type
+          const fallbackModes = new Uint8Array(count);
+          fallbackModes.fill(sampleModesH264[i]);
+          frame.modeValues = fallbackModes;
+          hasModes = true;
+          transferables.push(fallbackModes.buffer as ArrayBuffer);
+        }
+        frames.push(frame);
         transferables.push(qpValues.buffer as ArrayBuffer);
       }
 
@@ -842,6 +986,7 @@ async function handleDecodeSegmentQp(msg: QpMapWorkerRequest & { type: "decodeSe
         blockSize,
         globalMinQp,
         globalMaxQp,
+        hasModes,
       };
       self.postMessage(response, { transfer: transferables });
     }

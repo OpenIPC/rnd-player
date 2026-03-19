@@ -42,6 +42,10 @@ export interface Dav1dQpInstance {
   getFrameCount(): number;
   /** Copy QP values for a specific frame index (multi-frame mode). */
   copyFrameQps(index: number): { qpValues: Uint8Array; count: number };
+  /** Copy prediction modes (0=intra, 1=inter, 2=skip) from last decoded frame. */
+  copyModes(): { modeValues: Uint8Array; count: number };
+  /** Copy prediction modes for a specific frame index (multi-frame mode). */
+  copyFrameModes(index: number): { modeValues: Uint8Array; count: number };
   /** True after WasiExit (error during decode) — instance is no longer usable. */
   readonly destroyed: boolean;
   /** Release all resources. */
@@ -65,6 +69,8 @@ interface WasmExports {
   dav1d_qp_set_multi_frame: (ctx: number, enable: number) => void;
   dav1d_qp_get_frame_count: (ctx: number) => number;
   dav1d_qp_copy_frame_qps: (ctx: number, frameIdx: number, out: number, max: number) => number;
+  dav1d_qp_copy_modes: (ctx: number, out: number, max: number) => number;
+  dav1d_qp_copy_frame_modes: (ctx: number, frameIdx: number, out: number, max: number) => number;
 }
 
 /** Max OBU buffer size (8MB should cover any segment). */
@@ -202,7 +208,8 @@ export async function createDav1dQpDecoder(): Promise<Dav1dQpInstance> {
   // Allocate buffers in WASM memory
   const obuBufPtr = exports.dav1d_qp_malloc(MAX_OBU_SIZE);
   const qpOutPtr = exports.dav1d_qp_malloc(MAX_BLOCKS);
-  if (obuBufPtr === 0 || qpOutPtr === 0) {
+  const modeOutPtr = exports.dav1d_qp_malloc(MAX_BLOCKS);
+  if (obuBufPtr === 0 || qpOutPtr === 0 || modeOutPtr === 0) {
     throw new Error("Failed to allocate WASM memory for dav1d decoder");
   }
 
@@ -334,11 +341,28 @@ export async function createDav1dQpDecoder(): Promise<Dav1dQpInstance> {
       return { qpValues, count };
     },
 
+    copyModes(): { modeValues: Uint8Array; count: number } {
+      if (destroyed) return { modeValues: new Uint8Array(0), count: 0 };
+      const count = exports.dav1d_qp_copy_modes(ctxPtr, modeOutPtr, MAX_BLOCKS);
+      const modeValues = new Uint8Array(count);
+      modeValues.set(new Uint8Array(exports.memory.buffer, modeOutPtr, count));
+      return { modeValues, count };
+    },
+
+    copyFrameModes(index: number): { modeValues: Uint8Array; count: number } {
+      if (destroyed) return { modeValues: new Uint8Array(0), count: 0 };
+      const count = exports.dav1d_qp_copy_frame_modes(ctxPtr, index, modeOutPtr, MAX_BLOCKS);
+      const modeValues = new Uint8Array(count);
+      modeValues.set(new Uint8Array(exports.memory.buffer, modeOutPtr, count));
+      return { modeValues, count };
+    },
+
     destroy() {
       if (destroyed) return;
       destroyed = true;
       exports.dav1d_qp_free(obuBufPtr);
       exports.dav1d_qp_free(qpOutPtr);
+      exports.dav1d_qp_free(modeOutPtr);
       exports.dav1d_qp_destroy(ctxPtr);
     },
   };

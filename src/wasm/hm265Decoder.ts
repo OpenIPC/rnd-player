@@ -41,6 +41,10 @@ export interface Hm265QpInstance {
   getFrameCount(): number;
   /** Copy QP values for a specific frame index (multi-frame mode). */
   copyFrameQps(index: number): { qpValues: Uint8Array; count: number };
+  /** Copy prediction modes (0=intra, 1=inter, 2=skip) from last decoded frame. */
+  copyModes(): { modeValues: Uint8Array; count: number };
+  /** Copy prediction modes for a specific frame index (multi-frame mode). */
+  copyFrameModes(index: number): { modeValues: Uint8Array; count: number };
   /** True after WasiExit (error during decode) — instance is no longer usable. */
   readonly destroyed: boolean;
   /** Release all resources. */
@@ -64,6 +68,8 @@ interface WasmExports {
   hm265_qp_set_multi_frame: (ctx: number, enable: number) => void;
   hm265_qp_get_frame_count: (ctx: number) => number;
   hm265_qp_copy_frame_qps: (ctx: number, frameIdx: number, out: number, max: number) => number;
+  hm265_qp_copy_modes: (ctx: number, out: number, max: number) => number;
+  hm265_qp_copy_frame_modes: (ctx: number, frameIdx: number, out: number, max: number) => number;
 }
 
 /** Max Annex B buffer size (8MB should cover any segment's worth of NALUs). */
@@ -201,7 +207,8 @@ export async function createHm265QpDecoder(): Promise<Hm265QpInstance> {
   // Allocate buffers in WASM memory
   const annexBPtr = exports.hm265_qp_malloc(MAX_ANNEXB_SIZE);
   const qpOutPtr = exports.hm265_qp_malloc(MAX_BLOCKS);
-  if (annexBPtr === 0 || qpOutPtr === 0) {
+  const modeOutPtr = exports.hm265_qp_malloc(MAX_BLOCKS);
+  if (annexBPtr === 0 || qpOutPtr === 0 || modeOutPtr === 0) {
     throw new Error("Failed to allocate WASM memory for HM265 decoder");
   }
 
@@ -333,11 +340,28 @@ export async function createHm265QpDecoder(): Promise<Hm265QpInstance> {
       return { qpValues, count };
     },
 
+    copyModes(): { modeValues: Uint8Array; count: number } {
+      if (destroyed) return { modeValues: new Uint8Array(0), count: 0 };
+      const count = exports.hm265_qp_copy_modes(ctxPtr, modeOutPtr, MAX_BLOCKS);
+      const modeValues = new Uint8Array(count);
+      modeValues.set(new Uint8Array(exports.memory.buffer, modeOutPtr, count));
+      return { modeValues, count };
+    },
+
+    copyFrameModes(index: number): { modeValues: Uint8Array; count: number } {
+      if (destroyed) return { modeValues: new Uint8Array(0), count: 0 };
+      const count = exports.hm265_qp_copy_frame_modes(ctxPtr, index, modeOutPtr, MAX_BLOCKS);
+      const modeValues = new Uint8Array(count);
+      modeValues.set(new Uint8Array(exports.memory.buffer, modeOutPtr, count));
+      return { modeValues, count };
+    },
+
     destroy() {
       if (destroyed) return;
       destroyed = true;
       exports.hm265_qp_free(annexBPtr);
       exports.hm265_qp_free(qpOutPtr);
+      exports.hm265_qp_free(modeOutPtr);
       exports.hm265_qp_destroy(ctxPtr);
     },
   };

@@ -49,6 +49,8 @@ export interface PerFrameQp {
   avgQp: number;
   minQp: number;
   maxQp: number;
+  /** Prediction mode per block: 0=intra, 1=inter, 2=skip. */
+  modeValues?: Uint8Array;
 }
 
 /** Result of decodeSegmentQp — per-frame QP maps for all frames in the segment. */
@@ -62,6 +64,8 @@ export interface QpMapSegmentResult {
   /** Global min/max across all frames (for consistent color scale). */
   globalMinQp: number;
   globalMaxQp: number;
+  /** Whether prediction mode data is available. */
+  hasModes: boolean;
 }
 
 export interface QpMapError {
