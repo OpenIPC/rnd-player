@@ -146,19 +146,31 @@ int prores_decode(ProResDecoder *dec,
         chroma_h = h;
     }
 
-    /* Copy Y plane (stride may differ from width) */
-    for (int row = 0; row < h; row++) {
-        memcpy(y_out + row * w, y_src + row * y_stride, w * sizeof(uint16_t));
+    /* Copy Y plane — single memcpy when stride matches width (no padding) */
+    if (y_stride == w) {
+        memcpy(y_out, y_src, (size_t)w * h * sizeof(uint16_t));
+    } else {
+        for (int row = 0; row < h; row++) {
+            memcpy(y_out + row * w, y_src + row * y_stride, w * sizeof(uint16_t));
+        }
     }
 
     /* Copy Cb plane */
-    for (int row = 0; row < chroma_h; row++) {
-        memcpy(cb_out + row * chroma_w, cb_src + row * cb_stride, chroma_w * sizeof(uint16_t));
+    if (cb_stride == chroma_w) {
+        memcpy(cb_out, cb_src, (size_t)chroma_w * chroma_h * sizeof(uint16_t));
+    } else {
+        for (int row = 0; row < chroma_h; row++) {
+            memcpy(cb_out + row * chroma_w, cb_src + row * cb_stride, chroma_w * sizeof(uint16_t));
+        }
     }
 
     /* Copy Cr plane */
-    for (int row = 0; row < chroma_h; row++) {
-        memcpy(cr_out + row * chroma_w, cr_src + row * cr_stride, chroma_w * sizeof(uint16_t));
+    if (cr_stride == chroma_w) {
+        memcpy(cr_out, cr_src, (size_t)chroma_w * chroma_h * sizeof(uint16_t));
+    } else {
+        for (int row = 0; row < chroma_h; row++) {
+            memcpy(cr_out + row * chroma_w, cr_src + row * cr_stride, chroma_w * sizeof(uint16_t));
+        }
     }
 
     return 0;
@@ -224,7 +236,7 @@ emconfigure ./configure \
   --disable-pthreads \
   --disable-asm \
   --disable-stripping \
-  --extra-cflags="-O2 -fno-exceptions"
+  --extra-cflags="-O2 -fno-exceptions -msimd128"
 
 echo "Building FFmpeg (ProRes decoder only)..."
 emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) libavcodec/libavcodec.a libavutil/libavutil.a
@@ -232,7 +244,7 @@ emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) libavcodec/libavcodec.a 
 echo "Compiling ProRes WASM decoder..."
 mkdir -p "${OUTPUT_DIR}"
 
-emcc -O2 \
+emcc -O2 -msimd128 \
   -s WASM=1 \
   -s STANDALONE_WASM=1 \
   -s EXPORTED_FUNCTIONS='["_prores_create","_prores_decode","_prores_get_width","_prores_get_height","_prores_get_pix_fmt","_prores_destroy","_prores_malloc","_prores_free"]' \
