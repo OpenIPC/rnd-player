@@ -16,6 +16,7 @@ export function autoConfig(
   if (!profile.webGL2) {
     config.qualityCompare = false;
     config.filmGrain = false;
+    config.proresViewer = false;
   }
   if (!profile.webAudio) {
     config.audioLevels = false;
@@ -24,6 +25,7 @@ export function autoConfig(
   if (!profile.workers) {
     config.segmentExport = false;
     config.qpHeatmap = false;
+    config.proresViewer = false;
   }
 
   // Soft gates: disable heavy features on low-tier devices

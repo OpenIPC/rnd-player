@@ -15,6 +15,7 @@ export interface PlayerModuleConfig {
   drmDiagnostics: boolean;
   manifestValidator: boolean;
   filmGrain: boolean;
+  proresViewer: boolean;
 }
 
 export const MODULE_DEFAULTS: PlayerModuleConfig = {
@@ -34,4 +35,5 @@ export const MODULE_DEFAULTS: PlayerModuleConfig = {
   drmDiagnostics: true,
   manifestValidator: true,
   filmGrain: true,
+  proresViewer: true,
 };

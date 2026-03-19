@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import ShakaPlayer from "./components/ShakaPlayer";
+import ProResViewer from "./components/ProResViewer";
+import { isMovUrl } from "./utils/proResProbe";
 import type { PlayerModuleConfig } from "./types/moduleConfig";
 import type { SceneData } from "./types/sceneData";
 import type { DeviceProfile } from "./utils/detectCapabilities";
@@ -194,9 +196,9 @@ function App() {
       const merged = { ...config, ...overrides };
       // Re-apply hard gates to ensure user overrides can't enable unsupported features
       if (!profile.webCodecs || !profile.offscreenCanvas) merged.filmstrip = false;
-      if (!profile.webGL2) merged.qualityCompare = false;
+      if (!profile.webGL2) { merged.qualityCompare = false; merged.proresViewer = false; }
       if (!profile.webAudio) { merged.audioLevels = false; merged.audioCompare = false; }
-      if (!profile.workers) merged.segmentExport = false;
+      if (!profile.workers) { merged.segmentExport = false; merged.proresViewer = false; }
       setModuleConfig(merged);
     });
   }, []);
@@ -308,7 +310,7 @@ function App() {
             name="url"
             className="url-input"
             type="url"
-            placeholder="Enter manifest URL (.mpd, .m3u8)"
+            placeholder="Enter manifest URL (.mpd, .m3u8, .mov)"
             autoFocus
             required
           />
@@ -367,6 +369,16 @@ function App() {
 
   if (!moduleConfig || !deviceProfile) {
     return <div className="player-container">{sceneFileInput}</div>;
+  }
+
+  // Route MOV URLs to ProRes viewer when module is enabled
+  if (isMovUrl(src) && moduleConfig.proresViewer) {
+    return (
+      <div className="player-container">
+        {sceneFileInput}
+        <ProResViewer src={src} />
+      </div>
+    );
   }
 
   return (

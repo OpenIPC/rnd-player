@@ -47,6 +47,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     qpHeatmap: false,
     manifestValidator: false,
     filmGrain: false,
+    proresViewer: false,
   },
   minimal: {
     filmstrip: false,
@@ -63,6 +64,7 @@ const MODULE_PRESETS: Record<string, ModulePreset> = {
     qpHeatmap: false,
     manifestValidator: false,
     filmGrain: false,
+    proresViewer: false,
   },
 }
 
@@ -89,6 +91,7 @@ function resolveModulePreset(): ModulePreset | undefined {
     sceneMarkers: true,
     qpHeatmap: true,
     filmGrain: true,
+    proresViewer: true,
   }
   return { ...defaults, ...preset }
 }

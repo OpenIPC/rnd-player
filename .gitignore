@@ -43,3 +43,6 @@ wasm/build/
 
 # WASM binaries (built in CI)
 public/*.wasm
+
+# Test fixtures (large media files)
+public/*.mov

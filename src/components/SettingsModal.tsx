@@ -100,6 +100,12 @@ const MODULE_INFO: ModuleInfo[] = [
     description: "Real-time film grain overlay using AV1-style AR process (WebGL2)",
     hardGate: (p) => !p.webGL2 ? "Requires WebGL2" : null,
   },
+  {
+    key: "proresViewer",
+    label: "ProRes viewer",
+    description: "Direct ProRes MOV playback via WASM decode + WebGL2 (WebGL2 + Workers)",
+    hardGate: (p) => !p.webGL2 ? "Requires WebGL2" : !p.workers ? "Requires Web Workers" : null,
+  },
 ];
 
 export default function SettingsModal({

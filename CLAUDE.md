@@ -28,14 +28,17 @@ Entry: `index.html` → `src/main.tsx` → `src/App.tsx`
 
 ```
 App.tsx                          — URL form, capability detection, module config, scene data loading
-└── ShakaPlayer.tsx              — Shaka Player bridge, DRM, state persistence, error handling
-    ├── VideoControls.tsx        — Custom overlay UI (play/pause, seek, volume, popups, scene markers)
-    │   ├── ContextMenu.tsx      — Right-click menu (portal)
-    │   └── ExportPicker.tsx     — Rendition selection for segment export (portal)
-    ├── FilmstripTimeline.tsx    — Canvas filmstrip panel (zoomable thumbnails, bitrate graph, GOP tooltip)
-    ├── StatsPanel.tsx           — Real-time diagnostics overlay (13 stat rows)
-    ├── WatermarkOverlay.tsx     — Canvas forensic watermark for DRM content
-    └── QualityCompare           — Side-by-side quality comparison (see docs/quality-compare.md)
+├── ShakaPlayer.tsx              — Shaka Player bridge, DRM, state persistence, error handling
+│   ├── VideoControls.tsx        — Custom overlay UI (play/pause, seek, volume, popups, scene markers)
+│   │   ├── ContextMenu.tsx      — Right-click menu (portal)
+│   │   └── ExportPicker.tsx     — Rendition selection for segment export (portal)
+│   ├── FilmstripTimeline.tsx    — Canvas filmstrip panel (zoomable thumbnails, bitrate graph, GOP tooltip)
+│   ├── StatsPanel.tsx           — Real-time diagnostics overlay (13 stat rows)
+│   ├── WatermarkOverlay.tsx     — Canvas forensic watermark for DRM content
+│   └── QualityCompare           — Side-by-side quality comparison (see docs/quality-compare.md)
+└── ProResViewer.tsx             — ProRes MOV playback (see docs/prores-viewer.md)
+    ├── ProResCanvas.tsx         — WebGL2 YUV 4:2:2/4:4:4 10-bit → RGB renderer
+    └── ProResControls.tsx       — Play/pause, frame step, scrubber, metadata badge
 ```
 
 ### Module System
@@ -53,6 +56,8 @@ Features are toggled via `PlayerModuleConfig` (`src/types/moduleConfig.ts`) — 
 **Audio Metering** — Three backends: Web Audio (`useAudioAnalyser`), Safari fallback (`useAudioMeterFallback` — WebKit bug #266922), EC-3 software decode (`useEc3Audio` + `audioMeterWorker` + WASM FFmpeg decoder). `useTrackAMeter` dispatches by priority. AudioCompare uses `useAudioCompareMeter` for independent Track B. See `docs/audio-compare.md`, `docs/loudness-metering.md`.
 
 **QP Heatmap** — JM H.264 WASM decoder extracts per-macroblock QP values. Worker uses direct trun/mdat parsing (not mp4box.js, which reorders by CTS). See `docs/qp-map.md`.
+
+**ProRes Viewer** — Direct ProRes MOV playback in the browser. HTTP Range requests provide random access to frames in large files (up to 1.5 TB). `proResProbe.ts` parses the moov atom directly to build the sample table. A pool of N decode workers (`proResWorker.ts`) each run an FFmpeg ProRes WASM decoder (`proresDecoder.ts`), decoding frames in parallel (ProRes is intra-only). An adaptive ring buffer feeds a WebGL2 renderer (`useProResRenderer`) that converts YUV 4:2:2/4:4:4 10-bit to RGB via R16UI integer textures and BT.709 color matrix. See `docs/prores-viewer.md`.
 
 **Sleep/Wake Recovery** — `useSleepWakeRecovery` detects sleep via `visibilitychange` + timer-gap detector, guards against Shaka's spurious recovery events.
 
@@ -94,3 +99,4 @@ Features are toggled via `PlayerModuleConfig` (`src/types/moduleConfig.ts`) — 
 - `docs/manifest-validator-spec.md` — Manifest & stream validation rules
 - `docs/artifact-analysis-research.md` — Video artifact analysis research
 - `docs/windows-hevc-ci-codec.md` — Windows HEVC codec CI setup
+- `docs/prores-viewer.md` — ProRes MOV viewer: WASM decode, multi-worker pool, WebGL2 rendering
