@@ -6,11 +6,12 @@
  * rendering + controls.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { probeMovUrl } from "../utils/proResProbe";
 import type { ProResTrackInfo } from "../types/proResWorker.types";
 import { useProResPlayback } from "../hooks/useProResPlayback";
 import ProResCanvas from "./ProResCanvas";
+import type { ProResCanvasHandle } from "./ProResCanvas";
 import ProResControls from "./ProResControls";
 import "./ProResViewer.css";
 
@@ -23,18 +24,35 @@ type ViewerState =
   | { status: "error"; message: string }
   | { status: "ready"; trackInfo: ProResTrackInfo; fileSize: number };
 
+/** Compile WASM once, cache the promise across renders. */
+let wasmCompilePromise: Promise<WebAssembly.Module> | null = null;
+function compileProResWasm(): Promise<WebAssembly.Module> {
+  if (!wasmCompilePromise) {
+    wasmCompilePromise = fetch("/prores-decoder.wasm")
+      .then((r) => WebAssembly.compileStreaming(r));
+  }
+  return wasmCompilePromise;
+}
+
 export default function ProResViewer({ src }: ProResViewerProps) {
   const [viewerState, setViewerState] = useState<ViewerState>({
     status: "probing",
   });
+  const [wasmModule, setWasmModule] = useState<WebAssembly.Module | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
+    // Start WASM compilation and moov probe in parallel
+    const wasmPromise = compileProResWasm();
+    const probePromise = probeMovUrl(src);
+
     (async () => {
       try {
-        const result = await probeMovUrl(src);
+        const [result, mod] = await Promise.all([probePromise, wasmPromise]);
         if (cancelled) return;
+
+        setWasmModule(mod);
 
         if (result.tracks.length === 0) {
           setViewerState({
@@ -90,6 +108,7 @@ export default function ProResViewer({ src }: ProResViewerProps) {
     <ProResViewerReady
       src={src}
       trackInfo={viewerState.trackInfo}
+      wasmModule={wasmModule}
     />
   );
 }
@@ -97,10 +116,20 @@ export default function ProResViewer({ src }: ProResViewerProps) {
 function ProResViewerReady({
   src,
   trackInfo,
+  wasmModule,
 }: {
   src: string;
   trackInfo: ProResTrackInfo;
+  wasmModule: WebAssembly.Module | null;
 }) {
+  const canvasHandle = useRef<ProResCanvasHandle>(null);
+  const renderFrameRef = useRef<ProResCanvasHandle["renderFrame"] | null>(null);
+
+  // Keep renderFrameRef in sync with the canvas handle
+  useEffect(() => {
+    renderFrameRef.current = canvasHandle.current?.renderFrame ?? null;
+  });
+
   const playback = useProResPlayback(
     trackInfo.sampleTable,
     src,
@@ -109,6 +138,8 @@ function ProResViewerReady({
     trackInfo.chroma === "4:4:4",
     trackInfo.width,
     trackInfo.height,
+    renderFrameRef,
+    wasmModule,
   );
 
   const handleKeyDown = useCallback(
@@ -139,7 +170,7 @@ function ProResViewerReady({
   return (
     <div className="vp-prores-container">
       <div className="vp-prores-video-area">
-        <ProResCanvas frame={playback.currentFrame} />
+        <ProResCanvas ref={canvasHandle} />
       </div>
       <ProResControls
         state={playback.state}

@@ -9,13 +9,18 @@ HTTPS URL (.mov on network storage)
   → App.tsx: isMovUrl() check → mount ProResViewer
     → ProResViewer.tsx (coordinator)
       ├── Probe: Range-fetch moov atom → direct box parsing → sample table
-      ├── Decode worker pool (N = hardwareConcurrency, max 16):
-      │   ├── Worker 0: Range-fetch frame → WASM decode → transfer YUV planes
-      │   ├── Worker 1: Range-fetch frame → WASM decode → transfer YUV planes
-      │   └── ...
-      ├── Frame ring buffer (adaptive: workerCount to 1 second of video)
+      ├── WASM compile: compileStreaming() runs in parallel with probe
+      ├── Main-thread fetch pipeline:
+      │   Single Range request → arrayBuffer() → extract frames
+      ├── Decode worker pool (N = 3, decode-only, pre-compiled WASM):
+      │   ├── Worker 0: WASM decode → transfer YUV planes
+      │   ├── Worker 1: WASM decode → transfer YUV planes
+      │   └── Worker 2: WASM decode → transfer YUV planes
+      ├── Frame ring buffer (up to 500 MB / ~62 frames for 1080p)
       └── ProResCanvas.tsx: WebGL2 YUV 4:2:2 10-bit → RGB → fullscreen quad
 ```
+
+See [prores-network-fetch.md](./prores-network-fetch.md) for fetch strategy research, Chrome trace debugging methodology, and performance optimization history.
 
 ## URL Detection
 
@@ -50,10 +55,12 @@ File size is extracted from the `Content-Range` header of the first Range respon
 
 Follows `ec3Decoder.ts` pattern:
 
-- Lazy WASM loading with module-level cache
+- WASM compiled once on main thread via `compileStreaming()` (parallel with moov probe)
+- Pre-compiled `WebAssembly.Module` passed to workers via `postMessage`
+- Workers call `WebAssembly.instantiate(precompiledModule, ...)` — instant, no fetch/compile
+- Fallback: lazy fetch + compile if no pre-compiled module provided
 - WASI stubs (args, environ, proc_exit → WasiExit throw, fd_write reports bytes written)
 - `_start()` call wrapped in try/catch for WasiExit
-- Each worker instantiates its own WASM instance from the shared compiled module
 - Decode output: planar YUV422P10LE or YUV444P10LE — copies from AVFrame planes to output buffers handling linesize stride
 
 ### Validation (`wasm/test-prores.mjs`)
@@ -64,30 +71,39 @@ node wasm/test-prores.mjs
 
 Reads the test fixture MOV, extracts a raw ProRes frame, feeds it to the WASM decoder, and verifies Y/Cb/Cr plane values are in 10-bit range.
 
-## Multi-Worker Decode Pool (`useProResPlayback`)
+## Fetch + Decode Pipeline (`useProResPlayback`)
 
-ProRes is intra-only — every frame is independently decodable with zero inter-frame dependencies. This makes it trivially parallelizable.
+ProRes is intra-only — every frame is independently decodable with zero inter-frame dependencies. This makes decode trivially parallelizable.
 
-### Worker Pool
+### Main-Thread Fetch
 
-- `N = navigator.hardwareConcurrency` workers (capped at 16)
-- Each worker has its own WASM ProRes decoder instance
-- Workers are long-lived (created on init, destroyed on unmount)
-- Each worker independently fetches (Range request) and decodes
+- Single Range request for the entire buffer window (~62 frames, ~55 MB)
+- `await response.arrayBuffer()` — browser downloads at full internal speed
+- Frames extracted and dispatched to decode workers in one fast loop
+- WASM module pre-compiled on main thread via `compileStreaming()` during moov probe
+
+### Decode Workers
+
+- 3 decode-only workers (no network access)
+- Each receives pre-compiled `WebAssembly.Module` via `postMessage` (structured-clonable)
+- Round-robin frame dispatch from the main thread
+- ~7ms per frame decode = ~440 fps aggregate capacity with 3 workers
 
 ### Ring Buffer
 
-- Adaptive size: up to 1 second of video (e.g. 30 frames at 30fps)
+- Memory-limited: `MAX_BUFFER_MEMORY / estimatedFrameBytes` (~62 frames for 1080p)
 - Hard cap: 500 MB total decoded frame memory
 - Frames evicted when outside the prefetch window
 - Consumed frames feed the WebGL2 renderer at target FPS via rAF loop
 
+### Pre-Buffer
+
+Playback starts only after 15 consecutive frames are decoded. Prevents immediate buffer underruns after pressing play.
+
 ### Seek
 
-1. Cancel all pending worker decodes (AbortController on fetch + ignore stale requestIds)
-2. Flush ring buffer
-3. Decode target frame with highest priority
-4. Resume prefetching forward from new position
+1. If target frame is in ring buffer: render instantly, no pipeline cancellation
+2. If target frame is not buffered: cancel fetch pipeline, flush buffer, re-dispatch from new position
 
 ## WebGL2 Renderer (`useProResRenderer`)
 

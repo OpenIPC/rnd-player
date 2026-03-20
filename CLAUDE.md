@@ -100,3 +100,4 @@ Features are toggled via `PlayerModuleConfig` (`src/types/moduleConfig.ts`) — 
 - `docs/artifact-analysis-research.md` — Video artifact analysis research
 - `docs/windows-hevc-ci-codec.md` — Windows HEVC codec CI setup
 - `docs/prores-viewer.md` — ProRes MOV viewer: WASM decode, multi-worker pool, WebGL2 rendering
+- `docs/prores-network-fetch.md` — ProRes fetch strategy: Chrome trace debugging, browser limitations, action points

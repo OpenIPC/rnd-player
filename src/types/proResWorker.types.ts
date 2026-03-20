@@ -13,6 +13,8 @@ export interface ProResWorkerInit {
   width: number;
   /** Video height. */
   height: number;
+  /** Pre-compiled WASM module (avoids per-worker fetch+compile). */
+  wasmModule?: WebAssembly.Module;
 }
 
 export interface ProResWorkerDecodeFrame {
@@ -23,6 +25,35 @@ export interface ProResWorkerDecodeFrame {
   frameIndex: number;
 }
 
+export interface ProResWorkerDecodeBatch {
+  type: "decodeBatch";
+  /** Monotonic request ID for cancellation. */
+  requestId: number;
+  /** First frame index in the batch. */
+  startFrame: number;
+  /** Number of consecutive frames to decode. */
+  count: number;
+}
+
+export interface ProResWorkerDecodePipeline {
+  type: "decodePipeline";
+  /** Monotonic request ID for cancellation. */
+  requestId: number;
+  /** First frame index. */
+  startFrame: number;
+  /** End frame index (exclusive). */
+  endFrame: number;
+  /** Frames per Range request within the pipeline. */
+  batchSize: number;
+}
+
+export interface ProResWorkerDecodeOnly {
+  type: "decodeOnly";
+  requestId: number;
+  frameIndex: number;
+  frameData: Uint8Array;
+}
+
 export interface ProResWorkerCancel {
   type: "cancel";
   requestId: number;
@@ -31,6 +62,9 @@ export interface ProResWorkerCancel {
 export type ProResWorkerRequest =
   | ProResWorkerInit
   | ProResWorkerDecodeFrame
+  | ProResWorkerDecodeBatch
+  | ProResWorkerDecodePipeline
+  | ProResWorkerDecodeOnly
   | ProResWorkerCancel;
 
 /** A single entry from the MOV sample table. */
@@ -75,10 +109,16 @@ export interface ProResWorkerError {
   message: string;
 }
 
+export interface ProResWorkerPipelineDone {
+  type: "pipelineDone";
+  requestId: number;
+}
+
 export type ProResWorkerResponse =
   | ProResWorkerReady
   | ProResWorkerFrame
-  | ProResWorkerError;
+  | ProResWorkerError
+  | ProResWorkerPipelineDone;
 
 /** ProRes codec FourCC variants. */
 export type ProResFourCC = "apch" | "apcn" | "apcs" | "apco" | "ap4h" | "ap4x";

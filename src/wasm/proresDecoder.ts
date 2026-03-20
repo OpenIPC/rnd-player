@@ -99,8 +99,9 @@ class WasiExit {
 
 export async function createProResDecoder(
   fourcc: string,
+  precompiledModule?: WebAssembly.Module,
 ): Promise<ProResDecoderInstance> {
-  const mod = await loadWasmModule();
+  const mod = precompiledModule ?? await loadWasmModule();
 
   // eslint-disable-next-line prefer-const
   let mem: WebAssembly.Memory;
