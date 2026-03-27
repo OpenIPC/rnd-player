@@ -874,6 +874,61 @@ export async function fetchAndValidateHlsChildren(
     }
   }
 
+  // HLS-210: Segment count mismatch across video renditions
+  const videoSegCounts = children
+    .filter((c) => c.type === "video" && c.playlist.segments.length > 0)
+    .map((c) => ({
+      label: c.label,
+      count: c.playlist.segments.length,
+    }));
+
+  if (videoSegCounts.length > 1) {
+    const uniqueCounts = new Set(videoSegCounts.map((d) => d.count));
+    if (uniqueCounts.size > 1) {
+      const detail = videoSegCounts.map((d) => `${d.label}: ${d.count}`).join(", ");
+      issues.push({
+        id: "HLS-210",
+        severity: "error",
+        category: "Manifest Structure",
+        message: "Segment count mismatch across video renditions",
+        detail: `Video renditions have different segment counts: ${detail}. ABR switching may cause glitches.`,
+        specRef: "RFC 8216 §6.2.2",
+      });
+    }
+  }
+
+  // HLS-211: Duration mismatch across video renditions
+  if (videoDurations.length > 1) {
+    let maxDiff = 0;
+    let maxPair: [typeof videoDurations[0], typeof videoDurations[0]] | null = null;
+    for (let i = 0; i < videoDurations.length; i++) {
+      for (let j = i + 1; j < videoDurations.length; j++) {
+        const diff = Math.abs(videoDurations[i].duration - videoDurations[j].duration);
+        if (diff > maxDiff) {
+          maxDiff = diff;
+          maxPair = [videoDurations[i], videoDurations[j]];
+        }
+      }
+    }
+    if (maxDiff > 2 && maxPair) {
+      const [a, b] = maxPair;
+      const ratio = Math.min(a.duration, b.duration) / Math.max(a.duration, b.duration);
+      const pctRaw = (1 - ratio) * 100;
+      const pct = pctRaw < 0.1 ? pctRaw.toFixed(2) : pctRaw.toFixed(0);
+      const detail = videoDurations
+        .map((d) => `${d.label}: ${formatDuration(d.duration)} (${d.duration.toFixed(1)}s)`)
+        .join(", ");
+      issues.push({
+        id: "HLS-211",
+        severity: "error",
+        category: "Timeline",
+        message: `Video rendition duration mismatch (${maxDiff.toFixed(1)}s max difference, ${pct}%)`,
+        detail: `Video renditions have different total EXTINF durations: ${detail}. ABR switching may cause timeline discontinuities.`,
+        specRef: "RFC 8216 §6.2.2",
+      });
+    }
+  }
+
   return issues;
 }
 

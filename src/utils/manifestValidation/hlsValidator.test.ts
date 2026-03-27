@@ -585,6 +585,129 @@ describe("fetchAndValidateHlsChildren — HLS-209", () => {
   });
 });
 
+// --- HLS-210: Segment count mismatch across video renditions ---
+
+describe("fetchAndValidateHlsChildren — HLS-210", () => {
+  it("HLS-210: segment count mismatch across video renditions", async () => {
+    const masterText = multivariant([
+      streamInf("BANDWIDTH=1280000,RESOLUTION=1280x720", "720p.m3u8"),
+      streamInf("BANDWIDTH=2560000,RESOLUTION=1920x1080", "1080p.m3u8"),
+    ]);
+    const master = parseHlsPlaylist(masterText);
+
+    const children: Record<string, string> = {
+      "http://cdn/720p.m3u8": mediaPlaylist([
+        segment(4, "seg0.ts"), segment(4, "seg1.ts"), segment(4, "seg2.ts"),
+      ], { targetDuration: 4 }),
+      "http://cdn/1080p.m3u8": mediaPlaylist([
+        segment(4, "seg0.ts"), segment(4, "seg1.ts"),
+      ], { targetDuration: 4 }),
+    };
+    const fetchFn = async (url: string) => {
+      if (url in children) return children[url];
+      throw new Error("not found");
+    };
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    const hls210 = issues.find((i) => i.id === "HLS-210");
+    expect(hls210).toBeDefined();
+    expect(hls210!.severity).toBe("error");
+    expect(hls210!.detail).toContain("1280x720: 3");
+    expect(hls210!.detail).toContain("1920x1080: 2");
+  });
+
+  it("no HLS-210 when segment counts match", async () => {
+    const masterText = multivariant([
+      streamInf("BANDWIDTH=1280000,RESOLUTION=1280x720", "720p.m3u8"),
+      streamInf("BANDWIDTH=2560000,RESOLUTION=1920x1080", "1080p.m3u8"),
+    ]);
+    const master = parseHlsPlaylist(masterText);
+    const childText = mediaPlaylist([segment(4, "seg0.ts"), segment(4, "seg1.ts")], { targetDuration: 4 });
+    const fetchFn = async () => childText;
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    expect(issues.find((i) => i.id === "HLS-210")).toBeUndefined();
+  });
+
+  it("no HLS-210 with single video rendition", async () => {
+    const masterText = multivariant([
+      streamInf("BANDWIDTH=1280000,RESOLUTION=1280x720", "720p.m3u8"),
+    ]);
+    const master = parseHlsPlaylist(masterText);
+    const childText = mediaPlaylist([segment(4, "seg0.ts")], { targetDuration: 4 });
+    const fetchFn = async () => childText;
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    expect(issues.find((i) => i.id === "HLS-210")).toBeUndefined();
+  });
+});
+
+// --- HLS-211: Duration mismatch across video renditions ---
+
+describe("fetchAndValidateHlsChildren — HLS-211", () => {
+  it("HLS-211: video rendition duration mismatch (>2s)", async () => {
+    const masterText = multivariant([
+      streamInf("BANDWIDTH=1280000,RESOLUTION=1280x720", "720p.m3u8"),
+      streamInf("BANDWIDTH=2560000,RESOLUTION=1920x1080", "1080p.m3u8"),
+    ]);
+    const master = parseHlsPlaylist(masterText);
+
+    // 720p: 3×4s = 12s; 1080p: 2×4s = 8s; diff = 4s > 2s
+    const children: Record<string, string> = {
+      "http://cdn/720p.m3u8": mediaPlaylist([
+        segment(4, "seg0.ts"), segment(4, "seg1.ts"), segment(4, "seg2.ts"),
+      ], { targetDuration: 4 }),
+      "http://cdn/1080p.m3u8": mediaPlaylist([
+        segment(4, "seg0.ts"), segment(4, "seg1.ts"),
+      ], { targetDuration: 4 }),
+    };
+    const fetchFn = async (url: string) => {
+      if (url in children) return children[url];
+      throw new Error("not found");
+    };
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    const hls211 = issues.find((i) => i.id === "HLS-211");
+    expect(hls211).toBeDefined();
+    expect(hls211!.severity).toBe("error");
+    expect(hls211!.category).toBe("Timeline");
+    expect(hls211!.message).toContain("4.0s");
+  });
+
+  it("no HLS-211 when video duration diff < 2s", async () => {
+    const masterText = multivariant([
+      streamInf("BANDWIDTH=1280000,RESOLUTION=1280x720", "720p.m3u8"),
+      streamInf("BANDWIDTH=2560000,RESOLUTION=1920x1080", "1080p.m3u8"),
+    ]);
+    const master = parseHlsPlaylist(masterText);
+
+    const children: Record<string, string> = {
+      "http://cdn/720p.m3u8": mediaPlaylist([segment(6, "seg0.ts"), segment(6, "seg1.ts")]),
+      "http://cdn/1080p.m3u8": mediaPlaylist([segment(5.5, "seg0.ts"), segment(5.5, "seg1.ts")]),
+    };
+    const fetchFn = async (url: string) => {
+      if (url in children) return children[url];
+      throw new Error("not found");
+    };
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    expect(issues.find((i) => i.id === "HLS-211")).toBeUndefined();
+  });
+
+  it("no HLS-211 when video durations match", async () => {
+    const masterText = multivariant([
+      streamInf("BANDWIDTH=1280000,RESOLUTION=1280x720", "720p.m3u8"),
+      streamInf("BANDWIDTH=2560000,RESOLUTION=1920x1080", "1080p.m3u8"),
+    ]);
+    const master = parseHlsPlaylist(masterText);
+    const childText = mediaPlaylist([segment(6, "seg0.ts"), segment(6, "seg1.ts")]);
+    const fetchFn = async () => childText;
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    expect(issues.find((i) => i.id === "HLS-211")).toBeUndefined();
+  });
+});
+
 // --- QA bug scenario ---
 
 describe("QA regression — duration mismatch HLS stream", () => {
