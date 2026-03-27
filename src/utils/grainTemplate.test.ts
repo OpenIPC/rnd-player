@@ -116,9 +116,8 @@ describe("generateGrainTemplate", () => {
   it("AR process is stable (no NaN/Infinity)", () => {
     for (const size of ["fine", "medium", "coarse"] as const) {
       const t = generateGrainTemplate(size);
-      for (let i = 0; i < t.length; i++) {
-        expect(Number.isFinite(t[i])).toBe(true);
-      }
+      const hasNonFinite = t.some((v) => !Number.isFinite(v));
+      expect(hasNonFinite).toBe(false);
     }
   });
 });
