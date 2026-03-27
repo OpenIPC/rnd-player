@@ -46,8 +46,6 @@ export interface ProResPlaybackHandle {
 const MAX_BUFFER_MEMORY = 500 * 1024 * 1024;
 /** Decode workers (CPU-only, no network). */
 const MAX_WORKERS = 3;
-/** Frames per Range request from the main-thread fetch pipeline. */
-const BATCH_SIZE = 10;
 /** Minimum buffered frames before playback starts. */
 const MIN_BUFFER_BEFORE_PLAY = 15;
 
@@ -314,7 +312,7 @@ export function useProResPlayback(
         }
       }
     },
-    [url, maxBufferFrames, workerCount],
+    [url, maxBufferFrames],
   );
 
   const evictFrames = useCallback(

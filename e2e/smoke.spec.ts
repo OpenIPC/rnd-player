@@ -12,7 +12,7 @@ test.describe("Smoke tests", () => {
     await expect(input).toBeVisible();
     await expect(input).toHaveAttribute(
       "placeholder",
-      "Enter manifest URL (.mpd, .m3u8)",
+      "Enter manifest URL (.mpd, .m3u8, .mov)",
     );
     await expect(input).toHaveAttribute("type", "url");
   });
