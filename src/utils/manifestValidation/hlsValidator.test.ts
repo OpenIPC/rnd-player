@@ -5,6 +5,7 @@ import {
   validateHls,
   validateHlsMediaPlaylist,
   fetchAndValidateHlsChildren,
+  findDesyncPoints,
 } from "./hlsValidator";
 
 // --- Helpers ---
@@ -705,6 +706,122 @@ describe("fetchAndValidateHlsChildren — HLS-211", () => {
 
     const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
     expect(issues.find((i) => i.id === "HLS-211")).toBeUndefined();
+  });
+});
+
+// --- findDesyncPoints ---
+
+describe("findDesyncPoints", () => {
+  const makeSeg = (duration: number) => ({ uri: "seg.ts", duration, discontinuity: false, lineNumber: 0 });
+
+  it("MEDIA-SEQUENCE: detects extra segments at the start", () => {
+    // Stream 1 pattern: 1080p starts at 26525, 720p at 26526
+    const lines = findDesyncPoints([
+      { label: "1920x1080", segments: Array.from({ length: 10 }, () => makeSeg(3.2)), mediaSequence: 100 },
+      { label: "1280x720", segments: Array.from({ length: 9 }, () => makeSeg(3.2)), mediaSequence: 101 },
+    ]);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).toContain("1280x720");
+    expect(lines[0]).toContain("missing 1 segment");
+    expect(lines[0]).toContain("start");
+  });
+
+  it("MEDIA-SEQUENCE: detects extra segments at the end", () => {
+    const lines = findDesyncPoints([
+      { label: "1920x1080", segments: Array.from({ length: 10 }, () => makeSeg(4.0)), mediaSequence: 100 },
+      { label: "1280x720", segments: Array.from({ length: 8 }, () => makeSeg(4.0)), mediaSequence: 100 },
+    ]);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).toContain("1280x720");
+    expect(lines[0]).toContain("missing 2 segment");
+    expect(lines[0]).toContain("end");
+  });
+
+  it("MEDIA-SEQUENCE: detects mismatch at both start and end", () => {
+    const lines = findDesyncPoints([
+      { label: "1080p", segments: Array.from({ length: 10 }, () => makeSeg(3.2)), mediaSequence: 100 },
+      { label: "720p", segments: Array.from({ length: 8 }, () => makeSeg(3.2)), mediaSequence: 101 },
+    ]);
+    // 720p: [101..109), ref: [100..110) → missing 100 at start, missing 109 at end
+    expect(lines.length).toBe(2);
+    expect(lines[0]).toContain("start");
+    expect(lines[1]).toContain("end");
+  });
+
+  it("cumulative delta: detects mid-stream gap with non-uniform durations", () => {
+    // ref has extra segment at position 5
+    const refSegs = [4.0, 4.1, 3.9, 4.0, 4.2, 3.8, 4.2, 3.9, 4.0, 4.1].map(makeSeg);
+    const otherSegs = [4.0, 4.1, 3.9, 4.0, 4.2, 4.2, 3.9, 4.0, 4.1].map(makeSeg);
+
+    const lines = findDesyncPoints([
+      { label: "1080p", segments: refSegs },
+      { label: "720p", segments: otherSegs },
+    ]);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).toContain("segment 5");
+    expect(lines[0]).toContain("1080p");
+    expect(lines[0]).toContain("720p");
+  });
+
+  it("cumulative delta: trailing extra with uniform durations", () => {
+    // Uniform durations, no MEDIA-SEQUENCE — can only detect trailing difference
+    const lines = findDesyncPoints([
+      { label: "1080p", segments: Array.from({ length: 10 }, () => makeSeg(3.2)) },
+      { label: "720p", segments: Array.from({ length: 9 }, () => makeSeg(3.2)) },
+    ]);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).toContain("1080p");
+    expect(lines[0]).toContain("extra");
+    expect(lines[0]).toContain("end");
+  });
+
+  it("returns empty for matching renditions", () => {
+    const segs = Array.from({ length: 10 }, () => makeSeg(4.0));
+    const lines = findDesyncPoints([
+      { label: "1080p", segments: segs, mediaSequence: 100 },
+      { label: "720p", segments: segs, mediaSequence: 100 },
+    ]);
+    expect(lines).toEqual([]);
+  });
+
+  it("returns empty for single rendition", () => {
+    const lines = findDesyncPoints([
+      { label: "1080p", segments: Array.from({ length: 10 }, () => makeSeg(4.0)) },
+    ]);
+    expect(lines).toEqual([]);
+  });
+});
+
+// --- HLS-210 integration with desync location ---
+
+describe("fetchAndValidateHlsChildren — HLS-210 desync detail", () => {
+  it("HLS-210 detail includes desync location when MEDIA-SEQUENCE differs", async () => {
+    const masterText = multivariant([
+      streamInf("BANDWIDTH=2560000,RESOLUTION=1920x1080", "1080p.m3u8"),
+      streamInf("BANDWIDTH=1280000,RESOLUTION=1280x720", "720p.m3u8"),
+    ]);
+    const master = parseHlsPlaylist(masterText);
+
+    const children: Record<string, string> = {
+      "http://cdn/1080p.m3u8": mediaPlaylist(
+        [segment(3.2, "seg0.ts"), segment(3.2, "seg1.ts"), segment(3.2, "seg2.ts")],
+        { targetDuration: 4, extra: "#EXT-X-MEDIA-SEQUENCE:100" },
+      ),
+      "http://cdn/720p.m3u8": mediaPlaylist(
+        [segment(3.2, "seg0.ts"), segment(3.2, "seg1.ts")],
+        { targetDuration: 4, extra: "#EXT-X-MEDIA-SEQUENCE:101" },
+      ),
+    };
+    const fetchFn = async (url: string) => {
+      if (url in children) return children[url];
+      throw new Error("not found");
+    };
+
+    const issues = await fetchAndValidateHlsChildren(master, "http://cdn/master.m3u8", fetchFn);
+    const hls210 = issues.find((i) => i.id === "HLS-210");
+    expect(hls210).toBeDefined();
+    expect(hls210!.detail).toContain("missing 1 segment");
+    expect(hls210!.detail).toContain("start");
   });
 });
 

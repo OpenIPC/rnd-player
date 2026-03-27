@@ -166,7 +166,7 @@ Validate the internal structure and required attributes of the manifest itself.
 | HLS-207 | Live playlist has >= 3 target durations of segments | Warning | RFC 8216 §6.2.2 |
 | HLS-208 | `EXT-X-MAP` present for fMP4 segments | Error | RFC 8216 §4.3.2.5 |
 | HLS-209 | Audio/video duration mismatch across child playlists | Error | — |
-| HLS-210 | Segment count matches across video renditions | Error | RFC 8216 §6.2.2 |
+| HLS-210 | Segment count matches across video renditions (with desync location) | Error | RFC 8216 §6.2.2 |
 | HLS-211 | Video rendition duration mismatch (>2s threshold) | Error | RFC 8216 §6.2.2 |
 
 #### 1.2 DASH (ISO 23009-1 / DASH-IF IOP)
@@ -651,12 +651,12 @@ User loads manifest
    - `fetchAndValidateHlsChildren(playlist, baseUrl, fetchFn)` — Phase 2: fetches child media playlists, validates each, and runs cross-rendition checks:
      - **HLS-206**: Discontinuity count mismatch across renditions
      - **HLS-209**: Audio/video duration mismatch — computes total EXTINF durations for video (from EXT-X-STREAM-INF children) and audio (from EXT-X-MEDIA TYPE=AUDIO children), fires error when difference >2s. Reports absolute diff, percentage, and human-readable durations. Catches the ISM packaging bug where 95 segments × 3.2s video vs 95 segments × 2.0s audio produces 304s vs 190s (114s / 37% mismatch).
-     - **HLS-210**: Segment count mismatch across video renditions — compares segment counts for all video children, fires error when any differ. Lists each rendition's label and count.
+     - **HLS-210**: Segment count mismatch across video renditions — compares segment counts for all video children, fires error when any differ. Lists each rendition's label and count. Includes **desync location analysis** via `findDesyncPoints()`: uses EXT-X-MEDIA-SEQUENCE range comparison (primary) or cumulative duration delta transition (fallback for non-uniform durations) to pinpoint where extra/missing segments are.
      - **HLS-211**: Video rendition duration mismatch — sums EXTINF durations for each video child, fires error when max pairwise difference >2s. Reports all rendition durations for debugging.
    - Skipped rules (require segment byte fetching): HLS-202, HLS-203, HLS-204
    - Runs in Stage 1b (multivariant text checks) + Stage 2 (child playlist fetching in `Promise.all` alongside BMFF/codec)
 
-4. **58 unit tests** in `hlsValidator.test.ts`:
+4. **72 unit tests** in `hlsValidator.test.ts`:
    - Parser tests: attribute parsing, RESOLUTION, quoted commas, BOM, multivariant/media detection, I-frame stream infs, duplicate attributes, FRAME-RATE, EXT-X-VERSION
    - Structural checks: HLS-001 through HLS-008
    - Multivariant checks: HLS-101 through HLS-109
@@ -665,9 +665,11 @@ User loads manifest
    - HLS-209 audio/video duration mismatch (ISM bug pattern, matching durations, small diff tolerance)
    - HLS-210 segment count mismatch across video renditions (mismatch, matching, single rendition)
    - HLS-211 video rendition duration mismatch (>2s mismatch, small diff tolerance, matching durations)
+   - `findDesyncPoints`: MEDIA-SEQUENCE range comparison (extra at start, end, both), cumulative duration delta (mid-stream gap with non-uniform durations, trailing extra with uniform), matching/single rendition edge cases
+   - HLS-210 integration: desync location included in detail when MEDIA-SEQUENCE differs
    - QA regression scenarios: realistic multivariant with duration-mismatched variants, child playlist with segment exceeding TARGETDURATION, ISM origin 95×3.2s video vs 95×2.0s audio reproduction
 
-**Files:** `hlsValidator.ts` (parser + validator), `hlsValidator.test.ts` (58 tests), `runValidation.ts` (Stage 1b + Stage 2 orchestration)
+**Files:** `hlsValidator.ts` (parser + validator), `hlsValidator.test.ts` (72 tests), `runValidation.ts` (Stage 1b + Stage 2 orchestration)
 
 **Compatibility validator (not yet implemented):**
 

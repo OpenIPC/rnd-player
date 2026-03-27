@@ -47,6 +47,7 @@ export interface ParsedHlsPlaylist {
   targetDuration?: number;
   segments: HlsSegment[];
   endList: boolean;
+  mediaSequence?: number;
   mediaSequenceLine?: number;
   firstSegmentLine?: number;
   discontinuitySequenceLine?: number;
@@ -234,6 +235,8 @@ export function parseHlsPlaylist(text: string): ParsedHlsPlaylist {
     // EXT-X-MEDIA-SEQUENCE
     if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
       result.mediaSequenceLine = lineNumber;
+      const val = parseInt(line.slice(22), 10);
+      if (!isNaN(val)) result.mediaSequence = val;
       continue;
     }
 
@@ -756,6 +759,151 @@ export function validateHlsMediaPlaylist(media: ParsedHlsMediaPlaylist): Validat
   return validateHlsMediaPlaylistInner(media.playlist, media.label);
 }
 
+// --- Desync location analysis ---
+
+interface RenditionInfo {
+  label: string;
+  segments: HlsSegment[];
+  mediaSequence?: number;
+}
+
+function formatTimestamp(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Pinpoint where segment desync occurs between video renditions.
+ * Strategy 1: EXT-X-MEDIA-SEQUENCE range comparison (works for all duration patterns).
+ * Strategy 2: Cumulative duration delta transition (fallback for non-uniform durations).
+ */
+export function findDesyncPoints(renditions: RenditionInfo[]): string[] {
+  if (renditions.length < 2) return [];
+
+  const results: string[] = [];
+
+  // Strategy 1: MEDIA-SEQUENCE range comparison
+  const allHaveSeq = renditions.every((r) => r.mediaSequence !== undefined);
+  if (allHaveSeq) {
+    const ranges = renditions.map((r) => ({
+      label: r.label,
+      start: r.mediaSequence!,
+      end: r.mediaSequence! + r.segments.length,
+      count: r.segments.length,
+      segDur: r.segments.length > 0
+        ? r.segments.reduce((sum, s) => sum + s.duration, 0) / r.segments.length
+        : 0,
+    }));
+
+    // Group renditions by their start sequence
+    const byStart = new Map<number, string[]>();
+    for (const r of ranges) {
+      const labels = byStart.get(r.start) ?? [];
+      labels.push(r.label);
+      byStart.set(r.start, labels);
+    }
+
+    // Group by end sequence
+    const byEnd = new Map<number, string[]>();
+    for (const r of ranges) {
+      const labels = byEnd.get(r.end) ?? [];
+      labels.push(r.label);
+      byEnd.set(r.end, labels);
+    }
+
+    // Report start mismatches
+    if (byStart.size > 1) {
+      const sorted = [...byStart.entries()].sort((a, b) => a[0] - b[0]);
+      const earliest = sorted[0][0];
+      for (const [start, labels] of sorted) {
+        if (start > earliest) {
+          const missing = start - earliest;
+          const avgDur = ranges.find((r) => r.start === earliest)?.segDur ?? 0;
+          results.push(
+            `${labels.join(", ")} missing ${missing} segment${missing > 1 ? "s" : ""} at the start` +
+            ` (seq ${earliest}..${start - 1}, ~${formatTimestamp(0)}–${formatTimestamp(missing * avgDur)})`,
+          );
+        }
+      }
+    }
+
+    // Report end mismatches
+    if (byEnd.size > 1) {
+      const sorted = [...byEnd.entries()].sort((a, b) => b[0] - a[0]);
+      const latest = sorted[0][0];
+      for (const [end, labels] of sorted) {
+        if (end < latest) {
+          const missing = latest - end;
+          const avgDur = ranges.find((r) => r.end === latest)?.segDur ?? 0;
+          const refRange = ranges.find((r) => r.end === latest)!;
+          const timeOffset = (refRange.count - missing) * avgDur;
+          results.push(
+            `${labels.join(", ")} missing ${missing} segment${missing > 1 ? "s" : ""} at the end` +
+            ` (seq ${end}..${latest - 1}, ~${formatTimestamp(timeOffset)}–${formatTimestamp(refRange.count * avgDur)})`,
+          );
+        }
+      }
+    }
+
+    // Check for middle gaps: same start + same end but different counts
+    if (byStart.size === 1 && byEnd.size === 1) {
+      const uniqueCounts = new Set(ranges.map((r) => r.count));
+      if (uniqueCounts.size > 1) {
+        // All renditions have same start/end sequence but different counts —
+        // some sequences are missing in the middle. Fall through to strategy 2.
+      } else {
+        return results;
+      }
+    }
+
+    if (results.length > 0) return results;
+  }
+
+  // Strategy 2: Cumulative duration delta transition
+  const sorted = [...renditions].sort((a, b) => b.segments.length - a.segments.length);
+  const ref = sorted[0];
+  const other = sorted[sorted.length - 1];
+
+  if (ref.segments.length === other.segments.length) return results;
+
+  const minLen = Math.min(ref.segments.length, other.segments.length);
+  let refCum = 0;
+  let otherCum = 0;
+  let firstDivergence = -1;
+
+  for (let i = 0; i < minLen; i++) {
+    refCum += ref.segments[i].duration;
+    otherCum += other.segments[i].duration;
+    if (Math.abs(refCum - otherCum) > 0.01 && firstDivergence === -1) {
+      firstDivergence = i;
+    }
+  }
+
+  const trailing = ref.segments.length - other.segments.length;
+
+  if (firstDivergence >= 0) {
+    const timeAtDiv = ref.segments
+      .slice(0, firstDivergence)
+      .reduce((sum, s) => sum + s.duration, 0);
+    results.push(
+      `Desync starts at segment ${firstDivergence} (~${formatTimestamp(timeAtDiv)}): ` +
+      `cumulative durations diverge between ${ref.label} and ${other.label}`,
+    );
+  }
+
+  if (trailing > 0 && firstDivergence === -1) {
+    const timeAtEnd = other.segments.reduce((sum, s) => sum + s.duration, 0);
+    results.push(
+      `${ref.label} has ${trailing} extra segment${trailing > 1 ? "s" : ""} at the end ` +
+      `(~${formatTimestamp(timeAtEnd)}–${formatTimestamp(timeAtEnd + ref.segments.slice(minLen).reduce((sum, s) => sum + s.duration, 0))})`,
+    );
+  }
+
+  return results;
+}
+
 // --- Fetch + cross-rendition checks ---
 
 export async function fetchAndValidateHlsChildren(
@@ -885,13 +1033,27 @@ export async function fetchAndValidateHlsChildren(
   if (videoSegCounts.length > 1) {
     const uniqueCounts = new Set(videoSegCounts.map((d) => d.count));
     if (uniqueCounts.size > 1) {
-      const detail = videoSegCounts.map((d) => `${d.label}: ${d.count}`).join(", ");
+      const countDetail = videoSegCounts.map((d) => `${d.label}: ${d.count}`).join(", ");
+
+      const desyncRenditions: RenditionInfo[] = children
+        .filter((c) => c.type === "video" && c.playlist.segments.length > 0)
+        .map((c) => ({
+          label: c.label,
+          segments: c.playlist.segments,
+          mediaSequence: c.playlist.mediaSequence,
+        }));
+      const desyncLines = findDesyncPoints(desyncRenditions);
+
+      const detail = desyncLines.length > 0
+        ? `Video renditions have different segment counts: ${countDetail}.\n${desyncLines.join("\n")}`
+        : `Video renditions have different segment counts: ${countDetail}. ABR switching may cause glitches.`;
+
       issues.push({
         id: "HLS-210",
         severity: "error",
         category: "Manifest Structure",
         message: "Segment count mismatch across video renditions",
-        detail: `Video renditions have different segment counts: ${detail}. ABR switching may cause glitches.`,
+        detail,
         specRef: "RFC 8216 §6.2.2",
       });
     }
