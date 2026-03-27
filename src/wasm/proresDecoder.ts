@@ -179,8 +179,8 @@ export async function createProResDecoder(
   return {
     decode(
       frameData: Uint8Array,
-      width: number,
-      height: number,
+      _width: number,
+      _height: number,
       is444: boolean,
     ): DecodedFrame {
       if (destroyed) throw new Error("Decoder already destroyed");

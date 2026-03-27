@@ -185,7 +185,7 @@ export default function QpHeatmapOverlay({ videoEl, data, displayMode = "qp" }: 
       // Draw legend
       ctx.globalAlpha = 1;
 
-      if (showQp && (!showModes || displayMode === "qp")) {
+      if (showQp && (!showModes || (displayMode as QpDisplayMode) === "qp")) {
         // QP gradient legend
         const legendW = 120;
         const legendH = 44;
