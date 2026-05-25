@@ -14,15 +14,33 @@ export interface TextTrackInfo {
   mimeType: string;
 }
 
-/** Parsers keyed by MIME type. Returns null for unsupported formats. */
-function createParser(
-  mimeType: string,
-): shaka.extern.TextParser | null {
-  if (mimeType === "text/vtt") return new shaka.text.VttTextParser();
-  if (mimeType === "application/x-subrip") return new shaka.text.SrtTextParser();
-  if (mimeType === "application/ttml+xml") return new shaka.text.TtmlTextParser();
-  // mp4-embedded subtitles (wvtt/stpp) require mp4 demuxing — skip
+interface ParserBundle {
+  parser: shaka.extern.TextParser;
+  needsInit: boolean;
+}
+
+/** Resolves a parser from a track's MIME and codecs. Returns null for unsupported formats. */
+function createParser(mimeType: string, codecs: string): ParserBundle | null {
+  if (mimeType === "text/vtt")
+    return { parser: new shaka.text.VttTextParser(), needsInit: false };
+  if (mimeType === "application/x-subrip")
+    return { parser: new shaka.text.SrtTextParser(), needsInit: false };
+  if (mimeType === "application/ttml+xml")
+    return { parser: new shaka.text.TtmlTextParser(), needsInit: false };
+  if (mimeType === "application/mp4") {
+    if (codecs.startsWith("wvtt"))
+      return { parser: new shaka.text.Mp4VttParser(), needsInit: true };
+    if (codecs.startsWith("stpp"))
+      return { parser: new shaka.text.Mp4TtmlParser(), needsInit: true };
+  }
   return null;
+}
+
+async function fetchRange(uri: string, start: number, end: number | null): Promise<ArrayBuffer> {
+  const headers: HeadersInit = end != null ? { Range: `bytes=${start}-${end}` } : {};
+  const resp = await fetch(uri, { headers });
+  if (!resp.ok) throw new Error(`fetch ${uri} → ${resp.status}`);
+  return resp.arrayBuffer();
 }
 
 /**
@@ -68,8 +86,16 @@ export function useMultiSubtitles(
 
       const trackInfo = textTracksRef.current.find((t) => t.id === trackId);
       const mimeType = trackInfo?.mimeType ?? stream.mimeType ?? "";
-      const parser = createParser(mimeType);
-      if (!parser) return;
+      const codecs = stream.codecs ?? "";
+      const bundle = createParser(mimeType, codecs);
+      if (!bundle) {
+        console.warn(
+          "[subtitles] unsupported track format",
+          { trackId, mimeType, codecs },
+        );
+        return;
+      }
+      const { parser, needsInit } = bundle;
 
       const loadPromise = (async () => {
         try {
@@ -79,9 +105,10 @@ export function useMultiSubtitles(
 
           const allCues: SubCue[] = [];
 
-          // Iterate all segment references
           const iter = index[Symbol.iterator]();
           let result = iter.next();
+          let initParsed = !needsInit;
+
           while (!result.done) {
             const ref = result.value as shaka.media.SegmentReference;
             const uris = ref.getUris();
@@ -90,14 +117,37 @@ export function useMultiSubtitles(
               continue;
             }
 
-            try {
-              const resp = await fetch(uris[0]);
-              if (!resp.ok) {
-                result = iter.next();
-                continue;
+            // Mp4 parsers need parseInit(initBytes) before parseMedia().
+            // Shaka's `initSegmentReference` instance field is name-mangled in the
+            // production build (only prototype methods are exported), so we can't
+            // read it directly. For SegmentBase manifests, init and media share a
+            // URL and the first media segment's startByte tells us where init ends —
+            // Mp4VttParser/Mp4TtmlParser walk boxes tolerantly, so a trailing sidx is fine.
+            if (!initParsed) {
+              const firstStart = ref.getStartByte();
+              if (firstStart <= 0) {
+                console.warn(
+                  "[subtitles] cannot locate init segment (SegmentTemplate not supported yet)",
+                  { trackId },
+                );
+                break;
               }
+              try {
+                const initBuf = await fetchRange(uris[0], 0, firstStart - 1);
+                parser.parseInit(new Uint8Array(initBuf));
+                initParsed = true;
+              } catch (err) {
+                console.warn(
+                  "[subtitles] init segment fetch/parse failed",
+                  { trackId, uri: uris[0], range: `0-${firstStart - 1}` },
+                  err,
+                );
+                break;
+              }
+            }
 
-              const buffer = await resp.arrayBuffer();
+            try {
+              const buffer = await fetchRange(uris[0], ref.getStartByte(), ref.getEndByte());
               const time = {
                 periodStart: 0,
                 segmentStart: ref.getStartTime(),
@@ -120,17 +170,20 @@ export function useMultiSubtitles(
                   });
                 }
               }
-            } catch {
-              // Skip segments that fail to fetch/parse
+            } catch (err) {
+              console.warn(
+                "[subtitles] segment fetch/parse failed",
+                { trackId, uri: uris[0] },
+                err,
+              );
             }
             result = iter.next();
           }
 
-          // Sort by start time
           allCues.sort((a, b) => a.startTime - b.startTime);
           cueCache.current.set(trackId, allCues);
-        } catch {
-          // Parsing failed — treat as empty
+        } catch (err) {
+          console.warn("[subtitles] track load failed", { trackId }, err);
           cueCache.current.set(trackId, []);
         } finally {
           loadingRef.current.delete(trackId);
