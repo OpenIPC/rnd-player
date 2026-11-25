@@ -145,6 +145,10 @@ export function computeSyncActions(
       state.heldRate = master.playbackRate;
       out.push({ kind: "holdMaster" });
     }
+    // The master may have started seeking/buffering on its own during the
+    // hold — releasing now would restore its rate while it can't play and
+    // start the slave against a stalled master. Keep both parked.
+    if (master.seeking || master.readyState < HAVE_FUTURE_DATA) return out;
     if (!slaveReady(slave)) return out;
 
     if (Math.abs(slave.currentTime - master.currentTime) > HARD_SEEK_DRIFT) {
@@ -153,13 +157,18 @@ export function computeSyncActions(
       return out;
     }
 
+    if (slave.paused) {
+      // Start the slave first and keep the master held until a later tick
+      // observes it actually playing: if play() fails (it rejects and
+      // `paused` flips back), the master must not run on alone.
+      out.push({ kind: "setSlaveRate", rate: state.heldRate }, { kind: "playSlave" });
+      return out;
+    }
+
     state.masterHeld = false;
     state.slaveHeld = false;
-    out.push(
-      { kind: "setSlaveRate", rate: state.heldRate },
-      { kind: "playSlave" },
-      { kind: "releaseMaster", rate: state.heldRate },
-    );
+    if (slave.playbackRate !== state.heldRate) out.push({ kind: "setSlaveRate", rate: state.heldRate });
+    out.push({ kind: "releaseMaster", rate: state.heldRate });
     return out;
   }
 

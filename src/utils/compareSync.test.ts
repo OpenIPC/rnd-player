@@ -64,12 +64,14 @@ describe("computeSyncActions", () => {
       // Master frozen at rate 0, slave still buffering → wait
       expect(computeSyncActions(media({ playbackRate: 0 }), media({ readyState: 2, paused: true }), s)).toEqual([]);
 
-      // Slave has data at master time → release both
+      // Slave has data at master time → start the slave, master still held
       expect(computeSyncActions(media({ playbackRate: 0 }), media({ paused: true }), s)).toEqual([
         { kind: "setSlaveRate", rate: 1 },
         { kind: "playSlave" },
-        { kind: "releaseMaster", rate: 1 },
       ]);
+      expect(s.masterHeld).toBe(true);
+      // Slave observed playing → release the master
+      expect(computeSyncActions(media({ playbackRate: 0 }), media(), s)).toEqual([{ kind: "releaseMaster", rate: 1 }]);
       expect(s.masterHeld).toBe(false);
     });
 
@@ -84,8 +86,9 @@ describe("computeSyncActions", () => {
       for (let i = 0; i < 10; i++) {
         expect(computeSyncActions(media({ currentTime: 101, playbackRate: 0 }), media({ currentTime: 101, seeking: true, readyState: 1, paused: true }), s)).toEqual([]);
       }
-      // Landed → release
-      const out = computeSyncActions(media({ currentTime: 101, playbackRate: 0 }), media({ currentTime: 101, paused: true }), s);
+      // Landed → start slave, then release once it plays
+      expect(computeSyncActions(media({ currentTime: 101, playbackRate: 0 }), media({ currentTime: 101, paused: true }), s)).toContainEqual({ kind: "playSlave" });
+      const out = computeSyncActions(media({ currentTime: 101, playbackRate: 0 }), media({ currentTime: 101 }), s);
       expect(out.at(-1)).toEqual({ kind: "releaseMaster", rate: 1 });
     });
 
@@ -102,8 +105,9 @@ describe("computeSyncActions", () => {
       const s = createSyncState();
       computeSyncActions(media({ playbackRate: 2 }), media({ readyState: 2, playbackRate: 2 }), s);
       expect(s.heldRate).toBe(2);
-      const out = computeSyncActions(media({ playbackRate: 0 }), media({ paused: true, playbackRate: 2 }), s);
-      expect(out).toContainEqual({ kind: "releaseMaster", rate: 2 });
+      computeSyncActions(media({ playbackRate: 0 }), media({ paused: true, playbackRate: 2 }), s);
+      const out = computeSyncActions(media({ playbackRate: 0 }), media({ playbackRate: 2 }), s);
+      expect(out).toEqual([{ kind: "releaseMaster", rate: 2 }]);
     });
 
     it("adopts a rate set during the hold and re-freezes the master", () => {
@@ -114,6 +118,30 @@ describe("computeSyncActions", () => {
         { kind: "holdMaster" },
       ]);
       expect(s.heldRate).toBe(1.5);
+    });
+
+    it("does not release while the held master is itself seeking or buffering (review #2)", () => {
+      const s = createSyncState();
+      computeSyncActions(media(), media({ readyState: 2 }), s);
+      expect(s.masterHeld).toBe(true);
+      // Slave ready, but master started buffering / seeking during the hold
+      expect(computeSyncActions(media({ playbackRate: 0, readyState: 2 }), media({ paused: true }), s)).toEqual([]);
+      expect(computeSyncActions(media({ playbackRate: 0, seeking: true }), media({ paused: true }), s)).toEqual([]);
+      expect(s.masterHeld).toBe(true);
+      // Master ready again → proceed with release sequence
+      expect(computeSyncActions(media({ playbackRate: 0 }), media({ paused: true }), s)).toContainEqual({ kind: "playSlave" });
+    });
+
+    it("keeps the master held while slave play() fails, retrying (review #4)", () => {
+      const s = createSyncState();
+      computeSyncActions(media(), media({ readyState: 2 }), s);
+      for (let i = 0; i < 5; i++) {
+        // play() rejected → slave still paused every tick
+        const out = computeSyncActions(media({ playbackRate: 0 }), media({ paused: true }), s);
+        expect(out).toContainEqual({ kind: "playSlave" });
+        expect(out).not.toContainEqual(expect.objectContaining({ kind: "releaseMaster" }));
+      }
+      expect(s.masterHeld).toBe(true);
     });
 
     it("releases the hold if the user pauses during it", () => {
