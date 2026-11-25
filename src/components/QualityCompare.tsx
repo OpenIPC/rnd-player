@@ -898,7 +898,14 @@ export default function QualityCompare({
             slaveVideo.pause();
             break;
           case "playSlave":
-            slaveVideo.play().catch(() => {});
+            // A rejection flips `paused` back to true; the policy only
+            // releases a held master once it sees the slave playing, so a
+            // failed start keeps both parked and is retried next frame.
+            slaveVideo.play().catch((e: unknown) => {
+              if ((e as { name?: string })?.name !== "AbortError") {
+                console.warn("QualityCompare: slave play() failed", e);
+              }
+            });
             break;
           case "seekSlave":
             slaveVideo.currentTime = action.time;
@@ -914,8 +921,12 @@ export default function QualityCompare({
 
     return () => {
       cancelAnimationFrame(rafId);
-      // Never leave the master frozen when compare closes mid-hold.
-      if (syncState.masterHeld) masterVideo.playbackRate = syncState.heldRate;
+      // Never leave the master frozen when compare closes mid-hold. Prefer a
+      // positive rate set since the last tick (e.g. the speed menu) over the
+      // saved one.
+      if (syncState.masterHeld) {
+        masterVideo.playbackRate = masterVideo.playbackRate > 0 ? masterVideo.playbackRate : syncState.heldRate;
+      }
       masterVideo.removeEventListener("play", onPlay);
       masterVideo.removeEventListener("pause", onPause);
       masterVideo.removeEventListener("seeked", onSeeked);
