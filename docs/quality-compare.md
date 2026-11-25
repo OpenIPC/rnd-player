@@ -186,17 +186,35 @@ masterVideo seeks -> seeked fires -> slaveVideo.currentTime = masterVideo.curren
 
 Click-to-pause re-asserts the master's position (`masterVideo.currentTime = masterVideo.currentTime`) to force a `seeked` event, avoiding the race condition of seeking a video transitioning from play to pause.
 
-### Playing (Drift Correction)
+### Playing (Synchronized Buffering)
 
-A `requestAnimationFrame` loop adjusts the slave's `playbackRate`:
+A `requestAnimationFrame` loop applies the policy in `src/utils/compareSync.ts`. `computeSyncActions` is a pure, unit-tested function that returns a list of actions for the loop to apply.
 
-| Drift | Action |
+| Condition | Action |
 |-------|--------|
-| > 200 ms | Hard seek `slaveVideo.currentTime = masterTime` |
-| 16-200 ms | Rate adjust +/-3% (`masterRate * 0.97` or `* 1.03`) |
-| < 16 ms | Match rates exactly |
+| Master seeking, buffering, at Shaka's buffering rate 0, or its clock frozen ≥ 300 ms while it claims to play | Pause the slave; resume it when the master clock moves again |
+| Slave seeking or buffering, or drift > 200 ms | **Hold the master** (`playbackRate = 0`), pause the slave, seek it to the frozen master time if needed, then release both together |
+| Drift 16-200 ms | Rate adjust +/-3% (`masterRate * 0.97` or `* 1.03`) |
+| Drift < 16 ms | Match rates exactly |
 
-Rate-based correction avoids decoder flicker that hard seeks cause.
+**Why hold the master with rate 0:**
+- It fires no `pause` event, so the controls, the persisted state and the compare pause handler don't react.
+- It's the same mechanism Shaka uses for its own buffering, and Shaka's `onRateChange_` ignores rate 0.
+- `heldRate` stores the real speed. If the speed changes during a hold (from the user's speed menu, or Shaka ending its own buffering), it becomes the new `heldRate`, and the master is frozen again.
+- The hold is always undone when the user pauses, when the master passes the end of the slave, and when compare closes.
+- `VideoControls` ignores rate-0 `ratechange` events, so the speed label doesn't flash `0x`.
+
+Rate-based correction avoids the decoder flicker that hard seeks cause.
+
+**Root cause of the "left loops a few frames, right frozen" report:** the master video wasn't advancing at all. The audio metering hooks (`useTrackAMeter`, which runs `useAudioAnalyser` and `useLoudnessMeter`) route the master through `createMediaElementSource`. They create the `AudioContext` on mount, before any user gesture, so under Chrome's autoplay policy it starts `suspended`, and the mount-time `resume()` does nothing. An element routed into a suspended context never advances its clock. It still reports `paused=false`, `readyState=4` and `rate=1`, while `currentTime` and decoded frames stand still, and Shaka's stall detector nudges it by 0.1 s every few seconds. This affected normal playback too. It goes unnoticed when Chrome lets a site with a lot of media playback start audio without a gesture.
+- **Fix:** `src/utils/audioSourceCache.ts` resumes the context on the element's `play` event and on user gestures.
+- **Defence:** the sync loop counts how long the master claims to play without its clock moving, accumulated across its own hold/release cycles. At 300 ms it parks the slave, so a frozen master can't trigger the ping-pong.
+
+Repro: Chrome without `--autoplay-policy=no-user-gesture-required`, a fresh profile, a real click on play.
+
+**Failure mode this replaced:** the old loop hard-seeked the slave toward a master that kept moving, on every frame where drift was over 200 ms. When the slave couldn't fetch and decode faster than real time, every seek landed behind the master and was re-issued, flushing the buffer again. It never converged, so the slave looped a few frames or froze while the master played. A 4K HEVC slave with less bandwidth than both streams together need is enough to trigger this, e.g. 12 Mbps for 11.7 + 4 Mbps. Holding the master makes each seek target stationary, so one seek converges.
+
+Measured with a 1608p HEVC vs 804p AVC dual-manifest pair, 12 Mbps CDP throttle, 60 s: the old loop seeked about 4 times a second and never decoded a frame. The new loop runs in sync (max drift 80 ms), frozen 23% of the time, close to the minimum of about 24% for that bandwidth. With enough bandwidth there are no holds.
 
 ### Duration Mismatch
 
