@@ -104,9 +104,9 @@ GitHub Actions (`.github/workflows/ci.yml`) runs 8 jobs: 1 unit test + build job
 
 | Runner | Browser | Notes |
 |--------|---------|-------|
-| `ubuntu-latest` | chromium | Standard |
-| `ubuntu-latest` | firefox | Requires `gstreamer1.0-libav` for H.264 (see below) |
-| `ubuntu-latest` | webkit | WebKitGTK (Linux rendering path) |
+| `ubuntu-24.04` | chromium | Standard |
+| `ubuntu-24.04` | firefox | Requires `gstreamer1.0-libav` for H.264 (see below) |
+| `ubuntu-24.04` | webkit | WebKitGTK (Linux rendering path) |
 | `macos-latest` | webkit | Core Animation WebKit — closest to real Safari |
 | `macos-latest` | firefox | VideoToolbox H.264 — tests Firefox WebCodecs (see below) |
 | `windows-latest` | edge | Pre-installed Edge binary, `channel: "msedge"` |
