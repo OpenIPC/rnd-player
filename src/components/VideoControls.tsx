@@ -448,7 +448,11 @@ export default function VideoControls({
       setVolume(videoEl.volume);
       setMuted(videoEl.muted);
     };
-    const onRateChange = () => setPlaybackRate(videoEl.playbackRate);
+    // Rate 0 is a transient hold (Shaka buffering, compare-mode sync), not a
+    // user speed — keep showing the real speed.
+    const onRateChange = () => {
+      if (videoEl.playbackRate > 0) setPlaybackRate(videoEl.playbackRate);
+    };
     const onProgress = () => {
       if (videoEl.buffered.length > 0) {
         setBufferedEnd(videoEl.buffered.end(videoEl.buffered.length - 1));

@@ -57,6 +57,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import shaka from "shaka-player";
 import { hasClearKeySupport, waitForDecryption, configureSoftwareDecryption } from "../utils/softwareDecrypt";
+import { computeSyncActions, createSyncState } from "../utils/compareSync";
 import { fetchWithCorsRetry, getCorsBlockedOrigin } from "../utils/corsProxy";
 import { getFrameTypeAtTime, clearFrameTypeCache } from "../utils/getFrameTypeAtTime";
 import type { FrameTypeResult } from "../utils/getFrameTypeAtTime";
@@ -878,26 +879,33 @@ export default function QualityCompare({
     masterVideo.addEventListener("pause", onPause);
     masterVideo.addEventListener("seeked", onSeeked);
 
-    // rAF drift correction — rate adjustment for small drifts,
-    // hard seek only for large ones
+    // rAF sync loop — synchronized buffering: slave waits for a stalled
+    // master; master is held (rate 0) while the slave seeks/buffers; small
+    // drift is corrected by rate nudging. See utils/compareSync.ts.
+    const syncState = createSyncState();
+
     let rafId: number;
     const syncLoop = () => {
-      if (!slaveVideo.paused && !masterVideo.paused) {
-        // Pause slave if master time exceeds slave duration
-        if (slaveVideo.duration && masterVideo.currentTime > slaveVideo.duration) {
-          slaveVideo.pause();
-        } else {
-          const drift = slaveVideo.currentTime - masterVideo.currentTime;
-          const absDrift = Math.abs(drift);
-          if (absDrift > 0.2) {
-            slaveVideo.currentTime = masterVideo.currentTime;
-            slaveVideo.playbackRate = masterVideo.playbackRate;
-          } else if (absDrift > 0.016) {
-            slaveVideo.playbackRate =
-              masterVideo.playbackRate * (drift > 0 ? 0.97 : 1.03);
-          } else {
-            slaveVideo.playbackRate = masterVideo.playbackRate;
-          }
+      for (const action of computeSyncActions(masterVideo, slaveVideo, syncState, performance.now())) {
+        switch (action.kind) {
+          case "holdMaster":
+            masterVideo.playbackRate = 0;
+            break;
+          case "releaseMaster":
+            masterVideo.playbackRate = action.rate;
+            break;
+          case "pauseSlave":
+            slaveVideo.pause();
+            break;
+          case "playSlave":
+            slaveVideo.play().catch(() => {});
+            break;
+          case "seekSlave":
+            slaveVideo.currentTime = action.time;
+            break;
+          case "setSlaveRate":
+            slaveVideo.playbackRate = action.rate;
+            break;
         }
       }
       rafId = requestAnimationFrame(syncLoop);
@@ -906,6 +914,8 @@ export default function QualityCompare({
 
     return () => {
       cancelAnimationFrame(rafId);
+      // Never leave the master frozen when compare closes mid-hold.
+      if (syncState.masterHeld) masterVideo.playbackRate = syncState.heldRate;
       masterVideo.removeEventListener("play", onPlay);
       masterVideo.removeEventListener("pause", onPause);
       masterVideo.removeEventListener("seeked", onSeeked);
