@@ -138,7 +138,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        # Pinned: ubuntu-latest moved to 26.04, which Playwright 1.58 can't
+        # install browsers/deps on ("does not support chromium on ubuntu26.04").
+        os: [ubuntu-24.04]
         browser: [chromium, firefox, webkit]
         include:
           - os: macos-latest
@@ -165,7 +167,7 @@ jobs:
           path: ${{ runner.temp }}/dash-fixture
 
       - name: Install Playwright browser (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: npx playwright install --with-deps ${{ matrix.browser }}
 
       - name: Install Playwright browser (macOS)
@@ -177,7 +179,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Install H.264 codecs for Firefox
-        if: matrix.browser == 'firefox' && matrix.os == 'ubuntu-latest'
+        if: matrix.browser == 'firefox' && runner.os == 'Linux'
         run: sudo apt-get install -y gstreamer1.0-libav
 
       - name: Install HEVC Video Extensions (Windows)
