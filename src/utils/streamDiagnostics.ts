@@ -129,6 +129,24 @@ export function diagnoseNetworkError(
     };
   }
 
+  // --- CONTENT_UNSUPPORTED_BY_BROWSER (4032): every variant filtered out ---
+  if (error.code === 4032) {
+    return {
+      summary: "No playable streams: codecs not supported by this browser",
+      details: [
+        "Shaka filtered out every variant because MediaSource.isTypeSupported() rejected its mimeType/codecs.",
+        "Check the manifest's codecs attributes — besides genuinely unsupported codecs, a malformed " +
+        "codec string (e.g. AV1 \"av01.0.08M.0\" instead of \"av01.0.08M.08\") is rejected the same way.",
+        "Shaka error: category=4 code=4032",
+      ],
+    };
+  }
+
+  // --- Non-network Shaka errors (load() rejects with any category) ---
+  if (error.category != null && error.category !== 1) {
+    return diagnoseFallbackError(error, undefined, context.manifestUrl);
+  }
+
   // --- Other non-1001 network errors ---
   if (error.code !== 1001) {
     return {

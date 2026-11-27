@@ -173,6 +173,26 @@ describe("streamDiagnostics", () => {
       });
     });
 
+    describe("non-network errors from load()", () => {
+      it("diagnoses CONTENT_UNSUPPORTED_BY_BROWSER (4032) as a codec problem", () => {
+        const err = diagnoseNetworkError({ code: 4032, category: 4, data: [] }, baseCtx);
+        expect(err.summary).toBe("No playable streams: codecs not supported by this browser");
+        expect(err.summary).not.toMatch(/network/i);
+        expect(err.details.some((d) => d.includes("codecs"))).toBe(true);
+      });
+
+      it("does not label other non-network categories as network errors", () => {
+        const err = diagnoseNetworkError({ code: 4001, category: 4, data: [] }, baseCtx);
+        expect(err.summary).not.toMatch(/network/i);
+        expect(err.summary).toContain("4001");
+      });
+
+      it("still treats category 1 errors as network errors", () => {
+        const err = diagnoseNetworkError({ code: 1004, category: 1, data: [] }, baseCtx);
+        expect(err.summary).toBe("Network error (code 1004)");
+      });
+    });
+
     describe("URL shortening", () => {
       it("includes shortened URL in details", () => {
         const longUrl = "https://cdn.example.com/vod/cid/126979210-2000000000-_23VxJohwEpiPcCWkv3OTQ/storage666/clr/m/shfpbw/9d704423-61d5-476a-af79-b10523975aa4/output.ism/Q(5)/F(v=74399953)";
