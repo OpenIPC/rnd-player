@@ -4,6 +4,7 @@
  * Replaces cryptic one-line Shaka errors with actionable diagnostics:
  * failed URL, HTTP status, request type, and pattern-based root cause hints.
  */
+import { defaultTypeSupport, describeCodecProbe, extractDeclaredCodecs, probeCodecs, type TypeSupportFn } from "./codecProbe";
 
 export interface StreamError {
   summary: string;
@@ -57,6 +58,10 @@ interface ShakaErrorLike {
 interface DiagnosticContext {
   segmentSuccessCount: number;
   manifestUrl: string;
+  /** Raw manifest text, used to probe declared codecs on 4032 */
+  rawManifest?: string | null;
+  /** Override for MediaSource.isTypeSupported (tests) */
+  isTypeSupported?: TypeSupportFn;
 }
 
 /**
@@ -131,15 +136,7 @@ export function diagnoseNetworkError(
 
   // --- CONTENT_UNSUPPORTED_BY_BROWSER (4032): every variant filtered out ---
   if (error.code === 4032) {
-    return {
-      summary: "No playable streams: codecs not supported by this browser",
-      details: [
-        "Shaka filtered out every variant because MediaSource.isTypeSupported() rejected its mimeType/codecs.",
-        "Check the manifest's codecs attributes — besides genuinely unsupported codecs, a malformed " +
-        "codec string (e.g. AV1 \"av01.0.08M.0\" instead of \"av01.0.08M.08\") is rejected the same way.",
-        "Shaka error: category=4 code=4032",
-      ],
-    };
+    return diagnoseUnsupportedContent(context);
   }
 
   // --- Non-network Shaka errors (load() rejects with any category) ---
@@ -172,6 +169,38 @@ export function diagnoseNetworkError(
 
   // Segment-level errors
   return diagnoseSegmentError(httpStatus, uri, shortUrl, typeName, context);
+}
+
+function diagnoseUnsupportedContent(context: DiagnosticContext): StreamError {
+  const fallback: StreamError = {
+    summary: "No playable streams: codecs not supported by this browser",
+    details: [
+      "Shaka filtered out every variant because the browser rejected its mimeType/codecs.",
+      "Check the manifest's codecs attributes — besides genuinely unsupported codecs, a malformed " +
+      "codec string (e.g. AV1 \"av01.0.08M.0\" instead of \"av01.0.08M.08\") is rejected the same way.",
+      "Shaka error: category=4 code=4032",
+    ],
+  };
+
+  const isTypeSupported = context.isTypeSupported ?? defaultTypeSupport();
+  if (!context.rawManifest || !isTypeSupported) return fallback;
+
+  let probe: ReturnType<typeof describeCodecProbe>;
+  try {
+    probe = describeCodecProbe(probeCodecs(extractDeclaredCodecs(context.rawManifest), isTypeSupported));
+  } catch {
+    return fallback;
+  }
+  if (probe.details.length === 0) return fallback;
+
+  return {
+    summary: probe.summary ?? fallback.summary,
+    details: [
+      "Shaka filtered out every variant because the browser rejected its mimeType/codecs.",
+      ...probe.details,
+      "Shaka error: category=4 code=4032",
+    ],
+  };
 }
 
 function diagnoseManifestError(

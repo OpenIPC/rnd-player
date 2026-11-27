@@ -681,6 +681,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
           setError(diagnoseNetworkError(e, {
             segmentSuccessCount: segmentCountRef.current,
             manifestUrl: src,
+            rawManifest: rawManifestRef.current,
           }));
         } else {
           setError(simpleError("Failed to load video."));
@@ -776,6 +777,7 @@ function ShakaPlayer({ src, autoPlay = false, clearKey, startTime, drmConfig, co
         setError(diagnoseNetworkError(e, {
           segmentSuccessCount: segmentCountRef.current,
           manifestUrl: src,
+          rawManifest: rawManifestRef.current,
         }));
       } else {
         setError(simpleError("Failed to load video."));

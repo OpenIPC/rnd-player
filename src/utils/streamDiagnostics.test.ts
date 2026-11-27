@@ -181,6 +181,27 @@ describe("streamDiagnostics", () => {
         expect(err.details.some((d) => d.includes("codecs"))).toBe(true);
       });
 
+      it("probes declared codecs on 4032 when the raw manifest is available", () => {
+        const rawManifest = `<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>
+          <AdaptationSet mimeType="video/mp4">
+            <Representation id="1" codecs="av01.0.08M.0" bandwidth="1"/>
+          </AdaptationSet></Period></MPD>`;
+        const err = diagnoseNetworkError(
+          { code: 4032, category: 4, data: [] },
+          { ...baseCtx, rawManifest, isTypeSupported: (t) => t.includes('"av01.0.08M.08"') },
+        );
+        expect(err.summary).toBe('No playable streams: malformed codec string "av01.0.08M.0" in manifest');
+        expect(err.details.some((d) => d.includes('expected "av01.0.08M.08" (supported by this browser)'))).toBe(true);
+      });
+
+      it("falls back to the generic 4032 hint when the manifest has no codecs to probe", () => {
+        const err = diagnoseNetworkError(
+          { code: 4032, category: 4, data: [] },
+          { ...baseCtx, rawManifest: "garbage", isTypeSupported: () => false },
+        );
+        expect(err.summary).toBe("No playable streams: codecs not supported by this browser");
+      });
+
       it("does not label other non-network categories as network errors", () => {
         const err = diagnoseNetworkError({ code: 4001, category: 4, data: [] }, baseCtx);
         expect(err.summary).not.toMatch(/network/i);
